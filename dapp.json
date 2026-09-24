@@ -1,3 +1,51 @@
 {
-  "secrets": []
+  "name": "Questora",
+  "secrets": [
+    {
+      "key": "ADMIN_USERNAMES",
+      "description": "Comma-separated Homeroom usernames that get admin access to Questora",
+      "required": true,
+      "private": true,
+      "staging_default": "staging-demo-admin"
+    }
+  ],
+  "tests": [
+    {
+      "name": "Discovery homepage renders",
+      "path": "/",
+      "expectSelector": "h1",
+      "expectText": "Explore"
+    },
+    {
+      "name": "Staging demo campaign checklist",
+      "path": "/campaigns/staging-demo-welcome-campaign",
+      "expectText": "Quests"
+    },
+    {
+      "name": "Leaderboard shows seeded users",
+      "path": "/leaderboard",
+      "expectText": "staging-demo-user-1"
+    },
+    {
+      "name": "Seeded profile renders",
+      "path": "/u/staging-demo-user-1",
+      "expectText": "Staging demo user 1"
+    },
+    {
+      "name": "Create wizard opens",
+      "path": "/create",
+      "expectText": "Project"
+    },
+    {
+      "id": "quest.checklist",
+      "name": "Quest checklist flow",
+      "path": "/campaigns/staging-demo-welcome-campaign",
+      "expectSelector": ".quest-list",
+      "visual": true,
+      "impact": [
+        "public/**",
+        "src/**"
+      ]
+    }
+  ]
 }
