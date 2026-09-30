@@ -1,6 +1,10 @@
 const express = require('express');
 const { pool, IS_STAGING } = require('../db');
 const levels = require('../levels');
+const reputation = require('../reputation');
+const achievements = require('../achievements');
+const seasons = require('../seasons');
+const risk = require('../risk');
 
 const router = express.Router();
 function userId(req) { return req.user.db_id; }
@@ -115,7 +119,7 @@ router.get('/users/:username', async (req, res) => {
   if (!u.rows.length) return res.status(404).json({ error: 'User not found' });
   const user = u.rows[0];
   const lvl = await levels.userLevel(user.id);
-  const [pts, badges, completed, activity, credentials, rank] = await Promise.all([
+  const [pts, badges, completed, activity, credentials, rank, rep, achv] = await Promise.all([
     pool.query(`SELECT COALESCE(SUM(pe.amount), 0) AS p FROM points_events pe JOIN points_systems ps ON ps.id = pe.system_id WHERE pe.user_id = $1 AND ps.key = 'global'`, [user.id]),
     pool.query(`SELECT b.id, b.name, b.icon, b.rarity, b.description, ub.awarded_at FROM user_badges ub JOIN badges b ON b.id = ub.badge_id WHERE ub.user_id = $1 ORDER BY ub.awarded_at DESC`, [user.id]),
     pool.query(`SELECT COUNT(*)::int AS n FROM quest_completions WHERE user_id = $1`, [user.id]),
@@ -128,6 +132,8 @@ router.get('/users/:username', async (req, res) => {
     pool.query(`WITH totals AS (
       SELECT user_id, SUM(amount) AS xp FROM xp_events GROUP BY user_id
     ) SELECT COUNT(*)::int + 1 AS r FROM totals WHERE xp > $1`, [lvl.xp]),
+    reputation.breakdown(user.id),
+    achievements.forUser(user.id),
   ]);
   res.json({
     user: {
@@ -140,7 +146,14 @@ router.get('/users/:username', async (req, res) => {
     activity: activity.rows,
     credentials: credentials.rows,
     leaderboard_rank: rank.rows[0].r,
+    reputation: rep,
+    achievements: achv,
   });
+});
+
+// ---- seasons (Phase 3) ----
+router.get('/seasons', async (_req, res) => {
+  res.json({ seasons: await seasons.list(pool) });
 });
 
 // ---- leaderboard ----
@@ -159,11 +172,24 @@ router.get('/leaderboard', async (req, res) => {
        GROUP BY u.id ORDER BY score DESC LIMIT $1 OFFSET $2`, [limit, offset]);
     return res.json({ by, entries: rows.map(r => ({ ...r, score: Number(r.score) })) });
   }
+  // Seasonal board (Phase 3): when ?season= is given, sum only the XP
+  // events stamped with that season. Without it, the all-time board.
+  let season = null;
+  if (req.query.season) {
+    season = await seasons.find(req.query.season, pool);
+    if (!season) return res.status(400).json({ error: 'Unknown season' });
+  }
   const { rows } = await pool.query(
     `SELECT u.username, u.display_name, u.avatar_url, SUM(x.amount) AS score
      FROM xp_events x JOIN users u ON u.id = x.user_id
-     GROUP BY u.id ORDER BY score DESC LIMIT $1 OFFSET $2`, [limit, offset]);
-  res.json({ by, entries: rows.map(r => ({ ...r, score: Number(r.score) })) });
+     WHERE ($1::int IS NULL OR x.season_id = $1)
+     GROUP BY u.id ORDER BY score DESC LIMIT $2 OFFSET $3`,
+    [season ? season.id : null, limit, offset]);
+  res.json({
+    by,
+    entries: rows.map(r => ({ ...r, score: Number(r.score) })),
+    season: season ? { id: season.id, slug: season.slug, name: season.name, xp_multiplier: Number(season.xp_multiplier) } : null,
+  });
 });
 
 // ---- notifications ----
@@ -278,6 +304,50 @@ router.patch('/admin/users/:id', async (req, res) => {
   const { audit } = require('../audit');
   await audit(userId(req), 'user.update', 'user', u.rows[0].id, u.rows[0], rows[0], req.body.reason || null);
   res.json({ user: rows[0] });
+});
+
+// ---- seasons admin (Phase 3) ----
+router.get('/admin/seasons', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  res.json({ seasons: await seasons.list(pool) });
+});
+
+router.post('/admin/seasons', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const { slugify } = require('../util');
+  const name = String((req.body || {}).name || '').trim().slice(0, 120);
+  if (!name) return res.status(400).json({ error: 'A season name is required' });
+  const starts = new Date((req.body || {}).starts_at);
+  const ends = new Date((req.body || {}).ends_at);
+  if (isNaN(starts.getTime()) || isNaN(ends.getTime())) {
+    return res.status(400).json({ error: 'Start and end dates are required' });
+  }
+  if (ends <= starts) return res.status(400).json({ error: 'The season must end after it starts' });
+  const mult = Number((req.body || {}).xp_multiplier ?? 1);
+  if (!Number.isFinite(mult) || mult < 0.1 || mult > 10) {
+    return res.status(400).json({ error: 'The XP multiplier must be between 0.1 and 10' });
+  }
+  let slug = slugify(name) || 'season';
+  const clash = await pool.query('SELECT 1 FROM seasons WHERE slug = $1', [slug]);
+  if (clash.rows.length) slug = slug + '-' + require('../util').randomId(4);
+  const { rows } = await pool.query(
+    `INSERT INTO seasons (slug, name, starts_at, ends_at, xp_multiplier)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [slug, name, starts.toISOString(), ends.toISOString(), mult]);
+  const { audit } = require('../audit');
+  await audit(userId(req), 'season.create', 'season', rows[0].id, null, rows[0], (req.body || {}).reason || null);
+  res.json({ season: rows[0] });
+});
+
+// Risk explainer (Phase 3): the signals behind a user's risk_state.
+router.get('/admin/users/:id/risk', async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  const u = await pool.query('SELECT id, username, risk_state FROM users WHERE id = $1', [req.params.id]);
+  if (!u.rows.length) return res.status(404).json({ error: 'User not found' });
+  res.json({
+    user: u.rows[0],
+    signals: await risk.signalsFor(u.rows[0].id),
+  });
 });
 
 router.get('/admin/projects', async (req, res) => {

@@ -97,16 +97,16 @@ async function upsertBadge(projectId, key, name, icon, rarity, description) {
   return rows[0].id;
 }
 
-async function completeQuest(questId, userId, xp, projectSystemId) {
+async function completeQuest(questId, userId, xp, projectSystemId, seasonId) {
   await pool.query(
     `INSERT INTO quest_completions (quest_id, user_id, status, xp_awarded)
      VALUES ($1, $2, 'completed', $3) ON CONFLICT (quest_id, user_id) DO NOTHING`,
     [questId, userId, xp]
   );
   await pool.query(
-    `INSERT INTO xp_events (user_id, amount, source_type, source_id)
-     VALUES ($1, $2, 'quest', $3) ON CONFLICT (source_type, source_id, user_id) DO NOTHING`,
-    [userId, xp, questId]
+    `INSERT INTO xp_events (user_id, amount, source_type, source_id, season_id)
+     VALUES ($1, $2, 'quest', $3, $4) ON CONFLICT (source_type, source_id, user_id) DO NOTHING`,
+    [userId, xp, questId, seasonId || null]
   );
   await pool.query(
     `INSERT INTO points_events (system_id, user_id, amount, source_type, source_id)
@@ -161,6 +161,17 @@ async function seed() {
       [projectIds[p.name], p.name + ' points']);
     projectSystemIds[p.name] = sys.rows[0].id;
   }
+
+  // Season (Phase 3): a 2x demo season, more recent than the Season 1 row
+  // the migration creates, so seasons.current() picks this one in staging
+  // and the profile/leaderboard previews show a seasonal multiplier.
+  const demoSeason = await pool.query(
+    `INSERT INTO seasons (slug, name, starts_at, ends_at, xp_multiplier)
+     VALUES ('staging-demo-season', 'Staging demo Season', $1, $2, 2.0)
+     ON CONFLICT (slug) DO NOTHING RETURNING id`,
+    [new Date(Date.now() - 1 * 864e5), new Date(Date.now() + 29 * 864e5)]);
+  const seasonId = demoSeason.rows.length ? demoSeason.rows[0].id
+    : (await pool.query(`SELECT id FROM seasons WHERE slug = 'staging-demo-season'`)).rows[0].id;
 
   // 8 badges: one platform badge + project badges, mixed rarities.
   const platformBadge = await upsertBadge(null, 'early-builder', 'Staging demo Early Builder', null, 'rare', 'Staging demo badge for finishing a campaign.');
@@ -255,7 +266,7 @@ async function seed() {
   const octraSystemId = projectSystemIds['Staging demo Octra Builders'];
   for (const uname of ['staging-demo-user-1', 'staging-demo-user-2', 'staging-demo-user-3']) {
     const uid = userIds[uname];
-    for (const qid of welcomeQuests) await completeQuest(qid, uid, 100, octraSystemId);
+    for (const qid of welcomeQuests) await completeQuest(qid, uid, 100, octraSystemId, seasonId);
     await pool.query(
       `INSERT INTO user_badges (user_id, badge_id, source_type, source_id)
        VALUES ($1, $2, 'quest', $3) ON CONFLICT (user_id, badge_id) DO NOTHING`,
@@ -294,9 +305,9 @@ async function seed() {
     [userIds['staging-demo-user-1'], userIds['staging-demo-user-3']]);
   if (refQualified.rows.length) {
     await pool.query(
-      `INSERT INTO xp_events (user_id, amount, source_type, source_id)
-       VALUES ($1, 100, 'referral', $2) ON CONFLICT (source_type, source_id, user_id) DO NOTHING`,
-      [userIds['staging-demo-user-1'], refQualified.rows[0].id]);
+      `INSERT INTO xp_events (user_id, amount, source_type, source_id, season_id)
+       VALUES ($1, 100, 'referral', $2, $3) ON CONFLICT (source_type, source_id, user_id) DO NOTHING`,
+      [userIds['staging-demo-user-1'], refQualified.rows[0].id, seasonId]);
     await pool.query(
       `INSERT INTO notifications (user_id, type, title, body)
        VALUES ($1, 'referral_qualified', 'Invite qualified', $2)`,
@@ -307,6 +318,51 @@ async function seed() {
      VALUES ($1, $2, 'demo-ref-2', 'pending')
      ON CONFLICT (referee_user_id) DO NOTHING`,
     [userIds['staging-demo-user-2'], userIds['staging-demo-user-5']]);
+
+  // Reputation (Phase 3): itemized rows behind the profile panel. One
+  // quest_completed event per completed quest, plus the qualified referral
+  // credited to user 1. No risk signals here: the risk engine reads those,
+  // so seeding them would fabricate a signal the app's own logic concludes.
+  for (const uname of ['staging-demo-user-1', 'staging-demo-user-2', 'staging-demo-user-3']) {
+    const uid = userIds[uname];
+    for (const qid of welcomeQuests) {
+      await pool.query(
+        `INSERT INTO reputation_events (user_id, category, delta, source_type, source_id)
+         VALUES ($1, 'quest_completed', 5, 'quest', $2) ON CONFLICT DO NOTHING`,
+        [uid, qid]);
+    }
+  }
+  if (refQualified.rows.length) {
+    await pool.query(
+      `INSERT INTO reputation_events (user_id, category, delta, source_type, source_id)
+       VALUES ($1, 'referral_qualified', 10, 'referral', $2) ON CONFLICT DO NOTHING`,
+      [userIds['staging-demo-user-1'], refQualified.rows[0].id]);
+  }
+
+  // Achievements (Phase 3): users 1-3 have completed quests, so their
+  // 'first-quest' achievement is unlocked on the preview.
+  await pool.query(
+    `INSERT INTO user_achievements (user_id, achievement_id)
+     SELECT u.id, a.id FROM users u
+     JOIN achievements a ON a.key = 'first-quest'
+     WHERE u.username IN ('staging-demo-user-1', 'staging-demo-user-2', 'staging-demo-user-3')
+     ON CONFLICT DO NOTHING`);
+
+  // Teams (Phase 3): one demo crew owned by user 1 with members 1-3.
+  const team = await pool.query(
+    `INSERT INTO teams (slug, name, tagline, owner_user_id, join_code)
+     VALUES ('staging-demo-quest-crew', 'Staging demo Quest Crew', 'Staging demo team for testing the team board.',
+             $1, 'demo-crew')
+     ON CONFLICT (slug) DO NOTHING RETURNING id`,
+    [userIds['staging-demo-user-1']]);
+  if (team.rows.length) {
+    for (const uname of ['staging-demo-user-1', 'staging-demo-user-2', 'staging-demo-user-3']) {
+      await pool.query(
+        `INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, $3)
+         ON CONFLICT (team_id, user_id) DO NOTHING`,
+        [team.rows[0].id, userIds[uname], uname === 'staging-demo-user-1' ? 'owner' : 'member']);
+    }
+  }
 
   console.log('[seed] staging demo data ready');
 }

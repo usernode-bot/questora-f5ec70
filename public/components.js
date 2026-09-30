@@ -93,6 +93,13 @@ const statePill = (status) => {
     archived: 'bg-zinc-700/50 text-zinc-400',
     draft: 'bg-zinc-800 text-zinc-400',
     paused: 'bg-amber-500/15 text-amber-300',
+    // Phase 3 states: seasons and the risk engine.
+    active: 'bg-emerald-500/15 text-emerald-300',
+    upcoming: 'bg-sky-500/15 text-sky-300',
+    normal: 'bg-emerald-500/15 text-emerald-300',
+    review: 'bg-amber-500/15 text-amber-300',
+    suspicious: 'bg-red-500/15 text-red-300',
+    blocked: 'bg-red-500/15 text-red-300',
   };
   const cls = map[status] || 'bg-zinc-800 text-zinc-400';
   const label = status === 'pending' ? 'Pending review' : status.charAt(0).toUpperCase() + status.slice(1);

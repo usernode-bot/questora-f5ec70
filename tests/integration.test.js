@@ -171,7 +171,127 @@ t('schema + seed + reward flow', async () => {
   const referralXp = await pool.query(
     `SELECT COALESCE(SUM(amount),0) AS s FROM xp_events WHERE user_id = $1 AND source_type = 'referral'`,
     [rid]);
-  assert.equal(Number(referralXp.rows[0].s), 100, 'referrer must be paid the referral XP exactly once');
+  // Phase 3: the active season scales every XP award, so the expected
+  // payout is the configured reward times the live multiplier (the staging
+  // seed's 2x demo season in this suite).
+  const seasons = require('../src/seasons');
+  const activeSeason = await seasons.current(pool);
+  const expectedReferralXp = Math.round(100 * seasons.multiplierOf(activeSeason));
+  assert.equal(Number(referralXp.rows[0].s), expectedReferralXp,
+    'referrer must be paid the referral XP exactly once, scaled by the active season');
+}, { timeout: 30000 });
+
+t('Phase 3: reputation, achievements, seasons, risk and teams', async () => {
+  // Fresh-completion scenario on user 5 (no seeded completions): clear any
+  // prior run's rows first so the assertions are about this run.
+  const u5 = (await pool.query(`SELECT id FROM users WHERE username = 'staging-demo-user-5'`)).rows[0];
+  const u6 = (await pool.query(`SELECT id FROM users WHERE username = 'staging-demo-user-6'`)).rows[0];
+  const quest = (await pool.query(`SELECT id, xp_reward FROM quests WHERE title = 'Connect Wallet' LIMIT 1`)).rows[0];
+  await pool.query('DELETE FROM quest_completions WHERE user_id = $1', [u5.id]);
+  await pool.query("DELETE FROM xp_events WHERE user_id = $1", [u5.id]);
+  await pool.query('DELETE FROM user_achievements WHERE user_id = $1', [u5.id]);
+  await pool.query('DELETE FROM reputation_events WHERE user_id = $1', [u5.id]);
+  const tasks = await pool.query('SELECT id FROM quest_tasks WHERE quest_id = $1', [quest.id]);
+  for (const task of tasks.rows) {
+    await pool.query(
+      `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, proof_url, status, reviewer_id, reviewed_at, proof_hash)
+       VALUES ($1, $2, $3, 'manual', 'https://example.com/ok', 'verified', $4, NOW(), $5)
+       ON CONFLICT DO NOTHING`,
+      [task.id, quest.id, u5.id, u5.id, require('../src/risk').proofHash('https://example.com/ok', null)]);
+  }
+
+  // Season multiplier: awardXp scales the quest reward by the active season
+  // and stamps the ledger row with the season.
+  const { completeQuest } = require('../src/reward');
+  const seasons = require('../src/seasons');
+  const activeSeason = await seasons.current(pool);
+  const res = await completeQuest(quest.id, u5.id);
+  assert.equal(res.completed, true);
+  const expectedXp = Math.round(Number(quest.xp_reward) * seasons.multiplierOf(activeSeason));
+  const xpRow = (await pool.query(
+    `SELECT amount, season_id FROM xp_events WHERE user_id = $1 AND source_type = 'quest' AND source_id = $2`,
+    [u5.id, quest.id])).rows[0];
+  assert.equal(Number(xpRow.amount), expectedXp, 'season multiplier must scale quest XP');
+  if (activeSeason) assert.equal(xpRow.season_id, activeSeason.id, 'xp_events must be stamped with the active season');
+
+  // Reputation: one itemized event per completion, idempotent on re-record.
+  const reputation = require('../src/reputation');
+  const rep = await reputation.breakdown(u5.id);
+  assert.equal(rep.total, 5);
+  assert.equal(rep.breakdown.length, 1);
+  assert.equal(rep.breakdown[0].category, 'quest_completed');
+  assert.equal(rep.breakdown[0].events, 1);
+  await reputation.record(pool, u5.id, 'quest_completed', 'quest', quest.id);
+  const repAgain = await reputation.breakdown(u5.id);
+  assert.equal(repAgain.total, 5, 're-recording the same source must not move the score');
+
+  // Achievements: the criteria evaluator unlocks 'first-quest' on the same
+  // transaction that completed the quest.
+  assert.ok(res.achievements.some(a => a.key === 'first-quest'), 'first-quest must unlock on the first completion');
+  const achievements = require('../src/achievements');
+  const owned = await achievements.forUser(u5.id);
+  const fq = owned.find(a => a.key === 'first-quest');
+  assert.ok(fq && fq.unlocked_at, 'forUser must report the unlock state');
+
+  // Season lookup by id and slug.
+  assert.equal((await seasons.find('staging-demo-season', pool)).slug, 'staging-demo-season');
+  assert.equal((await seasons.find(String(activeSeason.id), pool)).id, activeSeason.id);
+  assert.equal(await seasons.find('no-such-season', pool), null);
+
+  // Risk engine: velocity (8 completions in an hour) + duplicate proof
+  // (the same hash submitted by 3 accounts) score 5 and escalate to blocked.
+  await pool.query('DELETE FROM quest_completions WHERE user_id = $1', [u6.id]);
+  const questIds = (await pool.query('SELECT id FROM quests LIMIT 8')).rows.map(r => r.id);
+  for (const qid of questIds) {
+    await pool.query(
+      `INSERT INTO quest_completions (quest_id, user_id, status, xp_awarded)
+       VALUES ($1, $2, 'completed', 0) ON CONFLICT (quest_id, user_id) DO NOTHING`,
+      [qid, u6.id]);
+  }
+  const sharedHash = require('../src/risk').proofHash('https://farm.example/same-proof', null);
+  const u4 = (await pool.query(`SELECT id FROM users WHERE username = 'staging-demo-user-4'`)).rows[0];
+  for (const uid of [u5.id, u6.id, u4.id]) {
+    await pool.query(
+      `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, proof_url, status, proof_hash)
+       VALUES ($1, $2, $3, 'url_proof', 'https://farm.example/same-proof', 'verified', $4)`,
+      [tasks.rows[0].id, quest.id, uid, sharedHash]);
+  }
+  const risk = require('../src/risk');
+  await pool.query("UPDATE users SET risk_state = 'normal' WHERE id = $1", [u6.id]);
+  const riskRes = await risk.evaluateUser(pool, u6.id);
+  assert.ok(riskRes.signals.includes('velocity'), 'velocity signal must fire at 8 completions/hour');
+  assert.ok(riskRes.signals.includes('duplicate_proof'), 'duplicate proof signal must fire at 3 accounts');
+  assert.ok(riskRes.score >= 5, 'combined severity must reach the blocked threshold');
+  assert.equal(riskRes.state, 'blocked');
+  const stateNow = (await pool.query('SELECT risk_state FROM users WHERE id = $1', [u6.id])).rows[0].risk_state;
+  assert.equal(stateNow, 'blocked');
+  // Escalation is one-way: a re-run never de-escalates on its own.
+  const again = await risk.evaluateUser(pool, u6.id);
+  assert.equal(again.state, 'blocked');
+  assert.ok((await risk.signalsFor(u6.id)).length >= 2, 'explainer rows must be readable for the admin panel');
+
+  // Teams: create, join by code, one-team-per-user, leave/disband rules.
+  const teams = require('../src/teams');
+  // A re-run starts clean: a previous run's test team would trip the
+  // one-team-per-user rule.
+  await pool.query('DELETE FROM teams WHERE owner_user_id = $1', [u5.id]);
+  await pool.query('DELETE FROM team_members WHERE user_id = $1', [u6.id]);
+  const created = await teams.create(u5.id, 'Integration Test Crew', 'phase 3 test');
+  assert.ok(created.team, JSON.stringify(created));
+  const dup = await teams.create(u5.id, 'Another Crew');
+  assert.equal(dup.error, 'You are already in a team. Leave it before creating another.');
+  const joined = await teams.join(u6.id, created.team.join_code);
+  assert.ok(joined.joined);
+  const detail = await teams.detail(created.team.id);
+  assert.equal(detail.members.length, 2);
+  const badJoin = await teams.join(u6.id, 'wrong-code');
+  assert.equal(badJoin.error, 'You are already in a team. Leave it before joining another.');
+  const ownerLeave = await teams.leave(u5.id);
+  assert.equal(ownerLeave.error, 'Owners cannot leave. Disband the team instead.');
+  assert.ok((await teams.leave(u6.id)).left);
+  const memberDisband = await teams.disband(u6.id);
+  assert.equal(memberDisband.error, 'You are not in a team');
+  assert.ok((await teams.disband(u5.id)).disbanded);
 }, { timeout: 30000 });
 
 t('a route that throws returns 500 and the server keeps serving', async () => {

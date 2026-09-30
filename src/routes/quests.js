@@ -2,9 +2,17 @@ const express = require('express');
 const { pool } = require('../db');
 const { verifyTask } = require('../verify');
 const reward = require('../reward');
+const risk = require('../risk');
 
 const router = express.Router();
 function userId(req) { return req.user.db_id; }
+
+// Anti-sybil (Phase 3): an account the engine has escalated to blocked
+// cannot submit anything until an admin clears the state.
+async function blocked(uid) {
+  const { rows } = await pool.query('SELECT risk_state FROM users WHERE id = $1', [uid]);
+  return rows[0] && rows[0].risk_state === 'blocked';
+}
 
 // Simple in-memory rate limit on submissions: 10 per minute per user.
 const rateBuckets = new Map();
@@ -37,6 +45,7 @@ router.get('/quests/:id/my', async (req, res) => {
 router.post('/tasks/:id/submit', async (req, res) => {
   const uid = userId(req);
   if (rateLimited(uid)) return res.status(429).json({ error: 'Too many submissions. Wait a moment.' });
+  if (await blocked(uid)) return res.status(403).json({ error: 'Your account is restricted. Ask an admin to review it.' });
   const t = await pool.query('SELECT * FROM quest_tasks WHERE id = $1', [req.params.id]);
   if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
   const task = t.rows[0];
@@ -71,22 +80,27 @@ router.post('/tasks/:id/submit', async (req, res) => {
 
   const verdict = verifyTask(task.type, ctx);
   const status = verdict.result === 'pending' ? 'pending' : verdict.result;
+  // Anti-sybil (Phase 3): a normalized fingerprint of the proof, so the
+  // risk engine can spot the same link or text submitted by many accounts.
+  const proofHash = risk.proofHash(
+    submission.proof_url,
+    submission.proof_data && submission.proof_data.text);
   if (status === 'rejected') {
     await pool.query(
-      `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, proof_url, proof_data, status, review_note, reviewed_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'rejected', $7, NOW())`,
+      `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, proof_url, proof_data, status, review_note, reviewed_at, proof_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, 'rejected', $7, NOW(), $8)`,
       [task.id, task.quest_id, uid, task.type, submission.proof_url,
         submission.proof_data ? JSON.stringify(submission.proof_data) : null,
-        (verdict.detail && verdict.detail.reason) || 'Rejected']
+        (verdict.detail && verdict.detail.reason) || 'Rejected', proofHash]
     );
     return res.status(400).json({ error: (verdict.detail && verdict.detail.reason) || 'Rejected' });
   }
 
   const ins = await pool.query(
-    `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, proof_url, proof_data, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, status`,
+    `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, proof_url, proof_data, status, proof_hash)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, status`,
     [task.id, task.quest_id, uid, task.type, submission.proof_url,
-      submission.proof_data ? JSON.stringify(submission.proof_data) : null, status]
+      submission.proof_data ? JSON.stringify(submission.proof_data) : null, status, proofHash]
   );
   await pool.query(
     `INSERT INTO verification_events (submission_id, verifier, result, detail)
@@ -104,6 +118,7 @@ router.post('/tasks/:id/submit', async (req, res) => {
 // Quiz grading endpoint (answers come in, never out).
 router.post('/quests/:id/quiz', async (req, res) => {
   const uid = userId(req);
+  if (await blocked(uid)) return res.status(403).json({ error: 'Your account is restricted. Ask an admin to review it.' });
   const taskId = Number(req.body.task_id);
   const t = await pool.query(
     `SELECT * FROM quest_tasks WHERE id = $1 AND quest_id = $2 AND type = 'quiz'`,
