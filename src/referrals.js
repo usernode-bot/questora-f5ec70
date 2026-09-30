@@ -94,6 +94,8 @@ async function checkQualification(client, refereeUserId) {
   const r = pend.rows[0];
   const reward = require('./reward');
   await reward.awardXp(client, r.referrer_user_id, cfg.xp_reward, 'referral', r.id);
+  const reputation = require('./reputation');
+  await reputation.record(client, r.referrer_user_id, 'referral_qualified', 'referral', r.id);
   await client.query(
     `UPDATE referrals SET status = 'qualified', qualified_at = NOW(), rewarded_at = NOW() WHERE id = $1`,
     [r.id]);

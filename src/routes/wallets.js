@@ -54,15 +54,24 @@ router.post('/verify', async (req, res) => {
     const userId = user.rows[0].id;
     const existing = await client.query(
       'SELECT id FROM wallets WHERE address = $1', [recovered.toLowerCase()]);
+    let walletId;
     if (existing.rows.length) {
-      await client.query('UPDATE wallets SET verified_at = NOW() WHERE address = $1', [recovered.toLowerCase()]);
+      const upd = await client.query(
+        'UPDATE wallets SET verified_at = NOW() WHERE address = $1 RETURNING id', [recovered.toLowerCase()]);
+      walletId = upd.rows[0].id;
     } else {
-      await client.query(
+      const ins = await client.query(
         `INSERT INTO wallets (user_id, address, verified_at, is_primary)
-         VALUES ($1, $2, NOW(), NOT EXISTS (SELECT 1 FROM wallets WHERE user_id = $1 AND verified_at IS NOT NULL))`,
+         VALUES ($1, $2, NOW(), NOT EXISTS (SELECT 1 FROM wallets WHERE user_id = $1 AND verified_at IS NOT NULL))
+         RETURNING id`,
         [userId, recovered.toLowerCase()]
       );
+      walletId = ins.rows[0].id;
     }
+    // Reputation (Phase 3): a verified wallet is a trust signal; the
+    // UNIQUE constraint makes re-verifying the same wallet a no-op.
+    const reputation = require('../reputation');
+    await reputation.record(client, userId, 'wallet_verified', 'wallet', walletId);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

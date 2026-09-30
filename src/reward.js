@@ -1,10 +1,19 @@
 const { pool } = require('./db');
 const levels = require('./levels');
+const seasons = require('./seasons');
+const reputation = require('./reputation');
+const achievements = require('./achievements');
+const risk = require('./risk');
 
 // The ONLY writer of XP, points and badges. One transaction; the UNIQUE
 // constraints on xp_events/points_events/user_badges make every award
 // idempotent, so a double click or a retried request can never pay twice.
 async function awardXp(client, userId, amount, sourceType, sourceId) {
+  // Seasonal multiplier (Phase 3): the active season boosts every XP
+  // source, and the ledger row is stamped with the season so seasonal
+  // leaderboards are a plain filter on xp_events.
+  const season = await seasons.current(client);
+  const effective = Math.max(0, Math.round(amount * seasons.multiplierOf(season)));
   const cap = await client.query("SELECT value FROM platform_settings WHERE key = 'xp'");
   const dailyCap = (cap.rows[0] && cap.rows[0].value && cap.rows[0].value.daily_cap) || 5000;
   const today = await client.query(
@@ -13,16 +22,16 @@ async function awardXp(client, userId, amount, sourceType, sourceId) {
     [userId]
   );
   const earnedToday = Number(today.rows[0].total);
-  const allowed = Math.max(0, Math.min(amount, dailyCap - earnedToday));
+  const allowed = Math.max(0, Math.min(effective, dailyCap - earnedToday));
   if (allowed <= 0) return { awarded: 0, capped: true };
   const prev = await client.query('SELECT COALESCE(SUM(amount),0) AS xp FROM xp_events WHERE user_id = $1', [userId]);
   const beforeXp = Number(prev.rows[0].xp);
   const ins = await client.query(
-    `INSERT INTO xp_events (user_id, amount, source_type, source_id)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO xp_events (user_id, amount, source_type, source_id, season_id)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (source_type, source_id, user_id) DO NOTHING
      RETURNING amount`,
-    [userId, allowed, sourceType, sourceId]
+    [userId, allowed, sourceType, sourceId, season ? season.id : null]
   );
   if (!ins.rows.length) return { awarded: 0, capped: false };
   await levels.maybeLevelUp(client, userId, beforeXp, beforeXp + allowed);
@@ -184,8 +193,21 @@ async function completeQuest(questId, userId) {
     const referrals = require('./referrals');
     const referral = await referrals.checkQualification(client, userId);
 
+    // Reputation (Phase 3): a transparent per-category record on the
+    // profile, written on the same transaction as the reward.
+    await reputation.record(client, userId, 'quest_completed', 'quest', questId);
+
+    // Achievements (Phase 3): criteria are evaluated on the same
+    // transaction, so an unlock lands exactly when it becomes true.
+    const ach = await achievements.evaluate(client, userId);
+
+    // Risk engine (Phase 3): velocity, duplicate-proof and referral-graph
+    // heuristics run after the rewards are booked and can escalate the
+    // account's risk_state inside this same transaction.
+    const riskRes = await risk.evaluateUser(client, userId);
+
     await client.query('COMMIT');
-    return { completed: true, xp: xpRes.awarded, points: ptsRes.awarded, badge, credential_id: credentialId, referral };
+    return { completed: true, xp: xpRes.awarded, points: ptsRes.awarded, badge, credential_id: credentialId, referral, achievements: ach.unlocked, risk_state: riskRes.state };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;

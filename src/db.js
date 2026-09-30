@@ -10,6 +10,7 @@ const PRIVATE_TABLES = [
   'verification_events',
   'reward_claims',
   'audit_logs',
+  'risk_signals',
 ];
 
 const SCHEMA = `
@@ -309,6 +310,86 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS audit_logs_entity_idx ON audit_logs (entity_type, entity_id);
+
+-- Phase 3: reputation is a transparent sum of per-signal deltas; the table
+-- is the record, the profile panel reads the itemized rows. source_id
+-- defaults to 0 (not NULL) so the UNIQUE constraint dedupes every category.
+CREATE TABLE IF NOT EXISTS reputation_events (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  category VARCHAR(40) NOT NULL,
+  delta INTEGER NOT NULL,
+  source_type VARCHAR(40) NOT NULL DEFAULT '',
+  source_id INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (category, source_type, source_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS reputation_events_user_idx ON reputation_events (user_id, category);
+
+-- Phase 3: anti-sybil engine. One explainer row per (user, signal, key);
+-- the combined severity escalates users.risk_state. Private: it is fraud
+-- analysis about a specific account.
+CREATE TABLE IF NOT EXISTS risk_signals (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  signal VARCHAR(40) NOT NULL,
+  signal_key VARCHAR(80) NOT NULL DEFAULT '',
+  severity INTEGER NOT NULL DEFAULT 0,
+  detail JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, signal, signal_key)
+);
+CREATE INDEX IF NOT EXISTS risk_signals_user_idx ON risk_signals (user_id);
+
+-- Phase 3: seasons. XP awarded while a season is active is stamped with
+-- season_id so seasonal leaderboards are a plain filter on xp_events.
+CREATE TABLE IF NOT EXISTS seasons (
+  id SERIAL PRIMARY KEY,
+  slug VARCHAR(80) UNIQUE NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  starts_at TIMESTAMPTZ NOT NULL,
+  ends_at TIMESTAMPTZ NOT NULL,
+  xp_multiplier NUMERIC(6,2) NOT NULL DEFAULT 1.0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS achievements (
+  id SERIAL PRIMARY KEY,
+  key VARCHAR(60) UNIQUE NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  description TEXT,
+  criteria JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_achievements (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  achievement_id INTEGER NOT NULL REFERENCES achievements(id) ON DELETE CASCADE,
+  unlocked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  source_type VARCHAR(40),
+  source_id INTEGER,
+  PRIMARY KEY (user_id, achievement_id)
+);
+
+CREATE TABLE IF NOT EXISTS teams (
+  id SERIAL PRIMARY KEY,
+  slug VARCHAR(80) UNIQUE NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  tagline TEXT,
+  owner_user_id INTEGER NOT NULL REFERENCES users(id),
+  join_code VARCHAR(12) UNIQUE NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS teams_owner_idx ON teams (owner_user_id);
+
+CREATE TABLE IF NOT EXISTS team_members (
+  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role VARCHAR(20) NOT NULL DEFAULT 'member',
+  joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (team_id, user_id)
+);
 `;
 
 async function migrate() {
@@ -317,6 +398,9 @@ async function migrate() {
     await client.query(SCHEMA);
     // Phase 2: stable per-user referral code for /join?ref= links.
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_code VARCHAR(20) UNIQUE');
+    // Phase 3: seasonal XP ledger stamps and normalized proof fingerprints.
+    await client.query('ALTER TABLE xp_events ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id)');
+    await client.query('ALTER TABLE task_submissions ADD COLUMN IF NOT EXISTS proof_hash VARCHAR(64)');
     // Fresh schemas lack gen_random_uuid (pgcrypto) on older servers.
     await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto').catch(() => {});
     for (const t of PRIVATE_TABLES) {
@@ -331,6 +415,30 @@ async function migrate() {
     await client.query(`
       INSERT INTO platform_settings (key, value) VALUES ('xp', '{"daily_cap": 5000, "multiplier": 1}'::jsonb)
       ON CONFLICT (key) DO NOTHING
+    `);
+    // Phase 3: the achievement catalogue is platform content, not staging
+    // demo data, so it seeds in every environment.
+    await client.query(`
+      INSERT INTO achievements (key, name, description, criteria) VALUES
+        ('first-quest', 'First Quest', 'Complete your first quest.',
+          '{"metric": "quests_completed", "value": 1}'::jsonb),
+        ('quest-machine', 'Quest Machine', 'Complete 10 quests.',
+          '{"metric": "quests_completed", "value": 10}'::jsonb),
+        ('xp-collector', 'XP Collector', 'Earn 1,000 XP.',
+          '{"metric": "xp_earned", "value": 1000}'::jsonb),
+        ('badge-collector', 'Badge Collector', 'Earn 5 badges.',
+          '{"metric": "badges_earned", "value": 5}'::jsonb),
+        ('community-connector', 'Community Connector', 'Have one invite qualify.',
+          '{"metric": "referrals_qualified", "value": 1}'::jsonb)
+      ON CONFLICT (key) DO NOTHING
+    `);
+    // Season 1 is the standing default season in every environment; admins
+    // create later seasons from the admin panel.
+    await client.query(`
+      INSERT INTO seasons (slug, name, starts_at, ends_at, xp_multiplier)
+      VALUES ('season-1', 'Season 1', date_trunc('hour', now()) - interval '7 days',
+              date_trunc('hour', now()) + interval '83 days', 1.0)
+      ON CONFLICT (slug) DO NOTHING
     `);
   } finally {
     client.release();

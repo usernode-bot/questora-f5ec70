@@ -63,6 +63,26 @@
       "expectText": "Staging demo Welcome Credential"
     },
     {
+      "name": "Profile reputation panel renders",
+      "path": "/u/staging-demo-user-1?tab=reputation",
+      "expectText": "Quests completed"
+    },
+    {
+      "name": "Profile achievements tab renders",
+      "path": "/u/staging-demo-user-1?tab=achievements",
+      "expectText": "First Quest"
+    },
+    {
+      "name": "Seasonal leaderboard renders",
+      "path": "/leaderboard?season=staging-demo-season",
+      "expectText": "Staging demo Season"
+    },
+    {
+      "name": "Teams page renders with seeded team",
+      "path": "/teams",
+      "expectText": "Staging demo Quest Crew"
+    },
+    {
       "id": "quest.checklist",
       "name": "Quest checklist flow",
       "path": "/campaigns/staging-demo-welcome-campaign",
@@ -105,6 +125,18 @@
         "public/views.js",
         "src/referrals.js",
         "src/routes/referrals.js"
+      ]
+    },
+    {
+      "id": "teams.board",
+      "name": "Teams board",
+      "path": "/teams",
+      "expectText": "Staging demo Quest Crew",
+      "visual": true,
+      "impact": [
+        "public/views.js",
+        "src/teams.js",
+        "src/routes/teams.js"
       ]
     }
   ]

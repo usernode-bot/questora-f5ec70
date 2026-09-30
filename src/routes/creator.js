@@ -358,6 +358,10 @@ router.post('/submissions/:id/review', async (req, res) => {
         quest.rows[0] ? `Your submission for "${quest.rows[0].title}" was rejected. ${reason}` : 'Your submission was rejected.',
         '/quest/' + sub.quest_id]
     );
+    // Reputation (Phase 3): rejections are visible on the profile's
+    // itemized reputation panel; idempotent per submission.
+    const reputation = require('../reputation');
+    await reputation.record(pool, sub.user_id, 'quest_rejected', 'submission', sub.id, reason);
   } else {
     const reward = require('../reward');
     await reward.completeQuest(sub.quest_id, sub.user_id);

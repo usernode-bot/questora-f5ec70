@@ -6,6 +6,7 @@
     { label: 'Explore', path: '/', match: /^\/$/ },
     { label: 'Quests', path: '/quests', match: /^\/quests/ },
     { label: 'Leaderboard', path: '/leaderboard', match: /^\/leaderboard/ },
+    { label: 'Teams', path: '/teams', match: /^\/teams/ },
     { label: 'Profile', path: '/me', match: /^\/(me|u\/)/ },
     { label: 'Create', path: '/create', match: /^\/create/ },
   ];
@@ -40,6 +41,7 @@
       if (path === '/' || path === '') return await V.viewDiscover();
       if (path === '/quests') return await viewQuestsList();
       if (path === '/leaderboard') return await V.viewLeaderboard(params);
+      if (path === '/teams') return await V.viewTeams(params);
       if (path === '/create') return await V.viewCreate();
       if (path === '/me') {
         const meData = await V.loadMe();

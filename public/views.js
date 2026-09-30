@@ -278,6 +278,7 @@ async function viewProfile(username, params) {
           <p class="text-sm text-zinc-500">@${escapeHtml(u.username)}</p>
           <div class="flex flex-wrap gap-2 mt-2">
             ${badgePill(u.xp + ' XP')}${badgePill(u.points + ' points')}${badgePill('Rank #' + data.leaderboard_rank)}
+            ${data.reputation ? badgePill('Reputation ' + (data.reputation.total > 0 ? '+' : '') + data.reputation.total) : ''}
           </div>
           ${u.next ? `<p class="text-xs text-zinc-600 mt-2">${u.next.min_xp - u.xp} XP to level ${u.next.level}</p>` : ''}
         </div>
@@ -286,6 +287,8 @@ async function viewProfile(username, params) {
         <button data-tab="activity" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Activity</button>
         <button data-tab="badges" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Badges</button>
         <button data-tab="credentials" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Credentials</button>
+        <button data-tab="reputation" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Reputation</button>
+        <button data-tab="achievements" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Achievements</button>
       </div>
       <div class="tab-body"></div>
       <div class="invite-slot mt-6"></div>
@@ -315,6 +318,54 @@ async function viewProfile(username, params) {
       body.appendChild(list);
       return;
     }
+    if (tab === 'reputation') {
+      const rep = data.reputation || { total: 0, breakdown: [] };
+      const labels = {
+        quest_completed: 'Quests completed',
+        quest_rejected: 'Submissions rejected',
+        wallet_verified: 'Wallet verified',
+        referral_qualified: 'Invite qualified',
+      };
+      const head = `<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 mb-3 flex items-center justify-between">
+        <div><h2 class="font-semibold">Reputation score</h2>
+        <p class="text-xs text-zinc-600 mt-0.5">A transparent sum of every signal on this account.</p></div>
+        <span class="font-mono text-2xl font-bold ${rep.total >= 0 ? 'text-emerald-300' : 'text-red-300'}">${rep.total > 0 ? '+' : ''}${rep.total}</span>
+      </div>`;
+      if (!rep.breakdown.length) {
+        body.appendChild(el(head + '<p class="text-sm text-zinc-600 px-1">No reputation signals yet. Complete quests to build a score.</p>'));
+        return;
+      }
+      const rows = el('<div class="space-y-2"></div>');
+      for (const r of rep.breakdown) {
+        rows.appendChild(el(`
+          <div class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+            <span class="min-w-0"><span class="block font-medium">${escapeHtml(labels[r.category] || r.category)}</span>
+            <span class="block text-xs text-zinc-600">${r.events} event${r.events === 1 ? '' : 's'}</span></span>
+            <span class="font-mono ${r.sum >= 0 ? 'text-emerald-300' : 'text-red-300'}">${r.sum > 0 ? '+' : ''}${r.sum}</span>
+          </div>`));
+      }
+      body.appendChild(el(head));
+      body.appendChild(rows);
+      return;
+    }
+    if (tab === 'achievements') {
+      if (!data.achievements || !data.achievements.length) {
+        body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No achievements configured yet.</p>'));
+        return;
+      }
+      const list = el('<div class="space-y-2"></div>');
+      for (const a of data.achievements) {
+        const locked = !a.unlocked_at;
+        list.appendChild(el(`
+          <div class="flex items-center justify-between gap-3 rounded-xl border border-zinc-800 ${locked ? 'bg-zinc-900/30 opacity-60' : 'bg-zinc-900/60'} px-4 py-3">
+            <span class="min-w-0"><span class="block font-medium">${escapeHtml(a.name)}</span>
+            <span class="block text-xs text-zinc-600">${escapeHtml(a.description || '')}</span></span>
+            ${locked ? '<span class="shrink-0 text-xs text-zinc-600">Locked</span>' : statePill('verified')}
+          </div>`));
+      }
+      body.appendChild(list);
+      return;
+    }
     if (tab === 'badges') {
       if (!data.badges.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No badges yet. Complete quests to earn them.</p>')); return; }
       const grid = el('<div class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>');
@@ -332,7 +383,8 @@ async function viewProfile(username, params) {
     }
   }
   node.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
-  show(params.get('tab') === 'badges' || params.get('tab') === 'credentials' ? params.get('tab') : 'activity');
+  const initialTab = params.get('tab');
+  show(['badges', 'credentials', 'reputation', 'achievements'].includes(initialTab) ? initialTab : 'activity');
 
   // Own profile: the invite block (Phase 2 referrals).
   const meData = await loadMe();
@@ -363,19 +415,46 @@ async function viewProfile(username, params) {
 // ---------- leaderboard ----------
 async function viewLeaderboard(params) {
   const by = params.get('by') === 'points' ? 'points' : 'xp';
+  const seasonParam = params.get('season') || '';
   const wrap = el('<div></div>');
   app().replaceChildren(wrap);
   wrap.appendChild(el(`
     <div class="flex items-center justify-between mb-4">
       <h1 class="text-2xl font-bold">Leaderboard</h1>
       <div class="flex gap-1 bg-zinc-900 rounded-full p-1 border border-zinc-800">
-        <a href="/leaderboard?by=xp" class="px-4 py-1.5 rounded-full text-sm font-medium ${by === 'xp' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">XP</a>
+        <a href="/leaderboard?by=xp${seasonParam ? '&season=' + encodeURIComponent(seasonParam) : ''}" class="px-4 py-1.5 rounded-full text-sm font-medium ${by === 'xp' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">XP</a>
         <a href="/leaderboard?by=points" class="px-4 py-1.5 rounded-full text-sm font-medium ${by === 'points' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Points</a>
       </div>
     </div>`));
+  // Season picker (Phase 3): seasons only affect the XP board.
+  let seasonRow = null;
+  if (by === 'xp') {
+    try {
+      const s = await window.QuestoraAPI.api.get('/api/v1/seasons');
+      if (s.seasons.length) {
+        seasonRow = el('<div class="flex flex-wrap gap-2 mb-4"></div>');
+        const chip = (label, slug, on) => {
+          const href = slug ? `/leaderboard?by=xp&season=${encodeURIComponent(slug)}` : '/leaderboard?by=xp';
+          return el(`<a href="${href}" class="px-3 py-1.5 rounded-full text-xs font-medium border ${on ? 'bg-violet-600 border-violet-600 text-white' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}">${escapeHtml(label)}</a>`);
+        };
+        seasonRow.appendChild(chip('All time', '', !seasonParam));
+        for (const sn of s.seasons) {
+          const mult = sn.xp_multiplier ? ` · ${sn.xp_multiplier}x XP` : '';
+          seasonRow.appendChild(chip(sn.name + mult, sn.slug, seasonParam === sn.slug));
+        }
+        wrap.appendChild(seasonRow);
+      }
+    } catch { /* seasons list is optional chrome */ }
+  }
   let data;
-  try { data = await window.QuestoraAPI.api.get('/api/v1/leaderboard?by=' + by); }
+  try {
+    data = await window.QuestoraAPI.api.get(
+      '/api/v1/leaderboard?by=' + by + (seasonParam ? '&season=' + encodeURIComponent(seasonParam) : ''));
+  }
   catch (err) { wrap.appendChild(el(`<p class="text-zinc-400">${escapeHtml(err.message)}</p>`)); return; }
+  if (data.season) {
+    wrap.appendChild(el(`<p class="text-xs text-zinc-600 mb-3">Season board: only XP earned during ${escapeHtml(data.season.name)} counts. This season awards ${data.season.xp_multiplier}x XP.</p>`));
+  }
   if (!data.entries.length) {
     wrap.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400 mb-1">No entries yet.</p><p class="text-sm text-zinc-600">Complete a quest to appear here.</p></div>'));
     return;
@@ -391,6 +470,137 @@ async function viewLeaderboard(params) {
       </a>`));
   });
   wrap.appendChild(list);
+}
+
+// ---------- teams ----------
+async function viewTeams(params) {
+  const wrap = el('<div></div>');
+  app().replaceChildren(wrap);
+  wrap.appendChild(el('<h1 class="text-2xl font-bold mb-4">Teams</h1>'));
+  const mySlot = el('<div class="mb-6"></div>');
+  const boardSlot = el('<div></div>');
+  wrap.appendChild(mySlot);
+  wrap.appendChild(boardSlot);
+  const meData = await loadMe();
+
+  async function refresh() {
+    // My team card (or the create/join forms when not in one).
+    let mine = null;
+    try { mine = await window.QuestoraAPI.api.get('/api/v1/teams/mine'); }
+    catch { mine = null; }
+    mySlot.replaceChildren();
+    if (mine && mine.team) {
+      const t = mine.team;
+      const isOwner = meData && meData.user && t.owner_user_id === meData.user.id;
+      const card = el(`
+        <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+          <div class="flex items-start justify-between gap-3 mb-3">
+            <div class="min-w-0">
+              <h2 class="font-semibold truncate">${escapeHtml(t.name)}</h2>
+              ${t.tagline ? `<p class="text-sm text-zinc-500 truncate">${escapeHtml(t.tagline)}</p>` : ''}
+            </div>
+            ${isOwner ? statePill('active') : ''}
+          </div>
+          <div class="rounded-xl bg-zinc-800/60 px-4 py-3 mb-4 flex items-center justify-between gap-2">
+            <div class="min-w-0"><span class="block text-xs text-zinc-500">Join code</span>
+            <span class="font-mono text-sm text-zinc-200">${escapeHtml(t.join_code)}</span></div>
+            <button class="copy shrink-0 font-medium px-3 py-2 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Copy code</button>
+          </div>
+          <div class="members space-y-2 mb-4"></div>
+          <div class="actions flex gap-2"></div>
+        </div>`);
+      card.querySelector('.copy').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(t.join_code); toast('Join code copied'); }
+        catch { toast('Could not copy the code'); }
+      });
+      const members = card.querySelector('.members');
+      for (const m of (mine.members || [])) {
+        members.appendChild(el(`
+          <a href="/u/${encodeURIComponent(m.username)}" class="flex items-center justify-between rounded-xl border border-zinc-800 px-4 py-3">
+            <span class="min-w-0"><span class="block text-sm font-medium truncate">${escapeHtml(m.display_name || m.username)}${m.role === 'owner' ? ' <span class="text-xs text-violet-300">owner</span>' : ''}</span>
+            <span class="block text-xs text-zinc-600">@${escapeHtml(m.username)}</span></span>
+            <span class="font-mono text-sm text-violet-300">${Number(m.xp).toLocaleString()} XP</span>
+          </a>`));
+      }
+      const actions = card.querySelector('.actions');
+      const act = (label, fn, cls) => {
+        const b = el(`<button class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg text-sm ${cls || 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'}">${escapeHtml(label)}</button>`);
+        b.addEventListener('click', async () => {
+          try { await fn(); await refresh(); }
+          catch (err) { toast(err.message || 'Something went wrong'); }
+        });
+        return b;
+      };
+      if (isOwner) {
+        actions.appendChild(act('Disband team', async () => {
+          await window.QuestoraAPI.api.post('/api/v1/teams/disband', {});
+          toast('Team disbanded');
+        }, 'bg-red-600/90 hover:bg-red-500 text-white'));
+      } else {
+        actions.appendChild(act('Leave team', async () => {
+          await window.QuestoraAPI.api.post('/api/v1/teams/leave', {});
+          toast('You left the team');
+        }));
+      }
+      mySlot.appendChild(card);
+    } else {
+      const forms = el(`
+        <div class="grid md:grid-cols-2 gap-3 mb-1">
+          <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+            <h2 class="font-semibold mb-1">Create a team</h2>
+            <p class="text-sm text-zinc-500 mb-3">One team per account.</p>
+            <input placeholder="Team name" class="t-name w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none mb-2">
+            <input placeholder="Tagline (optional)" class="t-tagline w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none mb-3">
+            <button class="create font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm w-full">Create team</button>
+          </div>
+          <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+            <h2 class="font-semibold mb-1">Join with a code</h2>
+            <p class="text-sm text-zinc-500 mb-3">Ask a team owner for their join code.</p>
+            <input placeholder="Join code" class="t-code w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm font-mono text-zinc-200 focus:outline-none mb-3">
+            <button class="join font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm w-full">Join team</button>
+          </div>
+        </div>`);
+      const val = sel => { const n = forms.querySelector(sel); return n ? n.value.trim() : ''; };
+      forms.querySelector('.create').addEventListener('click', async () => {
+        try {
+          await window.QuestoraAPI.api.post('/api/v1/teams', { name: val('.t-name'), tagline: val('.t-tagline') || undefined });
+          toast('Team created');
+          await refresh();
+        } catch (err) { toast(err.message || 'Could not create the team'); }
+      });
+      forms.querySelector('.join').addEventListener('click', async () => {
+        try {
+          await window.QuestoraAPI.api.post('/api/v1/teams/join', { code: val('.t-code') });
+          toast('You joined the team');
+          await refresh();
+        } catch (err) { toast(err.message || 'Could not join'); }
+      });
+      mySlot.appendChild(forms);
+    }
+
+    // Team board.
+    let board = { teams: [] };
+    try { board = await window.QuestoraAPI.api.get('/api/v1/teams'); }
+    catch { board = { teams: [] }; }
+    boardSlot.replaceChildren();
+    boardSlot.appendChild(el('<h2 class="font-semibold mb-3">All teams</h2>'));
+    if (!board.teams.length) {
+      boardSlot.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400 mb-1">No teams yet.</p><p class="text-sm text-zinc-600">Create one above to start the board.</p></div>'));
+      return;
+    }
+    const list = el('<div class="space-y-2"></div>');
+    board.teams.forEach((t, i) => {
+      list.appendChild(el(`
+        <div class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+          <span class="w-8 text-center font-bold ${i === 0 ? 'text-violet-300' : 'text-zinc-500'}">${i + 1}</span>
+          <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(t.name)}</span>
+          <span class="block text-xs text-zinc-600">${t.members} member${t.members === 1 ? '' : 's'}${t.tagline ? ' · ' + escapeHtml(t.tagline) : ''}</span></span>
+          <span class="ml-auto font-mono text-violet-300">${Number(t.xp).toLocaleString()} XP</span>
+        </div>`));
+    });
+    boardSlot.appendChild(list);
+  }
+  await refresh();
 }
 
 // ---------- create wizard ----------
@@ -820,6 +1030,7 @@ async function viewAdmin() {
   wrap.appendChild(body);
 
   async function load() {
+    body.replaceChildren();
     let meData;
     try { meData = await window.QuestoraAPI.api.get('/api/v1/users/me'); }
     catch { body.appendChild(el('<p class="text-sm text-red-400">Could not load your account.</p>')); return; }
@@ -836,18 +1047,83 @@ async function viewAdmin() {
     const ul = usersSec.querySelector('.u-list');
     for (const u of users.users) {
       const row = el(`
-        <div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
-          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(u.display_name || u.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(u.username)} · ${u.xp} XP · ${escapeHtml(u.risk_state)}</span></span>
-          <span class="role-pill text-xs px-2 py-1 rounded-full ${u.role === 'admin' ? 'bg-violet-600/20 text-violet-300' : 'bg-zinc-800 text-zinc-400'}">${escapeHtml(u.role)}</span>
-          <button class="toggle text-xs px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300">${u.role === 'admin' ? 'Make user' : 'Make admin'}</button>
+        <div class="u-row">
+          <div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+            <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(u.display_name || u.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(u.username)} · ${u.xp} XP</span></span>
+            ${statePill(u.risk_state || 'normal')}
+            <span class="role-pill text-xs px-2 py-1 rounded-full ${u.role === 'admin' ? 'bg-violet-600/20 text-violet-300' : 'bg-zinc-800 text-zinc-400'}">${escapeHtml(u.role)}</span>
+            <button class="risk text-xs px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300">Risk</button>
+            <button class="toggle text-xs px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300">${u.role === 'admin' ? 'Make user' : 'Make admin'}</button>
+          </div>
+          <div class="risk-detail"></div>
         </div>`);
       row.querySelector('.toggle').addEventListener('click', async () => {
         try { await window.QuestoraAPI.api.patch(`/api/v1/admin/users/${u.id}`, { role: u.role === 'admin' ? 'user' : 'admin', reason: 'Role changed from admin panel' }); toast('Role updated'); load(); }
         catch (err) { toast(err.message, true); }
       });
+      // Risk explainer (Phase 3): the signals behind the account's state.
+      row.querySelector('.risk').addEventListener('click', async () => {
+        const slot = row.querySelector('.risk-detail');
+        if (slot.childElementCount) { slot.replaceChildren(); return; }
+        try {
+          const r = await window.QuestoraAPI.api.get(`/api/v1/admin/users/${u.id}/risk`);
+          const panel = el('<div class="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3 mt-1 mb-2 mx-1 text-sm"></div>');
+          panel.appendChild(el(`<p class="text-xs text-zinc-500 mb-2">Signals for @${escapeHtml(r.user.username)}. State: ${escapeHtml(r.user.risk_state)}. The engine only escalates; clear it here:</p>`));
+          const clear = el('<button class="text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 mb-2">Reset state to normal</button>');
+          clear.addEventListener('click', async () => {
+            try { await window.QuestoraAPI.api.patch(`/api/v1/admin/users/${u.id}`, { risk_state: 'normal', reason: 'Risk state cleared from admin panel' }); toast('State reset'); load(); }
+            catch (err) { toast(err.message, true); }
+          });
+          panel.appendChild(clear);
+          const list = el('<div class="space-y-1"></div>');
+          if (!r.signals.length) list.appendChild(el('<p class="text-zinc-600">No signals recorded. The engine watches completion velocity, duplicate proof hashes and referral graphs.</p>'));
+          for (const s of r.signals) {
+            const d = s.detail || {};
+            list.appendChild(el(`<div class="flex items-center justify-between gap-3 rounded-lg border border-zinc-800 px-3 py-2">
+              <span class="min-w-0"><span class="block text-zinc-200">${escapeHtml(String(s.signal).replace(/_/g, ' '))}${s.signal_key ? ' <span class="text-zinc-600 font-mono text-xs">' + escapeHtml(s.signal_key) + '</span>' : ''}</span>
+              <span class="block text-xs text-zinc-600">${escapeHtml(d.reason || d.detail || '')} · ${new Date(s.created_at).toLocaleString()}</span></span>
+              <span class="font-mono text-xs ${s.severity >= 3 ? 'text-red-300' : 'text-amber-300'}">+${s.severity}</span>
+            </div>`));
+          }
+          panel.appendChild(list);
+          slot.appendChild(panel);
+        } catch (err) { toast(err.message, true); }
+      });
       ul.appendChild(row);
     }
     body.appendChild(usersSec);
+
+    // Seasons (Phase 3): list + create form.
+    let seasonsRes = { seasons: [] };
+    try { seasonsRes = await window.QuestoraAPI.api.get('/api/v1/admin/seasons'); } catch {}
+    const seaSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Seasons</h2><div class="s-list space-y-2 mb-3"></div><div class="grid md:grid-cols-4 gap-2"><input class="s-name rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none" placeholder="Season name"><input class="s-start rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none" type="datetime-local" aria-label="Starts at"><input class="s-end rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none" type="datetime-local" aria-label="Ends at"><input class="s-mult rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none" type="number" step="0.1" min="0.1" max="10" value="1" aria-label="XP multiplier"></div><button class="save-season mt-3 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-violet-600 text-white">Create season</button></section>');
+    const sl = seaSec.querySelector('.s-list');
+    if (!seasonsRes.seasons.length) sl.appendChild(el('<p class="text-sm text-zinc-600">No seasons yet. XP is not boosted until one is active.</p>'));
+    for (const s of seasonsRes.seasons) {
+      sl.appendChild(el(`<div class="flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+        <span class="min-w-0"><span class="block text-sm font-medium truncate">${escapeHtml(s.name)}</span>
+        <span class="block text-xs text-zinc-600">${new Date(s.starts_at).toLocaleDateString()} to ${new Date(s.ends_at).toLocaleDateString()} · ${Number(s.xp_multiplier)}x XP</span></span>
+        ${statePill(s.status || '')}
+      </div>`));
+    }
+    seaSec.querySelector('.save-season').addEventListener('click', async () => {
+      const name = seaSec.querySelector('.s-name').value.trim();
+      const start = seaSec.querySelector('.s-start').value;
+      const end = seaSec.querySelector('.s-end').value;
+      const mult = seaSec.querySelector('.s-mult').value;
+      if (!name || !start || !end) { toast('Name, start and end dates are required'); return; }
+      try {
+        await window.QuestoraAPI.api.post('/api/v1/admin/seasons', {
+          name,
+          starts_at: new Date(start).toISOString(),
+          ends_at: new Date(end).toISOString(),
+          xp_multiplier: Number(mult) || 1,
+        });
+        toast('Season created');
+        load();
+      } catch (err) { toast(err.message, true); }
+    });
+    body.appendChild(seaSec);
 
     const campSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Campaigns</h2><div class="c-list space-y-2"></div></section>');
     const cl = campSec.querySelector('.c-list');
@@ -902,8 +1178,8 @@ async function viewAdmin() {
   load();
 }
 
-window.QV = { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
+window.QV = { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewTeams, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
 
 bindQUI();
-return { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
+return { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewTeams, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
 })();
