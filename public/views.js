@@ -19,7 +19,13 @@ async function loadMe() {
 async function viewDiscover() {
   const wrap = el('<div></div>');
   app().replaceChildren(wrap);
-  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">Explore</h1><p class="text-sm text-zinc-500 mb-6">Campaigns you can join right now.</p></div>'));
+  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">Explore</h1><p class="text-sm text-zinc-500 mb-4">Campaigns you can join right now.</p></div>'));
+  const searchForm = el(`
+    <form action="/search" method="get" class="flex gap-2 mb-6 max-w-xl">
+      <input type="search" name="q" value="${escapeHtml(new URLSearchParams(window.location.search).get('q') || '')}" placeholder="Search projects, campaigns, quests, people" class="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500">
+      <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Search</button>
+    </form>`);
+  wrap.appendChild(searchForm);
   let data;
   try {
     data = await window.QuestoraAPI.api.get('/api/v1/discover');
@@ -251,7 +257,8 @@ async function viewQuest(id) {
 }
 
 // ---------- profile ----------
-async function viewProfile(username) {
+async function viewProfile(username, params) {
+  params = params || new URLSearchParams();
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-zinc-900"></div></div>');
   app().replaceChildren(wrap);
   let data;
@@ -265,7 +272,7 @@ async function viewProfile(username) {
   const node = el(`
     <div>
       <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 mb-6 flex items-center gap-5">
-        ${levelRing(u.level, progress)}
+        <div class="level-ring-slot"></div>
         <div class="min-w-0">
           <h1 class="text-xl font-bold">${escapeHtml(u.display_name || u.username)}</h1>
           <p class="text-sm text-zinc-500">@${escapeHtml(u.username)}</p>
@@ -278,17 +285,36 @@ async function viewProfile(username) {
       <div class="tabs flex gap-2 mb-4">
         <button data-tab="activity" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Activity</button>
         <button data-tab="badges" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Badges</button>
+        <button data-tab="credentials" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Credentials</button>
       </div>
       <div class="tab-body"></div>
+      <div class="invite-slot mt-6"></div>
     </div>`);
   wrap.replaceChildren(node);
+  // levelRing builds a DOM node, so it is inserted here rather than
+  // interpolated into the template above (which would stringify it).
+  node.querySelector('.level-ring-slot').appendChild(levelRing(u.level, progress));
   const body = node.querySelector('.tab-body');
+  const inviteSlot = node.querySelector('.invite-slot');
   function show(tab) {
     node.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === tab;
       b.className = 'tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium ' + (on ? 'bg-violet-600 text-white' : 'bg-zinc-800/70 text-zinc-400');
     });
     body.replaceChildren();
+    if (tab === 'credentials') {
+      if (!data.credentials.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No credentials yet. Finish a quest that issues one.</p>')); return; }
+      const list = el('<div class="space-y-2"></div>');
+      for (const c of data.credentials) {
+        list.appendChild(el(`
+          <a href="/credentials/${escapeHtml(c.id)}" class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
+            <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(c.title)}</span><span class="block text-xs text-zinc-600">${escapeHtml(c.issuer_name || 'Questora')} · ${new Date(c.issued_at).toLocaleDateString()}</span></span>
+            ${c.revoked_at ? statePill('rejected') : badgePill('Verified')}
+          </a>`));
+      }
+      body.appendChild(list);
+      return;
+    }
     if (tab === 'badges') {
       if (!data.badges.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No badges yet. Complete quests to earn them.</p>')); return; }
       const grid = el('<div class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>');
@@ -306,7 +332,32 @@ async function viewProfile(username) {
     }
   }
   node.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
-  show('activity');
+  show(params.get('tab') === 'badges' || params.get('tab') === 'credentials' ? params.get('tab') : 'activity');
+
+  // Own profile: the invite block (Phase 2 referrals).
+  const meData = await loadMe();
+  if (meData && meData.user && (meData.user.username || '').toLowerCase() === String(username).toLowerCase()) {
+    let inv;
+    try { inv = await window.QuestoraAPI.api.get('/api/v1/referrals/me'); } catch { inv = null; }
+    if (inv && inv.code) {
+      const joinLink = window.location.origin + '/join?ref=' + encodeURIComponent(inv.code);
+      const card = el(`
+        <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+          <h2 class="font-semibold mb-1">Invite friends</h2>
+          <p class="text-sm text-zinc-500 mb-3">Share your link. When someone you invite finishes ${inv.qualification_quests} quests, you get +${inv.xp_reward} XP.</p>
+          <div class="flex flex-col sm:flex-row gap-2">
+            <input readonly value="${escapeHtml(joinLink)}" class="invite-link flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-300 focus:outline-none">
+            <button class="copy shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Copy link</button>
+          </div>
+          ${inv.referrals.length ? `<p class="text-xs text-zinc-600 mt-3">${inv.referrals.length} invited · ${inv.referrals.filter(r => r.status === 'qualified').length} qualified</p>` : ''}
+        </div>`);
+      card.querySelector('.copy').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(joinLink); toast('Invite link copied'); }
+        catch { card.querySelector('.invite-link').select(); document.execCommand('copy'); toast('Invite link copied'); }
+      });
+      inviteSlot.appendChild(card);
+    }
+  }
 }
 
 // ---------- leaderboard ----------
@@ -389,6 +440,7 @@ async function viewCreate() {
             </select>
             <div class="task-extra mt-3"></div>
           </div>
+          <input class="q-cred w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Credential title (optional, e.g. Basics Certified)">
         </div>
       </section>
       <button class="publish w-full font-semibold px-5 py-3 min-h-[48px] rounded-xl bg-violet-600 hover:bg-violet-500 text-white">Publish campaign</button>
@@ -433,6 +485,7 @@ async function viewCreate() {
       }
       const quest = await window.QuestoraAPI.api.post(`/api/v1/campaigns/${camp.campaign.id}/quests`, {
         title: v('.q-title'), xp_reward: parseInt(v('.q-xp'), 10) || 0, points_reward: Math.round((parseInt(v('.q-xp'), 10) || 0) / 2), tasks: [task],
+        credential_title: v('.q-cred') || undefined,
       });
       toast('Campaign published');
       location.hash = '';
@@ -447,7 +500,8 @@ async function viewCreate() {
 }
 
 // ---------- project (owner view) ----------
-async function viewProject(slug) {
+async function viewProject(slug, params) {
+  params = params || new URLSearchParams();
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-24 rounded-2xl bg-zinc-900"></div></div>');
   app().replaceChildren(wrap);
   let data;
@@ -463,6 +517,7 @@ async function viewProject(slug) {
       </div>
       <div class="tabs flex gap-2 mb-4">
         <button data-tab="campaigns" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Campaigns</button>
+        <button data-tab="points" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Points</button>
         <button data-tab="review" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Review queue</button>
         <button data-tab="analytics" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Analytics</button>
       </div>
@@ -477,6 +532,31 @@ async function viewProject(slug) {
       b.className = 'tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium ' + (on ? 'bg-violet-600 text-white' : 'bg-zinc-800/70 text-zinc-400');
     });
     body.replaceChildren();
+    if (tab === 'points') {
+      body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading points…</p>'));
+      let lb;
+      try { lb = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/leaderboard`); }
+      catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+      body.replaceChildren();
+      if (!lb.entries.length) {
+        body.appendChild(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400 mb-1">No points earned yet.</p><p class="text-sm text-zinc-600">Complete quests from this project's campaigns to appear on its board.</p></div>`));
+        return;
+      }
+      if (lb.system && lb.system.name) {
+        body.appendChild(el(`<p class="text-xs text-zinc-600 mb-2 px-1">${escapeHtml(lb.system.name)}</p>`));
+      }
+      const list = el('<div class="space-y-2"></div>');
+      lb.entries.forEach((e, i) => {
+        list.appendChild(el(`
+          <a href="/u/${encodeURIComponent(e.username)}" class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
+            <span class="w-8 text-center font-bold ${i === 0 ? 'text-violet-300' : 'text-zinc-500'}">${i + 1}</span>
+            <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(e.display_name || e.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(e.username)}</span></span>
+            <span class="ml-auto font-mono text-violet-300">${e.score.toLocaleString()}</span>
+          </a>`));
+      });
+      body.appendChild(list);
+      return;
+    }
     if (tab === 'campaigns') {
       if (!data.campaigns.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No campaigns yet. Create one from the Create page.</p>')); return; }
       const grid = el('<div class="grid md:grid-cols-3 gap-4"></div>');
@@ -549,7 +629,8 @@ async function viewProject(slug) {
     }
   }
   node.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
-  show('campaigns');
+  const startTab = params.get('tab');
+  show(['campaigns', 'points', 'review', 'analytics'].includes(startTab) ? startTab : 'campaigns');
 }
 
 // ---------- notifications ----------
@@ -583,7 +664,7 @@ async function viewNotifications() {
         <button class="save mt-4 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-violet-600 text-white">Save preferences</button>
       </div>`);
     const holder = panel.querySelector('.space-y-2');
-    const kinds = [['quest_completed', 'Quest completed'], ['badge_earned', 'Badge earned'], ['level_up', 'Level up'], ['submission_rejected', 'Submission rejected'], ['campaign_completed', 'Campaign completed']];
+    const kinds = [['quest_completed', 'Quest completed'], ['badge_earned', 'Badge earned'], ['level_up', 'Level up'], ['submission_rejected', 'Submission rejected'], ['campaign_completed', 'Campaign completed'], ['credential_earned', 'Credential issued'], ['referral_qualified', 'Invite qualified']];
     for (const [k, label] of kinds) {
       holder.appendChild(el(`<label class="flex items-center gap-3 rounded-lg border border-zinc-800 px-4 py-3 min-h-[44px] cursor-pointer"><input type="checkbox" data-kind="${k}" class="accent-violet-500" ${muted.includes(k) ? '' : 'checked'}><span class="text-sm">${label}</span></label>`));
     }
@@ -596,6 +677,138 @@ async function viewNotifications() {
     wrap.appendChild(panel);
   });
   window.QuestoraAPI.api.post('/api/v1/notifications/read').catch(() => {});
+}
+
+// ---------- search (Phase 2) ----------
+async function viewSearch(params) {
+  const q = params.get('q') || '';
+  const wrap = el('<div></div>');
+  app().replaceChildren(wrap);
+  wrap.appendChild(el('<h1 class="text-2xl font-bold mb-4">Search</h1>'));
+  const form = el(`
+    <form action="/search" method="get" class="flex gap-2 mb-6 max-w-xl">
+      <input type="search" name="q" value="${escapeHtml(q)}" placeholder="Search projects, campaigns, quests, people" class="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500">
+      <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Search</button>
+    </form>`);
+  wrap.appendChild(form);
+  if (!q.trim()) {
+    wrap.appendChild(el('<p class="text-sm text-zinc-600">Type something to search across projects, campaigns, quests and people.</p>'));
+    return;
+  }
+  const body = el('<div class="space-y-8"></div>');
+  wrap.appendChild(body);
+  let data;
+  try { data = await window.QuestoraAPI.api.get('/api/v1/search?q=' + encodeURIComponent(q)); }
+  catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+
+  function section(label, rows, renderRow, empty) {
+    const sec = el(`<section><h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">${escapeHtml(label)}</h2><div class="space-y-2"></div></section>`);
+    const holder = sec.querySelector('div');
+    if (!rows.length) holder.appendChild(el(`<p class="text-sm text-zinc-600 px-1">${escapeHtml(empty)}</p>`));
+    for (const r of rows) holder.appendChild(renderRow(r));
+    body.appendChild(sec);
+  }
+  section('People', data.users, u => el(`
+    <a href="/u/${encodeURIComponent(u.username)}" class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
+      <span class="w-8 h-8 rounded-full bg-violet-600/30 flex items-center justify-center text-xs font-bold text-violet-200">${escapeHtml((u.display_name || u.username).slice(0, 2).toUpperCase())}</span>
+      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(u.display_name || u.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(u.username)}</span></span>
+    </a>`), 'No people match.');
+  section('Projects', data.projects, p => el(`
+    <a href="/p/${encodeURIComponent(p.slug)}" class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
+      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(p.name)}</span><span class="block text-xs text-zinc-600 truncate">${escapeHtml(p.description || '')}</span></span>
+    </a>`), 'No projects match.');
+  section('Campaigns', data.campaigns, c => el(`
+    <a href="/campaigns/${encodeURIComponent(c.slug)}" class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
+      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(c.name)}</span><span class="block text-xs text-zinc-600">${escapeHtml(c.project_name)}</span></span>
+      <span class="text-sm text-violet-300 font-medium shrink-0">+${c.total_xp} XP</span>
+    </a>`), 'No live campaigns match.');
+  section('Quests', data.quests, q => el(`
+    <a href="/quest/${q.id}" class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
+      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(q.title)}</span><span class="block text-xs text-zinc-600">${escapeHtml(q.campaign_name)}</span></span>
+      <span class="text-sm text-violet-300 font-medium shrink-0">+${q.xp_reward} XP</span>
+    </a>`), 'No quests match.');
+}
+
+// ---------- join via invite (Phase 2) ----------
+async function viewJoin(params) {
+  const ref = params.get('ref') || '';
+  const wrap = el('<div></div>');
+  app().replaceChildren(wrap);
+  const meData = await loadMe().catch(() => null);
+  const node = el(`
+    <div class="max-w-md mx-auto">
+      <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center" id="join-card">
+        <div class="text-3xl mb-3">🏅</div>
+        <h1 class="text-xl font-bold mb-1">Join Questora</h1>
+        <p class="text-sm text-zinc-500 mb-5" id="join-copy">Complete quests, earn XP and points, unlock badges.</p>
+        <div id="join-action"></div>
+      </div>
+    </div>`);
+  wrap.appendChild(node);
+  const action = node.querySelector('#join-action');
+  const copy = node.querySelector('#join-copy');
+
+  if (!meData) {
+    action.appendChild(el('<a href="/" class="inline-block font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Open Questora</a>'));
+    return;
+  }
+  if (!ref.trim()) {
+    action.appendChild(el('<a href="/" class="inline-block font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Explore campaigns</a>'));
+    return;
+  }
+  const btn = el('<button class="font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Join now</button>');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true; btn.textContent = 'Joining…';
+    try {
+      const r = await window.QuestoraAPI.api.post('/api/v1/referrals/claim', { code: ref });
+      copy.textContent = 'You joined under @' + r.referrer_username + '. Complete quests to finish your invite.';
+      btn.remove();
+    } catch (err) {
+      copy.textContent = err.message;
+      btn.remove();
+    }
+  });
+  action.appendChild(btn);
+  // Say who sent the invite before committing to it.
+  try {
+    const p = await window.QuestoraAPI.api.get('/api/v1/referrals/preview/' + encodeURIComponent(ref));
+    copy.textContent = 'Invited by @' + p.username + '. Complete quests, earn XP and points, unlock badges.';
+  } catch (e) { /* keep the default copy */ }
+}
+
+// ---------- public credential page (Phase 2) ----------
+async function viewCredential(id) {
+  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-32 rounded-2xl bg-zinc-900"></div></div>');
+  app().replaceChildren(wrap);
+  let data;
+  try { data = await window.QuestoraAPI.api.get('/api/v1/credentials/' + encodeURIComponent(id)); }
+  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  const c = data.credential;
+  const criteriaText = c.criteria && (c.criteria.description || c.criteria.quest_title);
+  const node = el(`
+    <div class="max-w-xl mx-auto">
+      <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center mb-6">
+        <div class="text-4xl mb-3">🎖️</div>
+        <h1 class="text-xl font-bold mb-1">${escapeHtml(c.title)}</h1>
+        <p class="text-sm text-zinc-500 mb-4">Issued ${new Date(c.issued_at).toLocaleDateString()}${c.revoked ? ' · Revoked' : ''}</p>
+        ${c.revoked ? statePill('rejected') : badgePill('Verified')}
+        <div class="mt-6 space-y-3 text-left">
+          <div class="rounded-xl border border-zinc-800 px-4 py-3">
+            <p class="text-xs text-zinc-500">Issued by</p>
+            ${c.issuer ? `<a href="/p/${escapeHtml(c.issuer.slug)}" class="font-medium text-violet-300 hover:underline">${escapeHtml(c.issuer.name)}</a>` : '<span class="font-medium">Questora</span>'}
+          </div>
+          <div class="rounded-xl border border-zinc-800 px-4 py-3">
+            <p class="text-xs text-zinc-500">Held by</p>
+            <a href="/u/${escapeHtml(c.recipient.username)}" class="font-medium text-violet-300 hover:underline">${escapeHtml(c.recipient.display_name || c.recipient.username)}</a>
+            <span class="text-sm text-zinc-600"> @${escapeHtml(c.recipient.username)}</span>
+          </div>
+          ${criteriaText ? `<div class="rounded-xl border border-zinc-800 px-4 py-3"><p class="text-xs text-zinc-500">Criteria</p><p class="text-sm text-zinc-300">${escapeHtml(criteriaText)}</p></div>` : ''}
+          ${c.expires_at ? `<div class="rounded-xl border border-zinc-800 px-4 py-3"><p class="text-xs text-zinc-500">Expires</p><p class="text-sm text-zinc-300">${new Date(c.expires_at).toLocaleDateString()}</p></div>` : ''}
+        </div>
+      </div>
+      <p class="text-xs text-zinc-600 text-center break-all">Credential ID: ${escapeHtml(c.id)}</p>
+    </div>`);
+  wrap.replaceChildren(node);
 }
 
 // ---------- admin ----------
@@ -689,8 +902,8 @@ async function viewAdmin() {
   load();
 }
 
-window.QV = { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewCreate, viewProject, viewNotifications, viewAdmin, loadMe };
+window.QV = { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
 
 bindQUI();
-return { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewCreate, viewProject, viewNotifications, viewAdmin, loadMe };
+return { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
 })();

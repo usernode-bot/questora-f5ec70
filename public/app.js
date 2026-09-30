@@ -43,13 +43,16 @@
       if (path === '/create') return await V.viewCreate();
       if (path === '/me') {
         const meData = await V.loadMe();
-        return await V.viewProfile(meData ? meData.user.username : 'me');
+        return await V.viewProfile(meData ? meData.user.username : 'me', params);
       }
       let m;
       if ((m = path.match(/^\/campaigns\/([^/]+)$/))) return await V.viewCampaign(decodeURIComponent(m[1]));
       if ((m = path.match(/^\/quest\/(\d+)$/))) return await V.viewQuest(m[1]);
-      if ((m = path.match(/^\/u\/([^/]+)$/))) return await V.viewProfile(decodeURIComponent(m[1]));
-      if ((m = path.match(/^\/p\/([^/]+)$/))) return await V.viewProject(decodeURIComponent(m[1]));
+      if ((m = path.match(/^\/u\/([^/]+)$/))) return await V.viewProfile(decodeURIComponent(m[1]), params);
+      if ((m = path.match(/^\/p\/([^/]+)$/))) return await V.viewProject(decodeURIComponent(m[1]), params);
+      if ((m = path.match(/^\/credentials\/([0-9a-fA-F-]{36})$/))) return await V.viewCredential(m[1]);
+      if (path === '/join') return await V.viewJoin(params);
+      if (path === '/search') return await V.viewSearch(params);
       if (path === '/notifications') return await V.viewNotifications();
       if (path === '/admin') return await V.viewAdmin();
       return await V.viewDiscover();

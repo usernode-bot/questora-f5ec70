@@ -29,7 +29,7 @@ async function awardXp(client, userId, amount, sourceType, sourceId) {
   return { awarded: allowed, capped: allowed < amount };
 }
 
-async function awardPoints(client, userId, amount, sourceType, sourceId) {
+async function awardPoints(client, userId, amount, sourceType, sourceId, extraSystemId) {
   if (!amount) return { awarded: 0 };
   const sys = await client.query("SELECT id FROM points_systems WHERE key = 'global' LIMIT 1");
   if (!sys.rows.length) return { awarded: 0 };
@@ -40,7 +40,20 @@ async function awardPoints(client, userId, amount, sourceType, sourceId) {
      RETURNING amount`,
     [sys.rows[0].id, userId, amount, sourceType, sourceId]
   );
-  return { awarded: ins.rows.length ? amount : 0 };
+  // Project points systems (Phase 2): the same event also lands on the
+  // project's own leaderboard, which is a separate tally.
+  let projectAwarded = 0;
+  if (extraSystemId && extraSystemId !== sys.rows[0].id) {
+    const pIns = await client.query(
+      `INSERT INTO points_events (system_id, user_id, amount, source_type, source_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (source_type, source_id, user_id, system_id) DO NOTHING
+       RETURNING amount`,
+      [extraSystemId, userId, amount, sourceType, sourceId]
+    );
+    projectAwarded = pIns.rows.length ? amount : 0;
+  }
+  return { awarded: ins.rows.length ? amount : 0, project_awarded: projectAwarded };
 }
 
 async function awardBadge(client, userId, badgeId, sourceType, sourceId) {
@@ -89,7 +102,7 @@ async function completeQuest(questId, userId) {
     }
 
     const camp = await client.query(
-      'SELECT xp_multiplier FROM campaigns WHERE id = $1', [quest.campaign_id]);
+      'SELECT xp_multiplier, project_id FROM campaigns WHERE id = $1', [quest.campaign_id]);
     const mult = camp.rows[0] ? Number(camp.rows[0].xp_multiplier) : 1;
     const xp = Math.round(quest.xp_reward * mult);
 
@@ -99,7 +112,15 @@ async function completeQuest(questId, userId) {
       [questId, userId, xp]
     );
     const xpRes = await awardXp(client, userId, xp, 'quest', questId);
-    const ptsRes = await awardPoints(client, userId, quest.points_reward, 'quest', questId);
+    // Points go to the global tally and, when the project has its own points
+    // system, to that project's leaderboard too.
+    let projectSystemId = null;
+    if (camp.rows[0] && camp.rows[0].project_id) {
+      const ps = await client.query(
+        'SELECT id FROM points_systems WHERE project_id = $1 LIMIT 1', [camp.rows[0].project_id]);
+      projectSystemId = ps.rows.length ? ps.rows[0].id : null;
+    }
+    const ptsRes = await awardPoints(client, userId, quest.points_reward, 'quest', questId, projectSystemId);
 
     // Quest-level badge reward, configured as quest.badge_reward via rewards
     // rows (kind = badge, quest_id set).
@@ -109,6 +130,28 @@ async function completeQuest(questId, userId) {
     let badge = false;
     if (badgeRew.rows[0] && badgeRew.rows[0].badge_id) {
       badge = await awardBadge(client, userId, Number(badgeRew.rows[0].badge_id), 'quest', questId);
+    }
+
+    // Credential rewards (Phase 2): a rewards row of kind 'credential' issues
+    // one credential per completion, whose public id is the UUID page id.
+    let credentialId = null;
+    const credRew = await client.query(
+      `SELECT r.config->>'title' AS title FROM rewards r
+       WHERE r.quest_id = $1 AND r.kind = 'credential' LIMIT 1`, [questId]);
+    if (credRew.rows[0] && credRew.rows[0].title) {
+      const cr = await client.query(
+        `INSERT INTO credentials (issuer_project_id, recipient_user_id, title, criteria)
+         VALUES ((SELECT project_id FROM campaigns WHERE id = $1), $2, $3, $4)
+         RETURNING id`,
+        [quest.campaign_id, userId, String(credRew.rows[0].title).slice(0, 255),
+          JSON.stringify({ quest_id: questId, quest_title: quest.title })]
+      );
+      credentialId = cr.rows[0].id;
+      await client.query(
+        `INSERT INTO notifications (user_id, type, title, body, link)
+         VALUES ($1, 'credential_earned', 'Credential issued', $2, $3)`,
+        [userId, `${credRew.rows[0].title} is on your profile.`, '/credentials/' + credentialId]
+      );
     }
 
     await client.query(
@@ -136,8 +179,13 @@ async function completeQuest(questId, userId) {
       }
     }
 
+    // Referral qualification (Phase 2): does this completion push the
+    // referee past the invite threshold?
+    const referrals = require('./referrals');
+    const referral = await referrals.checkQualification(client, userId);
+
     await client.query('COMMIT');
-    return { completed: true, xp: xpRes.awarded, points: ptsRes.awarded, badge };
+    return { completed: true, xp: xpRes.awarded, points: ptsRes.awarded, badge, credential_id: credentialId, referral };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;

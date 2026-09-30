@@ -315,6 +315,8 @@ async function migrate() {
   const client = await pool.connect();
   try {
     await client.query(SCHEMA);
+    // Phase 2: stable per-user referral code for /join?ref= links.
+    await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_code VARCHAR(20) UNIQUE');
     // Fresh schemas lack gen_random_uuid (pgcrypto) on older servers.
     await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto').catch(() => {});
     for (const t of PRIVATE_TABLES) {

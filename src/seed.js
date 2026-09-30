@@ -97,7 +97,7 @@ async function upsertBadge(projectId, key, name, icon, rarity, description) {
   return rows[0].id;
 }
 
-async function completeQuest(questId, userId, xp) {
+async function completeQuest(questId, userId, xp, projectSystemId) {
   await pool.query(
     `INSERT INTO quest_completions (quest_id, user_id, status, xp_awarded)
      VALUES ($1, $2, 'completed', $3) ON CONFLICT (quest_id, user_id) DO NOTHING`,
@@ -114,6 +114,14 @@ async function completeQuest(questId, userId, xp) {
      ON CONFLICT (source_type, source_id, user_id, system_id) DO NOTHING`,
     [userId, Math.round(xp / 2), questId]
   );
+  if (projectSystemId) {
+    await pool.query(
+      `INSERT INTO points_events (system_id, user_id, amount, source_type, source_id)
+       VALUES ($1, $2, $3, 'quest', $4)
+       ON CONFLICT (source_type, source_id, user_id, system_id) DO NOTHING`,
+      [projectSystemId, userId, Math.round(xp / 2), questId]
+    );
+  }
 }
 
 async function seed() {
@@ -135,11 +143,23 @@ async function seed() {
   ];
   const userIds = {};
   for (const u of USERS) userIds[u.username] = await upsertUser(u.username, u.display_name);
+  // Deterministic invite codes for the demo users (Phase 2 referral demo).
+  for (let i = 1; i <= 6; i++) {
+    await pool.query(
+      `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL`,
+      [`demo-ref-${i}`, `staging-demo-user-${i}`]);
+  }
   const projectIds = {};
+  const projectSystemIds = {};
   for (const p of projectDefs) {
     projectIds[p.name] = await upsertProject(
       userIds[`staging-demo-user-${p.user}`], p.name,
       { description: p.description, logo_url: p.logo_url, website: p.website });
+    const sys = await pool.query(
+      `INSERT INTO points_systems (project_id, key, name) VALUES ($1, 'default', $2)
+       ON CONFLICT (project_id, key) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+      [projectIds[p.name], p.name + ' points']);
+    projectSystemIds[p.name] = sys.rows[0].id;
   }
 
   // 8 badges: one platform badge + project badges, mixed rarities.
@@ -213,11 +233,29 @@ async function seed() {
     { type: 'social', title: 'Follow', config: { url: 'https://example.com/nova', action: 'follow' } },
   ]);
 
-  // User history: users 1-3 complete the whole Welcome Campaign.
+  // Credential rewards (Phase 2): completing the quiz quest issues one.
+  await pool.query(
+    `INSERT INTO rewards (quest_id, kind, config)
+     SELECT $1, 'credential', '{"title": "Staging demo Questora Basics Credential"}'::jsonb
+     WHERE NOT EXISTS (SELECT 1 FROM rewards WHERE quest_id = $1 AND kind = 'credential')`,
+    [q3]);
+  // One seeded credential with a fixed UUID so the public page is a stable
+  // deep link in staging.
+  await pool.query(
+    `INSERT INTO credentials (id, issuer_project_id, recipient_user_id, title, criteria)
+     VALUES ('00000000-0000-4000-8000-000000000001', $1, $2,
+             'Staging demo Welcome Credential',
+             '{"description": "Completed every required quest in the Staging demo Welcome Campaign."}'::jsonb)
+     ON CONFLICT (id) DO NOTHING`,
+    [projectIds['Staging demo Octra Builders'], userIds['staging-demo-user-1']]);
+
+  // User history: users 1-3 complete the whole Welcome Campaign, feeding
+  // both the global and the Octra Builders project points boards.
   const welcomeQuests = [q1, q2, q3];
+  const octraSystemId = projectSystemIds['Staging demo Octra Builders'];
   for (const uname of ['staging-demo-user-1', 'staging-demo-user-2', 'staging-demo-user-3']) {
     const uid = userIds[uname];
-    for (const qid of welcomeQuests) await completeQuest(qid, uid, 100);
+    for (const qid of welcomeQuests) await completeQuest(qid, uid, 100, octraSystemId);
     await pool.query(
       `INSERT INTO user_badges (user_id, badge_id, source_type, source_id)
        VALUES ($1, $2, 'quest', $3) ON CONFLICT (user_id, badge_id) DO NOTHING`,
@@ -245,6 +283,30 @@ async function seed() {
      VALUES ($1, 'submission_rejected', 'Submission rejected', $2, $3)`,
     [u6, 'Your quiz score was below the pass threshold. You can retake it.', '/quest/' + q3]
   );
+
+  // Referrals (Phase 2): one qualified (user 3 finished 3 quests via
+  // user 1's invite, referrer paid once) and one still pending (user 5 has
+  // not completed any quests yet).
+  const refQualified = await pool.query(
+    `INSERT INTO referrals (referrer_user_id, referee_user_id, code, status, qualified_at, rewarded_at)
+     VALUES ($1, $2, 'demo-ref-1', 'qualified', NOW(), NOW())
+     ON CONFLICT (referee_user_id) DO NOTHING RETURNING id`,
+    [userIds['staging-demo-user-1'], userIds['staging-demo-user-3']]);
+  if (refQualified.rows.length) {
+    await pool.query(
+      `INSERT INTO xp_events (user_id, amount, source_type, source_id)
+       VALUES ($1, 100, 'referral', $2) ON CONFLICT (source_type, source_id, user_id) DO NOTHING`,
+      [userIds['staging-demo-user-1'], refQualified.rows[0].id]);
+    await pool.query(
+      `INSERT INTO notifications (user_id, type, title, body)
+       VALUES ($1, 'referral_qualified', 'Invite qualified', $2)`,
+      [userIds['staging-demo-user-1'], '@staging-demo-user-3 finished 3 quests. +100 XP.']);
+  }
+  await pool.query(
+    `INSERT INTO referrals (referrer_user_id, referee_user_id, code, status)
+     VALUES ($1, $2, 'demo-ref-2', 'pending')
+     ON CONFLICT (referee_user_id) DO NOTHING`,
+    [userIds['staging-demo-user-2'], userIds['staging-demo-user-5']]);
 
   console.log('[seed] staging demo data ready');
 }
