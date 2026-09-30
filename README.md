@@ -24,6 +24,15 @@ verified server-side, and earn XP, points, badges and leaderboard position.
 - **Project dashboard**: participants, review queue (approve/reject with
   required reason), analytics
 - **Notifications** with per-category preferences
+- **Public credential pages** at `/credentials/{id}`: verifiable achievement
+  cards (issuer, recipient, criteria, expiry) reachable without signing in
+- **Project points systems**: each project has its own points ledger and
+  leaderboard (on the project page's Points tab), separate from global XP
+- **Referrals**: share `/join?ref={code}` from the profile invite card;
+  the referee qualifies by completing quests (checked server-side, count
+  configurable by admins) and the referrer is paid XP exactly once
+- **Full-text search** at `/search` across people, projects, campaigns
+  and quests
 - **Admin** section: users, roles, campaign pause/archive, global review
   queue, level thresholds, audit log (who, what, when, before, after)
 
@@ -62,6 +71,7 @@ DATABASE_URL=postgres://... USERNODE_ENV=staging node server.js
 DATABASE_URL=postgres://... USERNODE_ENV=staging npm test
 ```
 
-Unit tests cover the verifier registry, level curve and helpers. The
-integration test boots the real migration + staging seed block against the
-scratch database and proves reward idempotency and private-table marking.
+Unit tests cover the verifier registry, level curve, helpers and referral
+rule defaults. The integration test boots the real migration + staging seed
+block against the scratch database and proves reward idempotency, private
+table marking, credential issuance and the referral claim/qualify flow.

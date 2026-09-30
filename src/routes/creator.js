@@ -71,6 +71,12 @@ router.post('/projects', async (req, res) => {
       'INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)',
       [p.rows[0].id, owner, 'owner']
     );
+    // Every project gets its own points system (Phase 2), so its quests
+    // feed a project leaderboard as well as the global one.
+    await client.query(
+      `INSERT INTO points_systems (project_id, key, name) VALUES ($1, 'default', $2)`,
+      [p.rows[0].id, String(name).trim().slice(0, 240) + ' points']
+    );
     await client.query('COMMIT');
     res.json({ project: p.rows[0] });
   } catch (err) {
@@ -256,6 +262,12 @@ router.post('/campaigns/:id/quests', async (req, res) => {
         [questId, JSON.stringify({ badge_id: Number(badge_id) })]
       );
     }
+    if (req.body.credential_title && String(req.body.credential_title).trim()) {
+      await client.query(
+        `INSERT INTO rewards (quest_id, kind, config) VALUES ($1, 'credential', $2)`,
+        [questId, JSON.stringify({ title: String(req.body.credential_title).trim().slice(0, 255) })]
+      );
+    }
     await client.query(`INSERT INTO quest_conditions (quest_id, operator, config) VALUES ($1, 'all', '{}')`, [questId]);
     await client.query('COMMIT');
     res.json({ quest: q.rows[0] });
@@ -355,6 +367,25 @@ router.post('/submissions/:id/review', async (req, res) => {
 });
 
 // ---- project analytics (creator view) ----
+// Project points leaderboard (Phase 2). Public within the app: the project
+// page shows it to everyone who can open the project.
+router.get('/projects/:id/leaderboard', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  const sys = await pool.query(
+    'SELECT id, name FROM points_systems WHERE project_id = $1 ORDER BY id LIMIT 1', [p.id]);
+  if (!sys.rows.length) return res.json({ system: null, entries: [] });
+  const { rows } = await pool.query(
+    `SELECT u.username, u.display_name, u.avatar_url, SUM(pe.amount) AS score
+     FROM points_events pe JOIN users u ON u.id = pe.user_id
+     WHERE pe.system_id = $1
+     GROUP BY u.id ORDER BY score DESC LIMIT 50`, [sys.rows[0].id]);
+  res.json({
+    system: { name: sys.rows[0].name },
+    entries: rows.map(r => ({ ...r, score: Number(r.score) })),
+  });
+});
+
 router.get('/projects/:id/analytics', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });

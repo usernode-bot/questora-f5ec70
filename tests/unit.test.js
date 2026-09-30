@@ -53,3 +53,15 @@ test('xp cap math bounds awards', () => {
   const cap = 5000, earned = 4800, amount = 400;
   assert.equal(Math.max(0, Math.min(amount, cap - earned)), 200);
 });
+
+test('referral rules fall back to defaults on missing or invalid settings', () => {
+  const { applyReferralRules, DEFAULT_RULES } = require('../src/referrals');
+  assert.deepEqual(applyReferralRules(null), DEFAULT_RULES);
+  assert.deepEqual(applyReferralRules({}), DEFAULT_RULES);
+  assert.deepEqual(applyReferralRules({ qualification_quests: 5, xp_reward: 250 }),
+    { qualification_quests: 5, xp_reward: 250 });
+  // A zero or negative quest threshold is clamped up to 1; a negative
+  // reward clamps down to 0.
+  assert.equal(applyReferralRules({ qualification_quests: 0 }).qualification_quests, 1);
+  assert.equal(applyReferralRules({ xp_reward: -5 }).xp_reward, 0);
+});

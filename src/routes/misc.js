@@ -37,6 +37,42 @@ router.get('/discover', async (req, res) => {
   });
 });
 
+// ---- search (Phase 2) ----
+router.get('/search', async (req, res) => {
+  const q = String(req.query.q || '').trim().slice(0, 100);
+  if (!q) return res.json({ q, users: [], projects: [], campaigns: [], quests: [] });
+  const like = '%' + q.replace(/([%_])/g, '\\$1') + '%';
+  const [users, projects, campaigns, quests] = await Promise.all([
+    pool.query(
+      `SELECT username, display_name, avatar_url FROM users
+       WHERE username ILIKE $1 OR display_name ILIKE $1
+       ORDER BY username LIMIT 8`, [like]),
+    pool.query(
+      `SELECT slug, name, description, logo_url FROM projects
+       WHERE status = 'active' AND (name ILIKE $1 OR description ILIKE $1)
+       ORDER BY name LIMIT 8`, [like]),
+    pool.query(
+      `SELECT c.slug, c.name, c.category, p.name AS project_name, p.slug AS project_slug,
+              (SELECT COALESCE(SUM(q.xp_reward), 0) FROM quests q WHERE q.campaign_id = c.id) AS total_xp
+       FROM campaigns c JOIN projects p ON p.id = c.project_id
+       WHERE c.status = 'live' AND p.status = 'active' AND (c.name ILIKE $1 OR c.description ILIKE $1)
+       ORDER BY c.name LIMIT 8`, [like]),
+    pool.query(
+      `SELECT q.id, q.title, q.xp_reward, c.slug AS campaign_slug, c.name AS campaign_name
+       FROM quests q JOIN campaigns c ON c.id = q.campaign_id JOIN projects p ON p.id = c.project_id
+       WHERE q.status = 'published' AND c.status = 'live' AND p.status = 'active'
+         AND (q.title ILIKE $1 OR q.description ILIKE $1)
+       ORDER BY q.title LIMIT 8`, [like]),
+  ]);
+  res.json({
+    q,
+    users: users.rows,
+    projects: projects.rows,
+    campaigns: campaigns.rows.map(r => ({ ...r, total_xp: Number(r.total_xp) })),
+    quests: quests.rows,
+  });
+});
+
 // ---- users / profile ----
 router.get('/users/me', async (req, res) => {
   const u = await pool.query('SELECT * FROM users WHERE usernode_id = $1', [req.user.id]);
@@ -79,13 +115,16 @@ router.get('/users/:username', async (req, res) => {
   if (!u.rows.length) return res.status(404).json({ error: 'User not found' });
   const user = u.rows[0];
   const lvl = await levels.userLevel(user.id);
-  const [pts, badges, completed, activity, rank] = await Promise.all([
+  const [pts, badges, completed, activity, credentials, rank] = await Promise.all([
     pool.query(`SELECT COALESCE(SUM(pe.amount), 0) AS p FROM points_events pe JOIN points_systems ps ON ps.id = pe.system_id WHERE pe.user_id = $1 AND ps.key = 'global'`, [user.id]),
     pool.query(`SELECT b.id, b.name, b.icon, b.rarity, b.description, ub.awarded_at FROM user_badges ub JOIN badges b ON b.id = ub.badge_id WHERE ub.user_id = $1 ORDER BY ub.awarded_at DESC`, [user.id]),
     pool.query(`SELECT COUNT(*)::int AS n FROM quest_completions WHERE user_id = $1`, [user.id]),
     pool.query(`SELECT qc.completed_at, q.id AS quest_id, q.title, q.xp_reward, c.name AS campaign_name, c.slug AS campaign_slug
                 FROM quest_completions qc JOIN quests q ON q.id = qc.quest_id JOIN campaigns c ON c.id = q.campaign_id
                 WHERE qc.user_id = $1 ORDER BY qc.completed_at DESC LIMIT 20`, [user.id]),
+    pool.query(`SELECT c.id, c.title, c.criteria, c.issued_at, c.revoked_at, p.name AS issuer_name
+                FROM credentials c LEFT JOIN projects p ON p.id = c.issuer_project_id
+                WHERE c.recipient_user_id = $1 ORDER BY c.issued_at DESC LIMIT 20`, [user.id]),
     pool.query(`WITH totals AS (
       SELECT user_id, SUM(amount) AS xp FROM xp_events GROUP BY user_id
     ) SELECT COUNT(*)::int + 1 AS r FROM totals WHERE xp > $1`, [lvl.xp]),
@@ -99,6 +138,7 @@ router.get('/users/:username', async (req, res) => {
     badges: badges.rows,
     completed_quests: completed.rows[0].n,
     activity: activity.rows,
+    credentials: credentials.rows,
     leaderboard_rank: rank.rows[0].r,
   });
 });

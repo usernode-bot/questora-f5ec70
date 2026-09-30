@@ -40,7 +40,9 @@ function verifyToken(token) {
 // Verifies the platform-issued JWT if one was passed, then enforces auth on
 // anything not explicitly marked public. The iframe adds `?token=` on load;
 // the frontend forwards the token via `x-usernode-token` on fetches.
-function authMiddleware(PUBLIC_API_PATHS) {
+// PUBLIC_API_PATHS is exact-match; PUBLIC_API_PREFIXES is startswith-match
+// (used for shareable read-only resources like credential pages).
+function authMiddleware(PUBLIC_API_PATHS, PUBLIC_API_PREFIXES) {
   return async (req, res, next) => {
     const token = req.query.token || req.headers['x-usernode-token'];
     const claims = verifyToken(token);
@@ -54,6 +56,7 @@ function authMiddleware(PUBLIC_API_PATHS) {
     }
     if (req.method !== 'GET' || req.path.startsWith('/api/')) {
       if (PUBLIC_API_PATHS.has(req.path)) return next();
+      if ((PUBLIC_API_PREFIXES || []).some(p => req.path.startsWith(p))) return next();
       if (!req.user) return res.status(401).json({ error: 'Not authenticated' });
     }
     next();

@@ -38,6 +38,31 @@
       "expectText": "Project"
     },
     {
+      "name": "Public credential page renders",
+      "path": "/credentials/00000000-0000-4000-8000-000000000001",
+      "expectText": "Staging demo Welcome Credential"
+    },
+    {
+      "name": "Search finds seeded content",
+      "path": "/search?q=welcome",
+      "expectText": "Staging demo Welcome Campaign"
+    },
+    {
+      "name": "Join page accepts an invite code",
+      "path": "/join?ref=demo-ref-2",
+      "expectText": "staging-demo-user-2"
+    },
+    {
+      "name": "Project points leaderboard renders",
+      "path": "/p/staging-demo-octra-builders?tab=points",
+      "expectText": "staging-demo-user-1"
+    },
+    {
+      "name": "Profile credentials tab renders",
+      "path": "/u/staging-demo-user-1?tab=credentials",
+      "expectText": "Staging demo Welcome Credential"
+    },
+    {
       "id": "quest.checklist",
       "name": "Quest checklist flow",
       "path": "/campaigns/staging-demo-welcome-campaign",
@@ -46,6 +71,40 @@
       "impact": [
         "public/**",
         "src/**"
+      ]
+    },
+    {
+      "id": "credential.public-page",
+      "name": "Public credential page",
+      "path": "/credentials/00000000-0000-4000-8000-000000000001",
+      "expectText": "Staging demo Welcome Credential",
+      "visual": true,
+      "impact": [
+        "public/**",
+        "src/routes/credentials.js"
+      ]
+    },
+    {
+      "id": "search.results",
+      "name": "Search results",
+      "path": "/search?q=welcome",
+      "expectText": "Staging demo Welcome Campaign",
+      "visual": true,
+      "impact": [
+        "public/views.js",
+        "src/routes/misc.js"
+      ]
+    },
+    {
+      "id": "referral.join",
+      "name": "Join via invite link",
+      "path": "/join?ref=demo-ref-2",
+      "expectText": "staging-demo-user-2",
+      "visual": true,
+      "impact": [
+        "public/views.js",
+        "src/referrals.js",
+        "src/routes/referrals.js"
       ]
     }
   ]

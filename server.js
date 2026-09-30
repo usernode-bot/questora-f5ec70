@@ -13,6 +13,10 @@ const IS_DEV = !process.env.USERNODE_PLATFORM_ORIGIN;
 // The platform signs user-identity tokens with an RSA private key it never
 // shares; this app only verifies them (see src/auth.js).
 const PUBLIC_API_PATHS = new Set(['/health']);
+// Phase 2: credential pages are shareable read-only resources. The public
+// API prefix lets anyone with the link verify issuer, recipient, criteria
+// and issue date; the endpoint exposes only already-public facts.
+const PUBLIC_API_PREFIXES = ['/api/v1/credentials/'];
 
 app.use(express.json());
 usersEnsure.setPool(pool);
@@ -47,7 +51,7 @@ app.get(/^\/usernode-(?:bridge|native|tailwind)\//, async (req, res) => {
 });
 
 // JWT verify + user upsert, then deny-by-default on the API and non-GETs.
-app.use(authMiddleware(PUBLIC_API_PATHS));
+app.use(authMiddleware(PUBLIC_API_PATHS, PUBLIC_API_PREFIXES));
 
 app.get('/health', (_req, res) => {
   if (global.__shuttingDown) return res.status(503).json({ status: 'shutting_down' });
@@ -58,6 +62,8 @@ app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
 // Versioned API.
 app.use('/api/v1/wallets', require('./src/routes/wallets'));
+app.use('/api/v1', require('./src/routes/credentials'));
+app.use('/api/v1', require('./src/routes/referrals'));
 app.use('/api/v1', require('./src/routes/creator'));
 app.use('/api/v1', require('./src/routes/quests'));
 app.use('/api/v1', require('./src/routes/misc'));
