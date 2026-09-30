@@ -8,7 +8,19 @@ const assert = require('node:assert');
 const HAS_DB = !!process.env.DATABASE_URL;
 const t = HAS_DB ? test : test.skip;
 
+// Error-handler test support: auth.js pins the platform's real JWT public
+// key, which a test cannot sign with, so the suite generates its own RSA
+// keypair and tells the app to trust it. Tokens below are minted against it.
+const { generateKeyPairSync } = require('node:crypto');
+const { publicKey: testPublicKey, privateKey: testPrivateKey } =
+  generateKeyPairSync('rsa', { modulusLength: 2048 });
+process.env.USERNODE_JWT_PUBLIC_KEY =
+  testPublicKey.export({ type: 'spki', format: 'pem' });
+process.env.USERNODE_APP_ID = '999999';
+process.env.USERNODE_ENV = process.env.USERNODE_ENV || 'staging';
+
 let pool;
+let httpServer;
 t('schema + seed + reward flow', async () => {
   process.env.USERNODE_ENV = process.env.USERNODE_ENV || 'staging';
   const db = require('../src/db');
@@ -162,6 +174,46 @@ t('schema + seed + reward flow', async () => {
   assert.equal(Number(referralXp.rows[0].s), 100, 'referrer must be paid the referral XP exactly once');
 }, { timeout: 30000 });
 
+t('a route that throws returns 500 and the server keeps serving', async () => {
+  const jwt = require('jsonwebtoken');
+  process.env.PORT = '0';
+  const { start } = require('../server');
+  httpServer = await start();
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const token = jwt.sign(
+    { id: 424242424, username: 'staging-demo-error-1', pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  const auth = { 'x-usernode-token': token };
+
+  // /quests/:id/my passes :id straight into an integer column, so the id
+  // 'abc' makes Postgres reject the query inside the async handler. Before
+  // the async-error bridge this rejection killed the whole process.
+  const boom = await fetch(base + '/api/v1/quests/abc/my', { headers: auth });
+  assert.equal(boom.status, 500);
+  assert.deepEqual(await boom.json(), { error: 'Internal server error' });
+
+  // The process survived: health still answers and the route works with a
+  // valid id.
+  const health = await fetch(base + '/health');
+  assert.equal(health.status, 200);
+  assert.equal((await health.json()).status, 'ok');
+  const quest = await pool.query('SELECT id FROM quests ORDER BY id LIMIT 1');
+  const ok = await fetch(base + `/api/v1/quests/${quest.rows[0].id}/my`, { headers: auth });
+  assert.equal(ok.status, 200);
+
+  // Errors that already carry a 4xx status keep it: the body parser marks
+  // malformed JSON as 400 rather than turning it into a 500.
+  const bad = await fetch(base + '/api/v1/tasks/1/submit', {
+    method: 'POST',
+    headers: { ...auth, 'content-type': 'application/json' },
+    body: '{"broken',
+  });
+  assert.equal(bad.status, 400);
+}, { timeout: 20000 });
+
 after(async () => {
+  if (httpServer) await new Promise(resolve => httpServer.close(resolve));
   if (pool) await pool.end();
 });

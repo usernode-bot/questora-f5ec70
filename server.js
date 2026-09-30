@@ -1,5 +1,9 @@
 const express = require('express');
 const path = require('path');
+// Bridge rejected promises from async handlers into the error middleware
+// (Express 4 drops them, crashing the process). Must load before routes are
+// dispatched; see src/async-errors.js.
+require('./src/async-errors');
 const { pool, migrate, IS_STAGING } = require('./src/db');
 const { authMiddleware } = require('./src/auth');
 const usersEnsure = require('./src/users-ensure');
@@ -96,6 +100,24 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Global error handler, registered last so it sees every route including the
+// catch-all above: anything a handler throws or rejects (async handlers are
+// bridged in by src/async-errors.js) becomes a JSON response instead of an
+// unhandled crash. Errors that already carry a 4xx status (the body parser
+// marks malformed JSON as 400) keep that status and their expose-safe
+// message; everything else is a generic 500 with no stack trace in the body.
+app.use((err, req, res, next) => {
+  console.error('[error] ' + req.method + ' ' + req.originalUrl, err);
+  if (res.headersSent) return next(err);
+  const status = err && (err.status || err.statusCode);
+  const code = status >= 400 && status < 500 ? status : 500;
+  res.status(code).json({
+    error: code === 500
+      ? 'Internal server error'
+      : (err.expose ? err.message : 'Bad request'),
+  });
+});
+
 async function start() {
   await migrate();
   await seed();
@@ -119,6 +141,11 @@ async function start() {
   }
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
+  return server;
 }
 
-start().catch(err => { console.error(err); process.exit(1); });
+// Exported for the test suite; the platform runs this file directly.
+module.exports = { app, start };
+if (require.main === module) {
+  start().catch(err => { console.error(err); process.exit(1); });
+}
