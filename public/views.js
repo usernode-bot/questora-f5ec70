@@ -667,7 +667,24 @@ async function viewCreate() {
     } else if (t === 'url_proof') {
       extra.appendChild(el('<p class="text-sm text-zinc-500">Users submit a URL. You review it in your project queue.</p>'));
     } else if (t === 'quiz') {
-      extra.appendChild(el('<p class="text-sm text-zinc-500">A starter question is included. Edit quizzes later from your project page.</p>'));
+      extra.appendChild(el(`
+        <div class="quiz-builder space-y-2">
+          <input class="qq-text w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Question text">
+          <p class="text-xs text-zinc-500">Options. Mark the correct one.</p>
+          <div class="qq-opts space-y-2"></div>
+          <button type="button" class="qq-add text-sm font-medium text-violet-400">Add option</button>
+          <p class="text-sm text-zinc-500">Users must score at least 80% to pass.</p>
+        </div>`));
+      const opts = extra.querySelector('.qq-opts');
+      const addOpt = () => {
+        opts.appendChild(el(`
+          <div class="flex items-center gap-2 qq-row">
+            <input type="radio" name="qq-correct" class="w-4 h-4 accent-violet-500 shrink-0" aria-label="Mark this option as the correct answer">
+            <input class="qq-opt flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Option ${opts.children.length + 1}">
+          </div>`));
+      };
+      addOpt(); addOpt();
+      extra.querySelector('.qq-add').addEventListener('click', addOpt);
     } else if (t === 'wallet_connect') {
       extra.appendChild(el('<p class="text-sm text-zinc-500">Users sign a message with their browser wallet. Verified automatically.</p>'));
     } else {
@@ -691,7 +708,19 @@ async function viewCreate() {
       const task = { type, title: 'Task', config: {} };
       if (type === 'social') task.config = { url: v('.t-url'), action: 'visit' };
       if (type === 'quiz') {
-        task.config = { pass_score: 80, questions: [{ q: 'Is this a staging demo quiz?', options: ['Yes', 'No'], answer: 0 }] };
+        const qText = v('.qq-text');
+        let answer = -1;
+        const options = [];
+        form.querySelectorAll('.qq-row').forEach((row) => {
+          const val = row.querySelector('.qq-opt').value.trim();
+          if (!val) return;
+          if (row.querySelector('input[name="qq-correct"]').checked) answer = options.length;
+          options.push(val);
+        });
+        if (!qText) throw new Error('The question text is required');
+        if (options.length < 2) throw new Error('The question needs at least two non-empty options');
+        if (answer < 0) throw new Error('Mark one option as the correct answer');
+        task.config = { pass_score: 80, questions: [{ q: qText, options, answer }] };
       }
       const quest = await window.QuestoraAPI.api.post(`/api/v1/campaigns/${camp.campaign.id}/quests`, {
         title: v('.q-title'), xp_reward: parseInt(v('.q-xp'), 10) || 0, points_reward: Math.round((parseInt(v('.q-xp'), 10) || 0) / 2), tasks: [task],
