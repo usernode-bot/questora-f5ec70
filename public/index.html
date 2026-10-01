@@ -53,6 +53,49 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%237c3aed'/><circle cx='50' cy='50' r='18' fill='white'/></svg>">
   <link rel="stylesheet" href="/tailwind.css">
   <script src="/usernode-bridge/v1/bridge.js"></script>
+  <script>
+  // Theme: the platform's resolved theme is the default (it arrives on the
+  // frame URL via the bridge), the visitor's in-app pick is the override.
+  // The class lands on <html> before app.js renders, so there is no flash.
+  (function () {
+    var KEY = 'questora-theme';
+    var media = window.matchMedia('(prefers-color-scheme: dark)');
+    function apply() {
+      var saved = null;
+      try { saved = localStorage.getItem(KEY); } catch (e) {}
+      var theme = saved || (window.usernode && window.usernode.theme) || (media.matches ? 'dark' : 'light');
+      var root = document.documentElement;
+      root.classList.toggle('dark', theme === 'dark');
+      root.classList.toggle('light', theme !== 'dark');
+      root.style.colorScheme = theme;
+    }
+    apply();
+    window.addEventListener('usernode:theme-changed', function (e) {
+      // A live platform theme change only applies while the visitor has not
+      // picked their own theme in the app.
+      var saved = null;
+      try { saved = localStorage.getItem(KEY); } catch (err) {}
+      if (!saved) { apply(); }
+    });
+    media.addEventListener('change', function () {
+      var saved = null;
+      try { saved = localStorage.getItem(KEY); } catch (err) {}
+      if (!saved) apply();
+    });
+    window.QuestoraTheme = {
+      get: function () {
+        try { return localStorage.getItem(KEY) || null; } catch (e) { return null; }
+      },
+      set: function (t) {
+        try {
+          if (t === 'dark' || t === 'light') localStorage.setItem(KEY, t);
+          else localStorage.removeItem(KEY);
+        } catch (e) {}
+        apply();
+      },
+    };
+  })();
+  </script>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen">
   <!-- Desktop top bar -->
@@ -61,6 +104,9 @@
       <a href="/" class="flex items-center gap-2 font-bold text-lg text-violet-400">Questora</a>
       <nav class="flex items-center gap-1 text-sm" id="desktop-nav"></nav>
       <div class="ml-auto flex items-center gap-3">
+        <button id="theme-btn" class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Toggle light or dark theme">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path></svg>
+        </button>
         <button id="notif-btn" class="relative p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Notifications">
           <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 0 0-6 6c0 2.1-.6 3.6-1.3 4.6-.3.5 0 1.4.7 1.4h13.2c.7 0 1-.9.7-1.4C16.6 11.6 16 10.1 16 8a6 6 0 0 0-6-6ZM8 16a2 2 0 1 0 4 0H8Z"/></svg>
           <span id="notif-badge" class="hidden absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-violet-600 text-white text-[10px] font-bold flex items-center justify-center"></span>
@@ -74,10 +120,15 @@
   <header class="md:hidden sticky top-0 z-40 bg-zinc-950/90 backdrop-blur border-b border-zinc-800">
     <div class="px-4 h-12 flex items-center justify-between">
       <a href="/" class="font-bold text-violet-400">Questora</a>
-      <button id="notif-btn-mobile" class="relative p-2 rounded-lg active:bg-zinc-800 text-zinc-400 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Notifications">
+      <div class="flex items-center gap-1">
+        <button id="theme-btn-mobile" class="p-2 rounded-lg active:bg-zinc-800 text-zinc-400 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Toggle light or dark theme">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path></svg>
+        </button>
+        <button id="notif-btn-mobile" class="relative p-2 rounded-lg active:bg-zinc-800 text-zinc-400 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Notifications">
         <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 0 0-6 6c0 2.1-.6 3.6-1.3 4.6-.3.5 0 1.4.7 1.4h13.2c.7 0 1-.9.7-1.4C16.6 11.6 16 10.1 16 8a6 6 0 0 0-6-6ZM8 16a2 2 0 1 0 4 0H8Z"/></svg>
         <span id="notif-badge-mobile" class="hidden absolute top-1 right-1 min-w-[16px] h-[16px] px-0.5 rounded-full bg-violet-600 text-white text-[9px] font-bold flex items-center justify-center"></span>
       </button>
+      </div>
     </div>
   </header>
 

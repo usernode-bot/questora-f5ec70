@@ -1,5 +1,7 @@
 const { ethers } = require('ethers');
 const { pool } = require('../db');
+const { manualSocialVerifier } = require('./social-verifier');
+const { NullChainAdapter } = require('./chain-adapter');
 
 // Every verifier implements verify(ctx) -> { result: 'verified'|'rejected',
 // detail }. ctx = { task, config, user, submission }. Verifiers NEVER trust
@@ -36,7 +38,27 @@ const verifiers = {
     return { result: 'pending', detail: { via: 'review' } };
   },
 
-  social: (ctx) => ({ result: 'pending', detail: { via: 'review' } }),
+  // Delegates to the SocialVerifier abstraction. ManualSocialVerifier keeps
+  // the result at Pending review; a future OAuth adapter lands here.
+  social: (ctx) => manualSocialVerifier.verify(ctx),
+
+  // On-chain checks go through the ChainAdapter. Phase 1 has no RPC, so
+  // NullChainAdapter reports unsupported and the task is rejected rather
+  // than faked. Returns a promise (adapter calls are async); callers await
+  // the verdict.
+  on_chain: async (ctx) => {
+    const adapter = new NullChainAdapter();
+    const method = (ctx.config && ctx.config.method) || 'verifyContractCall';
+    const fn = typeof adapter[method] === 'function' ? method : 'verifyContractCall';
+    const res = await adapter[fn]();
+    if (!res || res.supported === false) {
+      return {
+        result: 'rejected',
+        detail: { reason: 'This on-chain verification method is not currently supported.', adapter: 'NullChainAdapter' },
+      };
+    }
+    return { result: res.result || 'rejected', detail: res.detail || res };
+  },
   manual: (ctx) => {
     const data = ctx.submission.proof_data || {};
     if (!String(data.text || '').trim() && !ctx.submission.proof_url) {

@@ -3,6 +3,7 @@ const { pool } = require('../db');
 const { verifyTask } = require('../verify');
 const reward = require('../reward');
 const risk = require('../risk');
+const { lockState } = require('../conditions');
 
 const router = express.Router();
 function userId(req) { return req.user.db_id; }
@@ -56,6 +57,23 @@ router.post('/tasks/:id/submit', async (req, res) => {
   const done = await pool.query('SELECT 1 FROM quest_completions WHERE quest_id = $1 AND user_id = $2', [task.quest_id, uid]);
   if (done.rows.length) return res.status(400).json({ error: 'You already completed this quest' });
 
+  // Locked quests stay locked on the server: a prerequisite condition the
+  // frontend displays is also enforced here.
+  const lock = await lockState(task.quest_id, uid);
+  if (lock.locked) return res.status(403).json({ error: lock.reason });
+
+  // One live submission per task: a pending or already-verified task cannot
+  // be resubmitted (rejected ones can, that is the resubmit flow).
+  const latest = await pool.query(
+    `SELECT status FROM task_submissions WHERE task_id = $1 AND user_id = $2
+     ORDER BY created_at DESC LIMIT 1`, [task.id, uid]);
+  if (latest.rows.length && latest.rows[0].status === 'pending') {
+    return res.status(400).json({ error: 'Your submission is awaiting review' });
+  }
+  if (latest.rows.length && latest.rows[0].status === 'verified') {
+    return res.status(400).json({ error: 'This task is already verified' });
+  }
+
   const submission = {
     proof_url: req.body.proof_url || null,
     proof_data: req.body.proof_data || null,
@@ -78,7 +96,7 @@ router.post('/tasks/:id/submit', async (req, res) => {
     ctx.walletVerified = true;
   }
 
-  const verdict = verifyTask(task.type, ctx);
+  const verdict = await verifyTask(task.type, ctx);
   const status = verdict.result === 'pending' ? 'pending' : verdict.result;
   // Anti-sybil (Phase 3): a normalized fingerprint of the proof, so the
   // risk engine can spot the same link or text submitted by many accounts.
@@ -125,7 +143,9 @@ router.post('/quests/:id/quiz', async (req, res) => {
     [taskId, req.params.id]);
   if (!t.rows.length) return res.status(404).json({ error: 'Quiz not found' });
   const task = t.rows[0];
-  const verdict = verifyTask('quiz', {
+  const lock = await lockState(task.quest_id, uid);
+  if (lock.locked) return res.status(403).json({ error: lock.reason });
+  const verdict = await verifyTask('quiz', {
     task, config: task.config, user: req.user,
     submission: { proof_data: { answers: req.body.answers || [] } },
   });
@@ -145,20 +165,23 @@ router.post('/quests/:id/quiz', async (req, res) => {
   res.json({ score: verdict.detail.score, pass_score: verdict.detail.pass_score, passed: status === 'verified', completion });
 });
 
-// Join a campaign = follow it for notifications. Lightweight table reuse:
-// completions drive participants, so joining just tracks interest.
+// Join a campaign: records the participant marker in user_settings
+// (completions drive real participation; joining tracks interest).
 router.post('/campaigns/:id/join', async (req, res) => {
   const uid = userId(req);
   const c = await pool.query('SELECT id FROM campaigns WHERE id = $1 AND status = $2', [req.params.id, 'live']);
   if (!c.rows.length) return res.status(400).json({ error: 'This campaign is not live' });
-  // Track via a notification of type join is wrong; keep a settings marker.
+  const campaignId = Number(req.params.id);
+  const cur = await pool.query(
+    `SELECT notify->'joined_campaigns' AS j FROM user_settings WHERE user_id = $1`, [uid]);
+  const list = Array.isArray(cur.rows[0] && cur.rows[0].j) ? cur.rows[0].j : [];
+  if (!list.includes(campaignId)) list.push(campaignId);
   await pool.query(
     `INSERT INTO user_settings (user_id, notify) VALUES ($1, $2)
-     ON CONFLICT (user_id) DO UPDATE SET notify = user_settings.notify || $2`,
-    [uid, JSON.stringify({ joined_campaigns: (await pool.query(
-      'SELECT notify->\'joined_campaigns\' AS j FROM user_settings WHERE user_id = $1', [uid])).rows[0]?.j || [] })]
+     ON CONFLICT (user_id) DO UPDATE SET notify = user_settings.notify || $2, updated_at = NOW()`,
+    [uid, JSON.stringify({ joined_campaigns: list })]
   );
-  res.json({ ok: true });
+  res.json({ ok: true, joined: true });
 });
 
 module.exports = router;

@@ -34,6 +34,13 @@ const TASK_SCHEMAS = {
     },
   },
   manual: { required: [], optional: [] },
+  // Phase 1 has no RPC-backed chain adapter, so an on-chain task can never
+  // be published: validation fails with the creator-facing message below
+  // rather than accepting a task nobody could verify.
+  on_chain: {
+    required: [],
+    validate: () => 'This on-chain verification method is not currently supported.',
+  },
 };
 
 function validateTaskConfig(type, config) {
@@ -141,6 +148,18 @@ router.patch('/projects/:id', async (req, res) => {
 // ---- campaigns ----
 const CAMPAIGN_STATUSES = ['draft', 'scheduled', 'live', 'paused', 'ended', 'archived'];
 
+// Status transitions are the server's decision, not the client's. A
+// campaign moves forward through this map; platform admins may pause or
+// archive from anywhere (the admin panel's Pause/Archive buttons).
+const CAMPAIGN_TRANSITIONS = {
+  draft: ['scheduled', 'live', 'archived'],
+  scheduled: ['live', 'draft', 'archived'],
+  live: ['paused', 'ended'],
+  paused: ['live', 'ended'],
+  ended: ['archived'],
+  archived: [],
+};
+
 router.post('/projects/:id/campaigns', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
@@ -149,7 +168,9 @@ router.post('/projects/:id/campaigns', async (req, res) => {
   }
   const { name, description, banner_url, category, chains, starts_at, ends_at, status, featured } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'A campaign name is required' });
-  const st = status && CAMPAIGN_STATUSES.includes(status) ? status : 'draft';
+  // A new campaign starts its life as a draft, a scheduled one, or goes
+  // straight live on publish. Everything else is a transition (PATCH).
+  const st = ['draft', 'scheduled', 'live'].includes(status) ? status : 'draft';
   let slug = slugify(name) || randomId(8);
   const dup = await pool.query('SELECT 1 FROM campaigns WHERE project_id = $1 AND slug = $2', [p.id, slug]);
   if (dup.rows.length) slug = slug + '-' + randomId(4);
@@ -163,38 +184,15 @@ router.post('/projects/:id/campaigns', async (req, res) => {
   res.json({ campaign: rows[0] });
 });
 
-router.get('/campaigns/:id', async (req, res) => {
-  const isNum = !isNaN(Number(req.params.id));
-  const { rows } = await pool.query(
-    `SELECT c.*, p.name AS project_name, p.slug AS project_slug, p.logo_url AS project_logo
-     FROM campaigns c JOIN projects p ON p.id = c.project_id
-     WHERE ${isNum ? 'c.id = $1' : '(c.slug = $1 AND c.id = (SELECT MIN(c2.id) FROM campaigns c2 WHERE c2.slug = $1))'} LIMIT 1`,
-    [isNum ? Number(req.params.id) : req.params.id]);
-  if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  const campaign = rows[0];
-  const quests = await pool.query(
-    `SELECT q.*, (SELECT COUNT(*) FROM quest_tasks t WHERE t.quest_id = q.id) AS task_count
-     FROM quests q WHERE q.campaign_id = $1 ORDER BY q.sort_order`, [campaign.id]);
-  const parts = await pool.query(
-    `SELECT COUNT(DISTINCT user_id)::int AS n FROM quest_completions qc
-     JOIN quests q ON q.id = qc.quest_id WHERE q.campaign_id = $1`, [campaign.id]);
-  const totals = await pool.query(
-    `SELECT COALESCE(SUM(xp_reward), 0) AS xp, COALESCE(SUM(points_reward), 0) AS points
-     FROM quests WHERE campaign_id = $1`, [campaign.id]);
-  res.json({
-    campaign,
-    quests: quests.rows,
-    participants: parts.rows[0].n,
-    total_xp: Number(totals.rows[0].xp),
-    total_points: Number(totals.rows[0].points),
-  });
-});
-
+// GET /campaigns/:id lives in misc.js: it is the viewer route (per-user
+// completed/locked state, published quests only) and must not be shadowed by
+// a creator-shaped duplicate mounted earlier. This router keeps the writes.
 router.patch('/campaigns/:id', async (req, res) => {
   const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = c.rows[0];
-  if (!(await rbac.can(campaign.project_id, userId(req), 'edit'))) {
+  // Project RBAC, or a platform admin acting through the admin panel.
+  if (!(await rbac.can(campaign.project_id, userId(req), 'edit')) && !rbac.isAdmin(req)) {
     return res.status(403).json({ error: 'You do not have permission to edit this campaign' });
   }
   const allowed = {};
@@ -204,6 +202,13 @@ router.patch('/campaigns/:id', async (req, res) => {
   if (req.body.chains !== undefined) allowed.chains = Array.isArray(req.body.chains) ? req.body.chains : [];
   if (req.body.status !== undefined) {
     if (!CAMPAIGN_STATUSES.includes(req.body.status)) return res.status(400).json({ error: 'Unknown status' });
+    const legal = CAMPAIGN_TRANSITIONS[campaign.status] || [];
+    const isPlatformAdmin = rbac.isAdmin(req);
+    if (req.body.status !== campaign.status && !legal.includes(req.body.status) && !isPlatformAdmin) {
+      return res.status(400).json({
+        error: `A ${campaign.status} campaign cannot move to ${req.body.status}.`,
+      });
+    }
     allowed.status = req.body.status;
   }
   if (req.body.xp_multiplier !== undefined) {
@@ -269,6 +274,16 @@ router.post('/campaigns/:id/quests', async (req, res) => {
       );
     }
     await client.query(`INSERT INTO quest_conditions (quest_id, operator, config) VALUES ($1, 'all', '{}')`, [questId]);
+    // Locking (optional): prerequisite quests that must be completed first.
+    // Stored as quest_conditions config; the lock is evaluated server-side.
+    const prereqs = (req.body.requires_quests || [])
+      .map(Number).filter(Number.isFinite);
+    if (prereqs.length) {
+      const operator = req.body.require_all === false ? 'any' : 'all';
+      await client.query(
+        `UPDATE quest_conditions SET operator = $2, config = $3 WHERE quest_id = $1`,
+        [questId, operator, JSON.stringify({ requires_quests: prereqs })]);
+    }
     await client.query('COMMIT');
     res.json({ quest: q.rows[0] });
   } catch (err) {
@@ -417,4 +432,6 @@ router.get('/projects/:id/analytics', async (req, res) => {
 });
 
 router.validateTaskConfig = validateTaskConfig;
+// Exposed for tests: the legal campaign state transitions.
+router.CAMPAIGN_TRANSITIONS = CAMPAIGN_TRANSITIONS;
 module.exports = router;

@@ -49,6 +49,40 @@ async function viewDiscover() {
   }
 }
 
+// ---------- campaign list ----------
+async function viewCampaigns(params) {
+  params = params || new URLSearchParams();
+  const status = params.get('status') === 'scheduled' || params.get('status') === 'ended'
+    ? params.get('status') : 'live';
+  const wrap = el('<div></div>');
+  app().replaceChildren(wrap);
+  wrap.appendChild(el(`
+    <div>
+      <h1 class="text-2xl font-bold mb-1">Campaigns</h1>
+      <p class="text-sm text-zinc-500 mb-4">Every campaign on Questora, filtered by state.</p>
+      <div class="flex gap-1 bg-zinc-900 rounded-full p-1 border border-zinc-800 mb-5 w-fit">
+        <a href="/campaigns" class="px-4 py-1.5 rounded-full text-sm font-medium ${status === 'live' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Live</a>
+        <a href="/campaigns?status=scheduled" class="px-4 py-1.5 rounded-full text-sm font-medium ${status === 'scheduled' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Scheduled</a>
+        <a href="/campaigns?status=ended" class="px-4 py-1.5 rounded-full text-sm font-medium ${status === 'ended' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Ended</a>
+      </div>
+      <div class="body space-y-2"></div>
+    </div>`));
+  const body = wrap.querySelector('.body');
+  body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading campaigns…</p>'));
+  let data;
+  try { data = await window.QuestoraAPI.api.get('/api/v1/campaigns?status=' + status); }
+  catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  body.replaceChildren();
+  const rows = data.campaigns || [];
+  if (!rows.length) {
+    body.appendChild(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400 mb-1">No ${status} campaigns.</p><p class="text-sm text-zinc-600">Check the other tabs, or create one from the Create page.</p></div>`));
+    return;
+  }
+  const grid = el('<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>');
+  for (const c of rows) grid.appendChild(campaignCard({ ...c, project_logo: c.project_logo || '' }));
+  body.replaceChildren(grid);
+}
+
 // ---------- campaign ----------
 async function viewCampaign(slug) {
   const wrap = el('<div class="animate-pulse space-y-4"><div class="h-32 rounded-2xl bg-zinc-900"></div><div class="h-6 w-1/2 rounded bg-zinc-900"></div></div>');
@@ -60,6 +94,7 @@ async function viewCampaign(slug) {
     return;
   }
   const c = data.campaign;
+  const completedCount = data.quests.filter(q => q.completed).length;
   const node = el(`
     <div>
       <div class="rounded-2xl bg-gradient-to-b from-violet-600/20 to-transparent border border-zinc-800 p-6 mb-6">
@@ -76,22 +111,49 @@ async function viewCampaign(slug) {
           ${badgePill(data.participants + ' participants')}
           ${c.ends_at ? `<span class="inline-block text-xs px-2.5 py-1 rounded-full bg-zinc-800 text-zinc-400">${timeLeft(c.ends_at)}</span>` : ''}
         </div>
+        <div class="join-slot mt-4"></div>
       </div>
-      <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Quests</h2>
+      <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Quests ${completedCount ? `<span class="text-violet-300">${completedCount}/${data.quests.length} done</span>` : ''}</h2>
       <div class="quest-list space-y-3"></div>
     </div>`);
   wrap.replaceChildren(node);
+
+  // Join button: the server only accepts joins on live campaigns.
+  if (data.joined === false && c.status === 'live') {
+    const joinBtn = el('<button class="join font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Join campaign</button>');
+    joinBtn.addEventListener('click', async () => {
+      joinBtn.disabled = true; joinBtn.textContent = 'Joining…';
+      try {
+        await window.QuestoraAPI.api.post(`/api/v1/campaigns/${c.id}/join`, {});
+        toast('You joined the campaign');
+        viewCampaign(slug);
+      } catch (err) { toast(err.message, true); joinBtn.disabled = false; joinBtn.textContent = 'Join campaign'; }
+    });
+    node.querySelector('.join-slot').appendChild(joinBtn);
+  } else if (data.joined === true) {
+    node.querySelector('.join-slot').appendChild(el('<span class="inline-block text-xs px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300">Joined</span>'));
+  }
+
   const list = node.querySelector('.quest-list');
   for (const q of data.quests) {
-    list.appendChild(el(`
-      <a href="/quest/${q.id}" class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 hover:border-violet-500/40 transition-colors p-4">
-        <span class="task-circle w-6 h-6 rounded-full border-2 border-zinc-700 shrink-0 flex items-center justify-center"></span>
+    // Circle state: done, locked, or open. The server decides; the UI only
+    // renders what it sent.
+    const circle = q.completed
+      ? '<span class="task-circle w-6 h-6 rounded-full border-2 border-emerald-400 bg-emerald-400/10 text-emerald-300 shrink-0 flex items-center justify-center text-xs">✓</span>'
+      : q.locked
+        ? '<span class="task-circle w-6 h-6 rounded-full border-2 border-zinc-700 bg-zinc-800/50 text-zinc-500 shrink-0 flex items-center justify-center text-xs">🔒</span>'
+        : '<span class="task-circle w-6 h-6 rounded-full border-2 border-zinc-700 shrink-0 flex items-center justify-center"></span>';
+    const row = el(`
+      <a href="/quest/${q.id}" class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 hover:border-violet-500/40 transition-colors p-4 ${q.locked && !q.completed ? 'opacity-60' : ''}">
+        ${circle}
         <span class="min-w-0">
           <span class="block font-medium ${q.is_required ? 'text-zinc-100' : 'text-zinc-400'}">${escapeHtml(q.title)}${q.is_required ? '' : ' <span class="text-xs text-zinc-600">(optional)</span>'}</span>
           <span class="block text-sm text-zinc-500 truncate">${escapeHtml(q.description || '')}</span>
+          ${q.locked && !q.completed ? `<span class="lock-reason block text-xs text-amber-300 mt-1">${escapeHtml(q.locked_reason || 'Locked')}</span>` : ''}
         </span>
         <span class="ml-auto text-sm text-violet-300 font-medium shrink-0">+${q.xp_reward} XP</span>
-      </a>`));
+      </a>`);
+    list.appendChild(row);
   }
 }
 
@@ -122,11 +184,19 @@ async function viewQuest(id) {
       <h1 class="text-2xl font-bold mt-1 mb-1">${escapeHtml(q.title)}</h1>
       <p class="text-sm text-zinc-400 mb-4 max-w-2xl">${escapeHtml(q.description || '')}</p>
       <div class="flex gap-2 mb-6">${badgePill('+' + q.xp_reward + ' XP')}${q.points_reward ? badgePill('+' + q.points_reward + ' points') : ''}${badgePill(data.participants + ' completed')}</div>
+      <div class="lock-banner mb-6"></div>
       <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Checklist</h2>
       <div class="task-list space-y-3"></div>
       <div class="result mt-6"></div>
     </div>`);
   wrap.replaceChildren(node);
+  // A locked quest explains itself and offers no actions.
+  if (q.locked) {
+    node.querySelector('.lock-banner').appendChild(el(`
+      <div class="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
+        <p class="text-sm text-amber-200">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p>
+      </div>`));
+  }
   const list = node.querySelector('.task-list');
 
   function taskRow(t) {
@@ -163,9 +233,37 @@ async function viewQuest(id) {
       again.addEventListener('click', () => actionFor(t, actionArea));
       rejectLine.appendChild(again);
     } else {
-      actionFor(t, actionArea);
+      if (q.locked) {
+        holder.appendChild(el(`<p class="text-sm text-zinc-500">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p>`));
+      } else {
+        actionFor(t, actionArea);
+      }
     }
     return row;
+  }
+
+  // Real wallet flow: request accounts, get a server nonce for THAT address,
+  // personal_sign the exact challenge message, and send the signature back.
+  // The server recovers the signer and compares it to the claimed address.
+  async function walletConnectFlow(button) {
+    if (!window.ethereum) throw new Error('No browser wallet found. Install MetaMask or another wallet.');
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const address = accounts && accounts[0];
+    if (!address) throw new Error('Connect a wallet account first');
+    // Already verified? Skip the signature (one verified wallet is enough).
+    try {
+      const mine = await window.QuestoraAPI.api.get('/api/v1/wallets');
+      const w = (mine.wallets || []).find(x => x.address && x.address.toLowerCase() === address.toLowerCase());
+      if (w && w.verified_at) {
+        toast('Wallet already verified');
+        return address;
+      }
+    } catch { /* fall through to the full flow */ }
+    const ch = await window.QuestoraAPI.api.post('/api/v1/wallets/challenge', { address });
+    const signature = await window.QuestoraAPI.signMessage(address, ch.message);
+    await window.QuestoraAPI.api.post('/api/v1/wallets/verify', { address, signature, nonce: ch.nonce });
+    toast('Wallet verified');
+    return address;
   }
 
   function actionFor(t, holder) {
@@ -173,13 +271,13 @@ async function viewQuest(id) {
     if (t.type === 'wallet_connect') {
       const b = el('<button class="connect w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Connect wallet</button>');
       b.addEventListener('click', async () => {
-        b.disabled = true; b.textContent = 'Waiting for signature…';
+        b.disabled = true; b.textContent = 'Waiting for wallet…';
         try {
-          const ch = await window.QuestoraAPI.api.post('/api/v1/wallets/challenge', {});
-          const sig = await window.QuestoraAPI.signMessage('0x0000000000000000000000000000000000000000', ch.message);
-          throw new Error('Wallet signature mismatch. Reconnect your wallet and try again.');
+          await walletConnectFlow(b);
+          await window.QuestoraAPI.api.post(`/api/v1/tasks/${t.id}/submit`, {});
+          viewQuest(q.id);
         } catch (err) {
-          toast(err.message.replace('Questora wallet verification', ''), true);
+          toast(err.message || 'Could not verify the wallet', true);
           b.disabled = false; b.textContent = 'Connect wallet';
         }
       });
@@ -470,6 +568,24 @@ async function viewLeaderboard(params) {
       </a>`));
   });
   wrap.appendChild(list);
+  // Pin my own row when the top 50 does not include me.
+  const meData = await loadMe();
+  if (meData && meData.user && !data.entries.some(e => e.username === meData.user.username)) {
+    try {
+      const mine = await window.QuestoraAPI.api.get('/api/v1/users/' + encodeURIComponent(meData.user.username));
+      const mu = mine.user || mine;
+      if (mine.leaderboard_rank) {
+        list.appendChild(el('<div class="flex items-center gap-4 px-4"><span class="text-xs text-zinc-600">···</span></div>'));
+        list.appendChild(el(`
+          <a href="/u/${encodeURIComponent(meData.user.username)}" class="flex items-center gap-4 rounded-xl border border-violet-500/40 bg-violet-600/10 px-4 py-3">
+            <span class="w-8 text-center font-bold text-violet-300">${mine.leaderboard_rank}</span>
+            <span class="w-8 h-8 rounded-full bg-violet-600/30 flex items-center justify-center text-xs font-bold text-violet-200">${escapeHtml((meData.user.display_name || meData.user.username).slice(0, 2).toUpperCase())}</span>
+            <span class="min-w-0"><span class="block font-medium truncate">You</span><span class="block text-xs text-zinc-600">@${escapeHtml(meData.user.username)}</span></span>
+            <span class="ml-auto font-mono text-violet-300">${(by === 'points' ? mu.points : mu.xp).toLocaleString()}</span>
+          </a>`));
+      }
+    } catch { /* pinning is optional chrome */ }
+  }
 }
 
 // ---------- teams ----------
@@ -1072,7 +1188,7 @@ async function viewAdmin() {
       window.QuestoraAPI.api.get('/api/v1/admin/review'), window.QuestoraAPI.api.get('/api/v1/admin/settings'), window.QuestoraAPI.api.get('/api/v1/admin/audit'),
     ]);
 
-    const usersSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Users</h2><div class="u-list space-y-2"></div></section>');
+    const usersSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Users</h2><p class="text-xs text-zinc-600 mb-2">Admin access comes from the ADMIN_USERNAMES secret, so roles cannot be granted here.</p><div class="u-list space-y-2"></div></section>');
     const ul = usersSec.querySelector('.u-list');
     for (const u of users.users) {
       const row = el(`
@@ -1082,14 +1198,11 @@ async function viewAdmin() {
             ${statePill(u.risk_state || 'normal')}
             <span class="role-pill text-xs px-2 py-1 rounded-full ${u.role === 'admin' ? 'bg-violet-600/20 text-violet-300' : 'bg-zinc-800 text-zinc-400'}">${escapeHtml(u.role)}</span>
             <button class="risk text-xs px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300">Risk</button>
-            <button class="toggle text-xs px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300">${u.role === 'admin' ? 'Make user' : 'Make admin'}</button>
           </div>
           <div class="risk-detail"></div>
         </div>`);
-      row.querySelector('.toggle').addEventListener('click', async () => {
-        try { await window.QuestoraAPI.api.patch(`/api/v1/admin/users/${u.id}`, { role: u.role === 'admin' ? 'user' : 'admin', reason: 'Role changed from admin panel' }); toast('Role updated'); load(); }
-        catch (err) { toast(err.message, true); }
-      });
+      // Admin status is configuration, not a toggle: it comes from the
+      // ADMIN_USERNAMES secret and the server refuses role changes.
       // Risk explainer (Phase 3): the signals behind the account's state.
       row.querySelector('.risk').addEventListener('click', async () => {
         const slot = row.querySelector('.risk-detail');
@@ -1207,8 +1320,8 @@ async function viewAdmin() {
   load();
 }
 
-window.QV = { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewTeams, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
+window.QV = { viewDiscover, viewCampaigns, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewTeams, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
 
 bindQUI();
-return { viewDiscover, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewTeams, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
+return { viewDiscover, viewCampaigns, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewTeams, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe };
 })();

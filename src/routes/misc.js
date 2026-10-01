@@ -5,6 +5,7 @@ const reputation = require('../reputation');
 const achievements = require('../achievements');
 const seasons = require('../seasons');
 const risk = require('../risk');
+const conditions = require('../conditions');
 
 const router = express.Router();
 function userId(req) { return req.user.db_id; }
@@ -221,22 +222,63 @@ router.patch('/notifications/prefs', async (req, res) => {
 });
 
 // ---- campaign detail (public-in-app view used by SPA) ----
+// Campaign directory: a public list per status for the /campaigns screen.
+// The status filter is whitelist-only so the URL cannot probe drafts.
+router.get('/campaigns', async (req, res) => {
+  const status = ['live', 'scheduled', 'ended'].includes(req.query.status)
+    ? req.query.status : 'live';
+  const { rows } = await pool.query(
+    `SELECT c.id, c.slug, c.name, c.description, c.category, c.status, c.ends_at,
+            p.name AS project_name, p.slug AS project_slug, p.logo_url AS project_logo,
+            COUNT(DISTINCT q.id)::int AS quest_count,
+            COALESCE(SUM(q.xp_reward), 0)::int AS total_xp,
+            (SELECT COUNT(DISTINCT qc.user_id) FROM quest_completions qc
+              JOIN quests q2 ON q2.id = qc.quest_id WHERE q2.campaign_id = c.id)::int AS participants
+     FROM campaigns c JOIN projects p ON p.id = c.project_id
+     LEFT JOIN quests q ON q.campaign_id = c.id AND q.status = 'published'
+     WHERE c.status = $1
+     GROUP BY c.id, p.name, p.slug, p.logo_url
+     ORDER BY c.created_at DESC`, [status]);
+  res.json({ campaigns: rows });
+});
+
 router.get('/campaigns/:id', async (req, res) => {
   const isNum = !isNaN(Number(req.params.id));
   const { rows } = await pool.query(
     `SELECT c.*, p.name AS project_name, p.slug AS project_slug, p.logo_url AS project_logo,
             (SELECT COUNT(DISTINCT qc.user_id) FROM quest_completions qc JOIN quests q ON q.id = qc.quest_id WHERE q.campaign_id = c.id) AS participants
      FROM campaigns c JOIN projects p ON p.id = c.project_id
-     WHERE ${isNum ? 'c.id = $1' : 'c.slug = $1'} ORDER BY ${isNum ? 'c.id' : 'p.id'} LIMIT 1`, [req.params.id]);
+     WHERE ${isNum ? 'c.id = $1' : '(c.slug = $1 AND c.id = (SELECT MIN(c2.id) FROM campaigns c2 WHERE c2.slug = $1))'} LIMIT 1`, [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = rows[0];
+  const uid = req.user ? req.user.db_id : null;
   const [quests, totals] = await Promise.all([
     pool.query(`SELECT id, title, description, sort_order, is_required, xp_reward, points_reward FROM quests WHERE campaign_id = $1 AND status = 'published' ORDER BY sort_order`, [campaign.id]),
     pool.query(`SELECT COALESCE(SUM(xp_reward),0) AS xp, COALESCE(SUM(points_reward),0) AS points FROM quests WHERE campaign_id = $1`, [campaign.id]),
   ]);
+  // Per-viewer checklist state, all of it server-computed: completion comes
+  // from quest_completions, lock state from quest_conditions.
+  const completedRows = uid
+    ? (await pool.query('SELECT quest_id FROM quest_completions WHERE user_id = $1', [uid])).rows
+    : [];
+  const completedIds = new Set(completedRows.map(r => r.quest_id));
+  const withState = [];
+  for (const q of quests.rows) {
+    const lock = await conditions.lockState(q.id, uid);
+    withState.push({ ...q, completed: completedIds.has(q.id), locked: lock.locked, locked_reason: lock.reason });
+  }
+  let joined = false;
+  if (uid) {
+    const j = await pool.query(
+      `SELECT notify->'joined_campaigns' AS j FROM user_settings WHERE user_id = $1`, [uid]);
+    const list = Array.isArray(j.rows[0] && j.rows[0].j) ? j.rows[0].j : [];
+    joined = list.includes(campaign.id);
+  }
   res.json({
     campaign,
-    quests: quests.rows,
+    quests: withState,
+    joined,
+    participants: Number(campaign.participants || 0),
     total_xp: Number(totals.rows[0].xp),
     total_points: Number(totals.rows[0].points),
   });
@@ -251,6 +293,7 @@ router.get('/quests/:id', async (req, res) => {
      WHERE q.id = $1`, [req.params.id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
   const quest = q.rows[0];
+  const lock = await conditions.lockState(quest.id, req.user ? req.user.db_id : null);
   const tasks = await pool.query(
     `SELECT id, type, title, sort_order, verification_type, proof_required, config
      FROM quest_tasks WHERE quest_id = $1 ORDER BY sort_order`, [quest.id]);
@@ -261,7 +304,7 @@ router.get('/quests/:id', async (req, res) => {
     return t;
   });
   const participants = await pool.query('SELECT COUNT(*)::int AS n FROM quest_completions WHERE quest_id = $1', [quest.id]);
-  res.json({ quest, tasks: safeTasks, participants: participants.rows[0].n });
+  res.json({ quest: { ...quest, locked: lock.locked, locked_reason: lock.reason }, tasks: safeTasks, participants: participants.rows[0].n });
 });
 
 // ---- badges for the create wizard ----
@@ -293,8 +336,13 @@ router.patch('/admin/users/:id', async (req, res) => {
   if (!(await requireAdmin(req, res))) return;
   const u = await pool.query('SELECT * FROM users WHERE id = $1', [req.params.id]);
   if (!u.rows.length) return res.status(404).json({ error: 'User not found' });
+  // Admin status is configuration, not a panel toggle: it comes from the
+  // ADMIN_USERNAMES secret (see src/users-ensure.js), so the panel cannot
+  // grant or revoke it.
+  if (req.body.role !== undefined) {
+    return res.status(400).json({ error: 'Admin role comes from the ADMIN_USERNAMES secret. Change it there, not here.' });
+  }
   const allowed = {};
-  if (req.body.role && ['user', 'admin'].includes(req.body.role)) allowed.role = req.body.role;
   if (req.body.risk_state && ['normal', 'review', 'suspicious', 'blocked'].includes(req.body.risk_state)) allowed.risk_state = req.body.risk_state;
   const sets = Object.keys(allowed);
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });

@@ -145,3 +145,56 @@ test('achievement criteria are metric-name checked and finite', () => {
   assert.equal(achievements.meets({ metric: 'xp_earned', value: 'abc' }, { xp_earned: 9999 }), false);
   assert.equal(achievements.meets(null, { quests_completed: 9 }), false);
 });
+
+// ---- Phase 1 seams added on top: verifier abstractions, locks, transitions ----
+const { SocialVerifier, ManualSocialVerifier, manualSocialVerifier } = require('../src/verify/social-verifier');
+const { CAMPAIGN_TRANSITIONS } = require('../src/routes/creator');
+const conditions = require('../src/conditions');
+
+test('ManualSocialVerifier stays at pending review, never verifies', async () => {
+  const v = manualSocialVerifier.verify({ task: {}, user: {}, submission: {} });
+  assert.equal(v.result, 'pending');
+  assert.notEqual(v.result, 'verified');
+  assert.equal(v.detail.via, 'review');
+  // The base class is the seam: a subclass without verify() fails loudly.
+  assert.throws(() => new SocialVerifier('empty').verify({}), /implement/);
+  assert.ok(new ManualSocialVerifier() instanceof SocialVerifier);
+});
+
+test('on_chain tasks report unsupported through NullChainAdapter, never fake', async () => {
+  const verdict = await verifyTask('on_chain', { config: {}, submission: { proof_url: 'https://x' } });
+  assert.equal(verdict.result, 'rejected');
+  assert.equal(verdict.detail.adapter, 'NullChainAdapter');
+  assert.match(verdict.detail.reason, /not currently supported/i);
+});
+
+test('task config validation rejects on-chain publishes', () => {
+  const creator = require('../src/routes/creator');
+  assert.ok(creator.validateTaskConfig('on_chain', {}), 'on_chain is not publishable in Phase 1');
+  assert.equal(creator.validateTaskConfig('social', { url: 'https://x' }), null);
+});
+
+test('campaign state machine only allows forward transitions', () => {
+  assert.ok(CAMPAIGN_TRANSITIONS.live.includes('paused'));
+  assert.ok(CAMPAIGN_TRANSITIONS.paused.includes('live'));
+  assert.ok(CAMPAIGN_TRANSITIONS.ended.includes('archived'));
+  assert.ok(!CAMPAIGN_TRANSITIONS.live.includes('archived'), 'live campaigns end, they are not archived directly');
+  assert.ok(!CAMPAIGN_TRANSITIONS.live.includes('draft'), 'no going back to draft');
+  assert.equal(CAMPAIGN_TRANSITIONS.archived.length, 0, 'archived is terminal');
+});
+
+test('quest lock evaluator: pure logic over completed sets', () => {
+  const reqs = [11, 12];
+  // No viewer: locks are a per-user state, so an anonymous visitor sees none.
+  assert.equal(conditions.evaluateLock(null, 'all', reqs, new Set()), false);
+  assert.equal(conditions.evaluateLock(null, 'all', reqs, new Set([11])), false);
+  // Operator all: every prerequisite must be completed.
+  assert.equal(conditions.evaluateLock(7, 'all', reqs, new Set([11])), true);
+  assert.equal(conditions.evaluateLock(7, 'all', reqs, new Set([11, 12])), false);
+  assert.equal(conditions.evaluateLock(7, 'all', reqs, new Set([11, 12, 13])), false);
+  // Operator any: one is enough.
+  assert.equal(conditions.evaluateLock(7, 'any', reqs, new Set()), true);
+  assert.equal(conditions.evaluateLock(7, 'any', reqs, new Set([12])), false);
+  // No prerequisites: never locked.
+  assert.equal(conditions.evaluateLock(7, 'all', [], new Set()), false);
+});
