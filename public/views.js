@@ -845,7 +845,7 @@ async function viewCreate() {
       toast('Campaign published');
       location.hash = '';
       window.history.pushState({}, '', '/campaigns/' + camp.campaign.slug);
-      router();
+      window.dispatchEvent(new PopStateEvent('popstate'));
     } catch (err) {
       hint.textContent = err.message;
       hint.className = 'hint text-sm text-red-400';
