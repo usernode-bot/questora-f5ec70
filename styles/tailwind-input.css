@@ -11,3 +11,35 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Light theme. The app is dark-first: every screen is written in zinc
+ * utilities that assume a dark surface. Rather than rewriting them, the
+ * light theme remaps exactly those utilities when <html class="light">.
+ * The theme bootstrap in public/index.html owns the dark/light class.
+ * Every selector here mirrors a class that actually appears in public/*.js,
+ * so the build only emits these overrides for classes in use.
+ */
+html.light .bg-zinc-950 { background-color: #fafafa; }
+html.light .bg-zinc-950\/90 { background-color: rgba(250, 250, 250, 0.9); }
+html.light .bg-zinc-950\/95 { background-color: rgba(250, 250, 250, 0.95); }
+html.light .bg-zinc-900 { background-color: #ffffff; }
+html.light .bg-zinc-900\/60 { background-color: #ffffff; }
+html.light .bg-zinc-900\/40 { background-color: rgba(255, 255, 255, 0.7); }
+html.light .bg-zinc-900\/30 { background-color: rgba(255, 255, 255, 0.55); }
+html.light .bg-zinc-800 { background-color: #f4f4f5; }
+html.light .bg-zinc-800\/70 { background-color: #f4f4f5; }
+html.light .bg-zinc-800\/60 { background-color: #f4f4f5; }
+html.light .bg-zinc-800\/50 { background-color: #f4f4f5; }
+html.light .bg-zinc-700\/50 { background-color: #e4e4e7; }
+html.light .hover\:bg-zinc-900:hover { background-color: #f4f4f5; }
+html.light .hover\:bg-zinc-800:hover { background-color: #e4e4e7; }
+html.light .hover\:bg-zinc-700:hover { background-color: #d4d4d8; }
+html.light .border-zinc-800 { border-color: #e4e4e7; }
+html.light .border-zinc-700 { border-color: #d4d4d8; }
+html.light .text-zinc-100 { color: #18181b; }
+html.light .text-zinc-200 { color: #27272a; }
+html.light .text-zinc-300 { color: #3f3f46; }
+html.light .text-zinc-400 { color: #52525b; }
+html.light .text-zinc-500 { color: #71717a; }
+html.light .text-zinc-600 { color: #a1a1aa; }
+html.light .placeholder\:text-zinc-600::placeholder { color: #a1a1aa; }

@@ -18,6 +18,7 @@ process.env.USERNODE_JWT_PUBLIC_KEY =
   testPublicKey.export({ type: 'spki', format: 'pem' });
 process.env.USERNODE_APP_ID = '999999';
 process.env.USERNODE_ENV = process.env.USERNODE_ENV || 'staging';
+const jwt = require('jsonwebtoken');
 
 let pool;
 let httpServer;
@@ -331,6 +332,239 @@ t('a route that throws returns 500 and the server keeps serving', async () => {
     body: '{"broken',
   });
   assert.equal(bad.status, 400);
+}, { timeout: 20000 });
+
+t('wallet challenge/verify signs over HTTP and pays the quest, guards hold', async () => {
+  const jwt = require('jsonwebtoken');
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const { ethers } = require('ethers');
+  // A run-scoped identity: the guards below (already completed, awaiting
+  // review) are per-user, so a rerun must not inherit a previous run's
+  // submissions.
+  const uid = 700000000 + Math.floor(Math.random() * 90000000);
+  const runUser = 'staging-demo-wallet-' + Date.now() % 100000000;
+  const tokenFor = (username) => jwt.sign(
+    { id: uid, username, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  const auth = { 'x-usernode-token': tokenFor(runUser), 'content-type': 'application/json' };
+
+  // E2E: challenge -> personal-style signature -> verify. The wallet signs
+  // the message the server returned for a CHECKSUMMED address; the server
+  // normalizes to lowercase before building the message, so the recovered
+  // signer must still match.
+  const wallet = ethers.Wallet.createRandom();
+  const ch = await (await fetch(base + '/api/v1/wallets/challenge', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ address: wallet.address }),
+  })).json();
+  assert.ok(ch.nonce && ch.message.includes(wallet.address.toLowerCase()), 'challenge must bind the nonce to the address');
+  const signature = await wallet.signMessage(ch.message);
+  const verified = await fetch(base + '/api/v1/wallets/verify', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ address: wallet.address, signature, nonce: ch.nonce }),
+  });
+  assert.equal(verified.status, 200, JSON.stringify(await verified.json().catch(() => ({}))));
+  const mine = await (await fetch(base + '/api/v1/wallets', { headers: auth })).json();
+  assert.ok((mine.wallets || []).some(w => w.address === wallet.address.toLowerCase() && w.verified_at));
+
+  // The nonce is one-time: replaying it is refused.
+  const replay = await fetch(base + '/api/v1/wallets/verify', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ address: wallet.address, signature, nonce: ch.nonce }),
+  });
+  assert.equal(replay.status, 400);
+
+  // A signature by a DIFFERENT key does not vouch for the claimed address.
+  const other = ethers.Wallet.createRandom();
+  const ch2 = await (await fetch(base + '/api/v1/wallets/challenge', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ address: other.address }),
+  })).json();
+  const wrongSig = await wallet.signMessage(ch2.message);
+  const wrong = await fetch(base + '/api/v1/wallets/verify', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ address: other.address, signature: wrongSig, nonce: ch2.nonce }),
+  });
+  assert.equal(wrong.status, 400);
+
+  // Wallet quest submission now verifies server-side against the wallets
+  // table, and the completion is idempotent: a second submit is refused.
+  const wq = await pool.query(
+    `SELECT t.id AS task_id, q.id AS quest_id FROM quest_tasks t
+     JOIN quests q ON q.id = t.quest_id
+     WHERE t.type = 'wallet_connect' AND q.title = 'Connect Wallet' LIMIT 1`);
+  const sub1 = await fetch(base + `/api/v1/tasks/${wq.rows[0].task_id}/submit`, {
+    method: 'POST', headers: auth, body: '{}',
+  });
+  assert.equal(sub1.status, 200);
+  const body1 = await sub1.json();
+  assert.equal(body1.completion.completed, true, 'a verified wallet must complete the quest');
+  const sub2 = await fetch(base + `/api/v1/tasks/${wq.rows[0].task_id}/submit`, {
+    method: 'POST', headers: auth, body: '{}',
+  });
+  assert.equal(sub2.status, 400, 'the completed quest must refuse a second submission');
+
+  // A locked quest (seeded 'Claim Veteran Status' requires two quests this
+  // user has not completed) refuses the submission with its reason.
+  const lockedTask = await pool.query(
+    `SELECT t.id FROM quest_tasks t JOIN quests q ON q.id = t.quest_id
+     WHERE q.title = 'Claim Veteran Status' LIMIT 1`);
+  const locked = await fetch(base + `/api/v1/tasks/${lockedTask.rows[0].id}/submit`, {
+    method: 'POST', headers: auth, body: JSON.stringify({ proof_data: { text: 'ready' } }),
+  });
+  assert.equal(locked.status, 403);
+  assert.match((await locked.json()).error, /^Complete "/);
+
+  // One live submission per task: a pending url proof cannot be resubmitted.
+  const urlTask = await pool.query(
+    `SELECT t.id FROM quest_tasks t JOIN quests q ON q.id = t.quest_id
+     WHERE t.type = 'url_proof' AND q.title = 'Submit Proof' LIMIT 1`);
+  const s1 = await fetch(base + `/api/v1/tasks/${urlTask.rows[0].id}/submit`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ proof_url: 'https://example.com/work-1' }),
+  });
+  assert.equal(s1.status, 200);
+  const s2 = await fetch(base + `/api/v1/tasks/${urlTask.rows[0].id}/submit`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ proof_url: 'https://example.com/work-2' }),
+  });
+  assert.equal(s2.status, 400);
+  assert.match((await s2.json()).error, /awaiting review/);
+}, { timeout: 30000 });
+
+t('admin access comes from ADMIN_USERNAMES, not the panel or first user', async () => {
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  process.env.ADMIN_USERNAMES = 'staging-demo-admin';
+  const tokenFor = (username, id) => jwt.sign(
+    { id, username, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  const adminAuth = { 'x-usernode-token': tokenFor('Staging-Demo-Admin', 777666222) };
+  const plainAuth = { 'x-usernode-token': tokenFor('staging-demo-plain-1', 777666223) };
+
+  // Case-insensitive match against the secret; role resolves on the request.
+  const ok = await fetch(base + '/api/v1/admin/users', { headers: adminAuth });
+  assert.equal(ok.status, 200);
+  const denied = await fetch(base + '/api/v1/admin/users', { headers: plainAuth });
+  assert.equal(denied.status, 403, 'a username outside the secret is not an admin');
+
+  // The panel cannot grant admin: role edits are refused with a pointer to
+  // the secret.
+  const who = await (await fetch(base + '/api/v1/admin/users', { headers: adminAuth })).json();
+  const target = who.users.find(u => u.username === 'staging-demo-plain-1');
+  assert.ok(target, 'the admin user list must include the just-created plain user');
+  const patch = await fetch(base + `/api/v1/admin/users/${target.id}`, {
+    method: 'PATCH',
+    headers: { ...adminAuth, 'content-type': 'application/json' },
+    body: JSON.stringify({ role: 'admin', reason: 'test' }),
+  });
+  assert.equal(patch.status, 400);
+  assert.match((await patch.json()).error, /ADMIN_USERNAMES/);
+}, { timeout: 20000 });
+
+t('a username held by a stale row resolves to the current platform id', async () => {
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const tokenFor = (username, id) => jwt.sign(
+    { id, username, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  // Simulate a platform rename: an old row holds the name under a different
+  // usernode_id. The current holder must still resolve, not 404.
+  const staleId = 777666900 + Math.floor(Math.random() * 90);
+  const freshId = 777667000 + Math.floor(Math.random() * 90);
+  const name = 'staging-demo-rename-' + Date.now() % 100000000;
+  const oldAuth = { 'x-usernode-token': tokenFor(name, staleId) };
+  assert.equal((await fetch(base + '/api/v1/users/me', { headers: oldAuth })).status, 200);
+  // Fresh platform user arrives with the same username and a new id.
+  const newAuth = { 'x-usernode-token': tokenFor(name, freshId) };
+  const res = await fetch(base + '/api/v1/users/me', { headers: newAuth });
+  assert.equal(res.status, 200, 'the new holder of the name is not bricked by the stale row');
+  const me = (await res.json()).user;
+  assert.equal(me.usernode_id, freshId);
+  // And the old id still resolves, under its renamed-aside handle.
+  const old = await fetch(base + '/api/v1/users/me', { headers: oldAuth });
+  assert.equal(old.status, 200, 'the renamed-aside row still resolves for its owner');
+  assert.match((await old.json()).user.username, /-stale-/);
+}, { timeout: 20000 });
+
+t('campaign transitions are enforced server-side with an admin bypass', async () => {
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const tokenFor = (username, id) => jwt.sign(
+    { id, username, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  // staging-demo-user-1 owns the seeded Octra Builders project (the seed
+  // mints demo users at usernode_id 900000+i).
+  const owner = { 'x-usernode-token': tokenFor('staging-demo-user-1', 900001), 'content-type': 'application/json' };
+  const plain = { 'x-usernode-token': tokenFor('staging-demo-plain-2', 777666333), 'content-type': 'application/json' };
+  const proj = await (await fetch(base + '/api/v1/projects/staging-demo-octra-builders', { headers: owner })).json();
+  assert.ok(proj.project, 'seeded project must be readable');
+
+  const created = await fetch(base + `/api/v1/projects/${proj.project.id}/campaigns`, {
+    method: 'POST', headers: owner,
+    body: JSON.stringify({ name: 'Integration Transition Campaign', status: 'draft' }),
+  });
+  const createdBody = await created.json();
+  assert.equal(created.status, 200, JSON.stringify(createdBody));
+  const camp = createdBody.campaign;
+
+  // A non-member cannot edit it at all.
+  const denied = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
+    method: 'PATCH', headers: plain,
+    body: JSON.stringify({ status: 'live' }),
+  });
+  assert.equal(denied.status, 403);
+
+  // draft -> live is legal, live -> archived is not.
+  const goLive = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
+    method: 'PATCH', headers: owner, body: JSON.stringify({ status: 'live' }),
+  });
+  assert.equal(goLive.status, 200);
+  assert.equal((await goLive.json()).campaign.status, 'live');
+  const illegal = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
+    method: 'PATCH', headers: owner, body: JSON.stringify({ status: 'archived' }),
+  });
+  assert.equal(illegal.status, 400);
+  assert.match((await illegal.json()).error, /cannot move to archived/);
+
+  // A platform admin may archive from live (the admin panel's button).
+  process.env.ADMIN_USERNAMES = 'staging-demo-admin';
+  const admin = { 'x-usernode-token': tokenFor('staging-demo-admin', 777666222), 'content-type': 'application/json' };
+  const forced = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
+    method: 'PATCH', headers: admin, body: JSON.stringify({ status: 'archived', reason: 'test' }),
+  });
+  assert.equal(forced.status, 200);
+
+  // The campaign directory endpoint filters by whitelisted status only.
+  const list = await (await fetch(base + '/api/v1/campaigns?status=scheduled', { headers: owner })).json();
+  assert.ok((list.campaigns || []).some(c => c.slug === 'staging-demo-on-chain-pioneer'));
+  const bogus = await (await fetch(base + '/api/v1/campaigns?status=draft', { headers: owner })).json();
+  assert.ok((bogus.campaigns || []).every(c => c.status === 'live'), 'unknown statuses fall back to live');
 }, { timeout: 20000 });
 
 after(async () => {

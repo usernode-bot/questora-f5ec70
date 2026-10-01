@@ -7,19 +7,30 @@ const { audit } = require('../audit');
 const router = express.Router();
 const CHALLENGE_TTL_MS = 10 * 60 * 1000;
 
+// The exact string the user signs. It is fully determined by the nonce and
+// address, so the verifier can rebuild it at verify time and recover the
+// signer from what was ACTUALLY signed (never from the bare address).
+function challengeMessage(address, nonce) {
+  return `Questora wallet verification\n\nAddress: ${address}\nNonce: ${nonce}`;
+}
+
 // Step 1: server issues a one-time nonce bound to the address.
 router.post('/challenge', async (req, res) => {
   const { address } = req.body || {};
   if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
     return res.status(400).json({ error: 'A valid wallet address is required' });
   }
+  // Wallets hand out checksummed addresses, but storage and the verify-time
+  // comparison are lowercase, so the signed message must be built from the
+  // normalized form or the reconstruction would never match.
+  const addr = String(address).toLowerCase();
   const nonce = 'questora-' + crypto.randomBytes(16).toString('hex');
   await pool.query(
     `INSERT INTO wallet_challenges (nonce, wallet_address, expires_at)
      VALUES ($1, $2, $3)`,
-    [nonce, address.toLowerCase(), new Date(Date.now() + CHALLENGE_TTL_MS)]
+    [nonce, addr, new Date(Date.now() + CHALLENGE_TTL_MS)]
   );
-  res.json({ nonce, message: `Questora wallet verification\n\nAddress: ${address}\nNonce: ${nonce}` });
+  res.json({ nonce, message: challengeMessage(addr, nonce) });
 });
 
 // Step 2: server recovers the signer with ethers, consumes the nonce once.
@@ -38,7 +49,10 @@ router.post('/verify', async (req, res) => {
   }
   let recovered;
   try {
-    recovered = ethers.verifyMessage(ch.rows[0].wallet_address, signature);
+    // Recover from the challenge message the wallet actually signed, then
+    // compare the recovered address to the claimed one.
+    recovered = ethers.verifyMessage(
+      challengeMessage(ch.rows[0].wallet_address, nonce), signature);
   } catch {
     return res.status(400).json({ error: 'The signature could not be verified. Try again.' });
   }

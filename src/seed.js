@@ -244,6 +244,32 @@ async function seed() {
     { type: 'social', title: 'Follow', config: { url: 'https://example.com/nova', action: 'follow' } },
   ]);
 
+  // Four more quests reach the spec's ~12 total, including one LOCKED quest
+  // that demonstrates the prerequisite feature on the campaign checklist. It
+  // requires Connect Wallet and Complete Quiz first, so a fresh visitor sees
+  // it locked with its reason while demo users 1-3 could finish it.
+  const qLocked = await upsertQuest(campWelcome, 'Claim Veteran Status', { description: 'Staging demo quest: unlock this one by finishing Connect Wallet and Complete Quiz first.', xp: 120, points: 60, sort_order: 4 }, [
+    { type: 'manual', title: 'Say you are ready', config: {} },
+  ]);
+  await pool.query(
+    `UPDATE quest_conditions SET operator = 'all', config = $2 WHERE quest_id = $1`,
+    [qLocked, JSON.stringify({ requires_quests: [q1, q3] })]);
+  await upsertQuest(campDev, 'Answer the Protocol Quiz', { description: 'Staging demo quest: a second quiz for the developer track.', xp: 90, points: 45, sort_order: 2 }, [
+    { type: 'quiz', title: 'Developer track quiz', config: {
+      pass_score: 80,
+      questions: [
+        { q: 'Who grades a quiz submission?', options: ['The project reviewer', 'The server', 'The browser'], answer: 1 },
+        { q: 'When does a rejection need a reason?', options: ['Always', 'Never', 'Only for quizzes'], answer: 0 },
+      ],
+    } },
+  ]);
+  await upsertQuest(campDev, 'Write a Guide', { description: 'Staging demo quest: publish a short guide and link it.', xp: 140, points: 70, sort_order: 3 }, [
+    { type: 'url_proof', title: 'Link your guide', config: { placeholder: 'https://your-guide.example' } },
+  ]);
+  await upsertQuest(campExplore, 'Attend the Community Call', { description: 'Staging demo quest: join the weekly call and say hi.', xp: 60, points: 30, sort_order: 2 }, [
+    { type: 'social', title: 'Join the call', config: { url: 'https://example.com/call', action: 'join' } },
+  ]);
+
   // Credential rewards (Phase 2): completing the quiz quest issues one.
   await pool.query(
     `INSERT INTO rewards (quest_id, kind, config)
