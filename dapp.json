@@ -1,5 +1,7 @@
 {
-  "icon": { "image": "brand/icon.png" },
+  "icon": {
+    "image": "brand/icon.png"
+  },
   "name": "Questora",
   "secrets": [
     {
@@ -139,5 +141,9 @@
         "src/routes/teams.js"
       ]
     }
-  ]
+  ],
+  "visibility": {
+    "build": "private",
+    "view": "public"
+  }
 }
