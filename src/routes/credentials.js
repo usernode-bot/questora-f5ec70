@@ -53,11 +53,12 @@ router.post('/credentials/:id/revoke', async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM credentials WHERE id = $1', [req.params.id]);
   if (!rows.length) return res.status(404).json({ error: 'Credential not found' });
   const cred = rows[0];
+  // Project-scoped only: a credential is revoked by someone who manages the
+  // issuing project's content. No global role enters this check.
   const rbac = require('../rbac');
-  const isAdmin = req.user.role === 'admin';
   const canManage = cred.issuer_project_id &&
-    (await rbac.can(cred.issuer_project_id, req.user.db_id, 'manage'));
-  if (!isAdmin && !canManage) {
+    (await rbac.can(cred.issuer_project_id, req.user.db_id, 'task.manage'));
+  if (!canManage) {
     return res.status(403).json({ error: 'Only the issuing project can revoke this credential' });
   }
   if (cred.revoked_at) return res.json({ credential: cred });

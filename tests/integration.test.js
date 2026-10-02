@@ -183,7 +183,7 @@ t('schema + seed + reward flow', async () => {
     'referrer must be paid the referral XP exactly once, scaled by the active season');
 }, { timeout: 30000 });
 
-t('Phase 3: reputation, achievements, seasons, risk and teams', async () => {
+t('Phase 3: reputation, achievements, seasons and risk', async () => {
   // Fresh-completion scenario on user 5 (no seeded completions): clear any
   // prior run's rows first so the assertions are about this run.
   const u5 = (await pool.query(`SELECT id FROM users WHERE username = 'staging-demo-user-5'`)).rows[0];
@@ -272,28 +272,6 @@ t('Phase 3: reputation, achievements, seasons, risk and teams', async () => {
   assert.equal(again.state, 'blocked');
   assert.ok((await risk.signalsFor(u6.id)).length >= 2, 'explainer rows must be readable for the admin panel');
 
-  // Teams: create, join by code, one-team-per-user, leave/disband rules.
-  const teams = require('../src/teams');
-  // A re-run starts clean: a previous run's test team would trip the
-  // one-team-per-user rule.
-  await pool.query('DELETE FROM teams WHERE owner_user_id = $1', [u5.id]);
-  await pool.query('DELETE FROM team_members WHERE user_id = $1', [u6.id]);
-  const created = await teams.create(u5.id, 'Integration Test Crew', 'phase 3 test');
-  assert.ok(created.team, JSON.stringify(created));
-  const dup = await teams.create(u5.id, 'Another Crew');
-  assert.equal(dup.error, 'You are already in a team. Leave it before creating another.');
-  const joined = await teams.join(u6.id, created.team.join_code);
-  assert.ok(joined.joined);
-  const detail = await teams.detail(created.team.id);
-  assert.equal(detail.members.length, 2);
-  const badJoin = await teams.join(u6.id, 'wrong-code');
-  assert.equal(badJoin.error, 'You are already in a team. Leave it before joining another.');
-  const ownerLeave = await teams.leave(u5.id);
-  assert.equal(ownerLeave.error, 'Owners cannot leave. Disband the team instead.');
-  assert.ok((await teams.leave(u6.id)).left);
-  const memberDisband = await teams.disband(u6.id);
-  assert.equal(memberDisband.error, 'You are not in a team');
-  assert.ok((await teams.disband(u5.id)).disbanded);
 }, { timeout: 30000 });
 
 t('a route that throws returns 500 and the server keeps serving', async () => {
@@ -507,7 +485,7 @@ t('a username held by a stale row resolves to the current platform id', async ()
   assert.match((await old.json()).user.username, /-stale-/);
 }, { timeout: 20000 });
 
-t('campaign transitions are enforced server-side with an admin bypass', async () => {
+t('campaign transitions are enforced server-side, scoped to the project', async () => {
   if (!httpServer) {
     process.env.PORT = '0';
     const { start } = require('../server');
@@ -541,25 +519,35 @@ t('campaign transitions are enforced server-side with an admin bypass', async ()
   });
   assert.equal(denied.status, 403);
 
-  // draft -> active is legal, active -> archived is not.
+  // draft -> active is legal. active -> archived is illegal for an Admin, but
+  // the Creator may force it (the old platform-admin escape hatch).
   const goLive = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
     method: 'PATCH', headers: owner, body: JSON.stringify({ status: 'active' }),
   });
   assert.equal(goLive.status, 200);
   assert.equal((await goLive.json()).campaign.status, 'active');
+  // staging-demo-user-2 is the seeded Admin on Octra Builders.
+  const adminMember = { 'x-usernode-token': tokenFor('staging-demo-user-2', 900002), 'content-type': 'application/json' };
   const illegal = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
-    method: 'PATCH', headers: owner, body: JSON.stringify({ status: 'archived' }),
+    method: 'PATCH', headers: adminMember, body: JSON.stringify({ status: 'archived' }),
   });
-  assert.equal(illegal.status, 400);
+  assert.equal(illegal.status, 400, 'an admin cannot force an illegal transition');
   assert.match((await illegal.json()).error, /cannot move to archived/);
+  const forced = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
+    method: 'PATCH', headers: owner, body: JSON.stringify({ status: 'archived', reason: 'creator override' }),
+  });
+  assert.equal(forced.status, 200, 'the creator may force the transition');
 
-  // A platform admin may archive from live (the admin panel's button).
+  // A platform admin holds no project role: the site-wide ADMIN_USERNAMES
+  // secret grants the admin panel, never a project resource.
   process.env.ADMIN_USERNAMES = 'staging-demo-admin';
   const admin = { 'x-usernode-token': tokenFor('staging-demo-admin', 777666222), 'content-type': 'application/json' };
-  const forced = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
-    method: 'PATCH', headers: admin, body: JSON.stringify({ status: 'archived', reason: 'test' }),
+  assert.equal((await fetch(base + '/api/v1/admin/users', { headers: admin })).status, 200,
+    'the ADMIN_USERNAMES secret still opens the platform admin panel');
+  const deniedAdmin = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
+    method: 'PATCH', headers: admin, body: JSON.stringify({ status: 'paused', reason: 'test' }),
   });
-  assert.equal(forced.status, 200);
+  assert.equal(deniedAdmin.status, 403, 'a platform admin with no project role cannot edit a project campaign');
 
   // The campaign directory endpoint filters by whitelisted status only.
   const list = await (await fetch(base + '/api/v1/campaigns?status=scheduled', { headers: owner })).json();
@@ -672,7 +660,7 @@ t('scoped rewards: leaderboards never leak across projects, and delete guards ho
   assert.equal(cross.status, 404, 'a campaign from another project cannot narrow this board');
 }, { timeout: 30000 });
 
-t('project ownership: create assigns owner, cross-project ids are refused, delete guard', async () => {
+t('project access: creator on projects.creator_id, project-scoped roles, no global admin', async () => {
   if (!httpServer) {
     process.env.PORT = '0';
     const { start } = require('../server');
@@ -698,7 +686,7 @@ t('project ownership: create assigns owner, cross-project ids are refused, delet
   }
   const uidOf = async (name) => (await pool.query('SELECT id FROM users WHERE username = $1', [name])).rows[0].id;
 
-  // --- Ownership on create: the creator is owner and gets an owner row. ---
+  // --- Ownership on create: Creator lives on the project row, never as a member. ---
   const projA = (await (await fetch(base + '/api/v1/projects', {
     method: 'POST', headers: ownerA, body: JSON.stringify({ name: 'Ownership Test Alpha ' + run }),
   })).json()).project;
@@ -710,11 +698,11 @@ t('project ownership: create assigns owner, cross-project ids are refused, delet
   })).json()).project;
   assert.ok(projA && projB && projC, 'projects created');
   const ownerAId = await uidOf('staging-demo-owner-a-' + run);
-  const ownerRow = await pool.query('SELECT owner_user_id FROM projects WHERE id = $1', [projA.id]);
-  assert.equal(Number(ownerRow.rows[0].owner_user_id), ownerAId, 'owner_user_id is the creator');
-  const ownerMember = await pool.query(
-    'SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2', [projA.id, ownerAId]);
-  assert.equal(ownerMember.rows[0].role, 'owner', 'the creator gets a project_members owner row');
+  const creatorRow = await pool.query('SELECT creator_id FROM projects WHERE id = $1', [projA.id]);
+  assert.equal(Number(creatorRow.rows[0].creator_id), ownerAId, 'creator_id is the creator');
+  const creatorMembers = await pool.query(
+    'SELECT COUNT(*)::int AS n FROM project_members WHERE project_id = $1 AND user_id = $2', [projA.id, ownerAId]);
+  assert.equal(creatorMembers.rows[0].n, 0, 'the creator never gets a project_members row');
 
   // A campaign + quest in project B, the target of the cross-project attempts.
   const campB = (await (await fetch(base + `/api/v1/projects/${projB.id}/campaigns`, {
@@ -726,29 +714,52 @@ t('project ownership: create assigns owner, cross-project ids are refused, delet
   })).json()).quest;
   assert.ok(campB && questB, 'campaign and quest created in project B');
 
-  // Manager belongs to project C only.
-  const added = await fetch(base + `/api/v1/projects/${projC.id}/members`, {
-    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'staging-demo-manager-' + run, role: 'admin' }),
+  // Same person, two roles on two projects: Admin on C, Moderator on A.
+  const managerId = await uidOf('staging-demo-manager-' + run);
+  const addedAdmin = await fetch(base + `/api/v1/projects/${projC.id}/members`, {
+    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'staging-demo-manager-' + run, role: 'ADMIN' }),
   });
-  assert.equal(added.status, 200);
-  assert.equal((await fetch(base + `/api/v1/projects/${projC.id}/members`, { headers: manager })).status, 200,
-    'the manager can manage project C');
+  assert.equal(addedAdmin.status, 200, 'upper-case ADMIN is accepted and normalized');
+  const addedMod = await fetch(base + `/api/v1/projects/${projA.id}/members`, {
+    method: 'POST', headers: ownerA, body: JSON.stringify({ username: 'staging-demo-manager-' + run, role: 'moderator' }),
+  });
+  assert.equal(addedMod.status, 200);
+  const managerOnC = (await pool.query(
+    'SELECT role, status FROM project_members WHERE project_id = $1 AND user_id = $2', [projC.id, managerId])).rows[0];
+  assert.equal(managerOnC.role, 'admin', 'the posted ADMIN normalizes to admin');
+  assert.equal(managerOnC.status, 'active');
+  // The Admin can manage content on C but can never read or change its access.
+  assert.equal((await fetch(base + `/api/v1/projects/${projC.id}/review`, { headers: manager })).status, 200,
+    'an admin reads the project review queue');
+  assert.equal((await fetch(base + `/api/v1/projects/${projC.id}/members`, { headers: manager })).status, 403,
+    'an admin cannot read the project roster');
+  assert.equal((await fetch(base + `/api/v1/projects/${projC.id}/members`, { headers: ownerC })).status, 200,
+    'only the creator reads the roster');
+  const rosterC = await (await fetch(base + `/api/v1/projects/${projC.id}/members`, { headers: ownerC })).json();
+  assert.ok(rosterC.creator && Number(rosterC.creator.user_id) !== Number(managerId), 'the creator is reported separately');
+  assert.ok(rosterC.members.some(m => Number(m.user_id) === Number(managerId) && m.role === 'admin'));
 
-  // --- Cross-project refusal: a manager of C cannot touch B, whatever the id. ---
+  // --- Cross-project refusal: the same person on A cannot touch B, whatever the id. ---
   const crossPatch = await fetch(base + `/api/v1/campaigns/${campB.id}`, {
     method: 'PATCH', headers: manager, body: JSON.stringify({ name: 'hijack', project_id: projC.id }),
   });
-  assert.equal(crossPatch.status, 403, 'a non-owner manager cannot edit another project\'s campaign');
+  assert.equal(crossPatch.status, 403, 'a project admin of C cannot edit another project\'s campaign');
   const crossQuest = await fetch(base + `/api/v1/quests/${questB.id}`, {
     method: 'PATCH', headers: manager, body: JSON.stringify({ title: 'hijack' }),
   });
-  assert.equal(crossQuest.status, 403, 'a non-owner manager cannot edit another project\'s quest');
+  assert.equal(crossQuest.status, 403, 'a project admin of C cannot edit another project\'s quest');
   const crossDelete = await fetch(base + `/api/v1/quests/${questB.id}`, { method: 'DELETE', headers: manager });
-  assert.equal(crossDelete.status, 403, 'a non-owner manager cannot delete another project\'s quest');
-  const crossCreate = await fetch(base + `/api/v1/projects/${projA.id}/campaigns`, {
+  assert.equal(crossDelete.status, 403, 'a project admin of C cannot delete another project\'s quest');
+  const crossCreate = await fetch(base + `/api/v1/projects/${projB.id}/campaigns`, {
     method: 'POST', headers: manager, body: JSON.stringify({ name: 'sneak' }),
   });
-  assert.equal(crossCreate.status, 403, 'a non-owner manager cannot create in another project');
+  assert.equal(crossCreate.status, 403, 'a project admin of C cannot create in another project');
+  // The moderator role on A grants review, not content management.
+  assert.equal((await fetch(base + `/api/v1/projects/${projA.id}/review`, { headers: manager })).status, 200,
+    'a moderator on A reads the review queue');
+  assert.equal((await fetch(base + `/api/v1/projects/${projA.id}/campaigns`, {
+    method: 'POST', headers: manager, body: JSON.stringify({ name: 'mod-sneak' }),
+  })).status, 403, 'a moderator cannot create campaigns on A');
   // The id in the body cannot move the resource either.
   const bodySwap = await fetch(base + `/api/v1/campaigns/${campB.id}`, {
     method: 'PATCH', headers: ownerA, body: JSON.stringify({ name: 'ok-swap', project_id: projC.id }),
@@ -769,34 +780,100 @@ t('project ownership: create assigns owner, cross-project ids are refused, delet
     assert.equal(res.status, 403, `a non-member gets 403 on ${method} ${path}`);
   }
 
-  // --- Role defaults: admin without a grant cannot delete; the owner can grant. ---
+  // --- Access management is Creator-only; an Admin can never delete or edit. ---
   const deniedDelete = await fetch(base + `/api/v1/projects/${projC.id}`, { method: 'DELETE', headers: manager });
-  assert.equal(deniedDelete.status, 403, 'a project admin cannot delete the project by default');
-  // Only the owner may hand out the flag: another admin cannot self-escalate.
-  const helperId = await uidOf('staging-demo-helper-' + run);
-  await fetch(base + `/api/v1/projects/${projC.id}/members`, {
-    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'staging-demo-helper-' + run, role: 'admin' }),
+  assert.equal(deniedDelete.status, 403, 'an admin cannot delete the project');
+  const deniedEdit = await fetch(base + `/api/v1/projects/${projC.id}`, {
+    method: 'PATCH', headers: manager, body: JSON.stringify({ name: 'nope' }),
   });
-  const escalate = await fetch(base + `/api/v1/projects/${projC.id}/members/${helperId}`, {
-    method: 'PATCH', headers: manager, body: JSON.stringify({ role: 'admin', permissions: { delete_project: true } }),
+  assert.equal(deniedEdit.status, 403, 'an admin cannot edit project settings');
+  const deniedAdd = await fetch(base + `/api/v1/projects/${projC.id}/members`, {
+    method: 'POST', headers: manager, body: JSON.stringify({ username: 'staging-demo-helper-' + run, role: 'admin' }),
   });
-  assert.equal(escalate.status, 403, 'only the owner may grant delete_project');
-  const managerId = await uidOf('staging-demo-manager-' + run);
-  const grant = await fetch(base + `/api/v1/projects/${projC.id}/members/${managerId}`, {
+  assert.equal(deniedAdd.status, 403, 'an admin cannot add members');
+  // No grant path exists: a leftover permissions map is ignored, not honoured.
+  const escalate = await fetch(base + `/api/v1/projects/${projC.id}/members/${managerId}`, {
     method: 'PATCH', headers: ownerC, body: JSON.stringify({ role: 'admin', permissions: { delete_project: true } }),
   });
-  assert.equal(grant.status, 200, 'the owner can grant delete_project');
-  const allowedDelete = await fetch(base + `/api/v1/projects/${projC.id}`, { method: 'DELETE', headers: manager });
-  assert.equal(allowedDelete.status, 200, 'with the grant, the admin can archive the project');
+  assert.equal(escalate.status, 200, 'role change ignores any legacy permissions override');
+  assert.equal((await fetch(base + `/api/v1/projects/${projC.id}`, { method: 'DELETE', headers: manager })).status, 403,
+    'no permissions override lets an admin delete the project');
+
+  // --- Add / duplicate / re-role / remove with audit. ---
+  const helperId = await uidOf('staging-demo-helper-' + run);
+  const helperAdd = await fetch(base + `/api/v1/projects/${projC.id}/members`, {
+    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'staging-demo-helper-' + run, role: 'moderator' }),
+  });
+  assert.equal(helperAdd.status, 200);
+  const dup = await fetch(base + `/api/v1/projects/${projC.id}/members`, {
+    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'staging-demo-helper-' + run, role: 'admin' }),
+  });
+  assert.equal(dup.status, 409, 're-adding an existing member is refused');
+  const addCreator = await fetch(base + `/api/v1/projects/${projC.id}/members`, {
+    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'staging-demo-owner-c-' + run, role: 'admin' }),
+  });
+  assert.equal(addCreator.status, 400, 'the creator cannot be added as a member');
+  const unknown = await fetch(base + `/api/v1/projects/${projC.id}/members`, {
+    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'no-such-user-' + run, role: 'admin' }),
+  });
+  assert.equal(unknown.status, 404, 'an unknown handle is refused, not fabricated');
+  const change = await fetch(base + `/api/v1/projects/${projC.id}/members/${helperId}`, {
+    method: 'PATCH', headers: ownerC, body: JSON.stringify({ role: 'admin' }),
+  });
+  assert.equal(change.status, 200, 'the creator switches a member to admin');
+  const roleChanged = await pool.query(
+    `SELECT metadata FROM audit_logs WHERE entity_type='project' AND entity_id=$1 AND action='ROLE_CHANGED' ORDER BY id DESC LIMIT 1`, [projC.id]);
+  assert.equal(roleChanged.rows[0].metadata.previous_role, 'moderator');
+  assert.equal(roleChanged.rows[0].metadata.new_role, 'admin');
+  assert.equal(Number(roleChanged.rows[0].metadata.target_user_id), Number(helperId));
+  const removedMember = await fetch(base + `/api/v1/projects/${projC.id}/members/${helperId}`, { method: 'DELETE', headers: ownerC });
+  assert.equal(removedMember.status, 200);
+  const removedRow = await pool.query('SELECT status FROM project_members WHERE project_id=$1 AND user_id=$2', [projC.id, helperId]);
+  assert.equal(removedRow.rows[0].status, 'removed', 'removal soft-deletes the membership');
+  const removedAudit = await pool.query(
+    `SELECT action, metadata FROM audit_logs WHERE entity_type='project' AND entity_id=$1 AND action IN ('ADMIN_REMOVED','MODERATOR_REMOVED') ORDER BY id DESC LIMIT 1`, [projC.id]);
+  assert.equal(removedAudit.rows[0].action, 'ADMIN_REMOVED', 'removal of a promoted admin audits ADMIN_REMOVED');
+  assert.equal(Number(removedAudit.rows[0].metadata.target_user_id), Number(helperId));
+  // Re-adding reactivates the same row rather than duplicating it.
+  const readd = await fetch(base + `/api/v1/projects/${projC.id}/members`, {
+    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'staging-demo-helper-' + run, role: 'moderator' }),
+  });
+  assert.equal(readd.status, 200, 'a removed member can be re-added');
+  const readdedRow = await pool.query(
+    'SELECT COUNT(*)::int AS n, MIN(status) AS status FROM project_members WHERE project_id=$1 AND user_id=$2', [projC.id, helperId]);
+  assert.equal(readdedRow.rows[0].n, 1, 're-adding does not duplicate the row');
+  assert.equal(readdedRow.rows[0].status, 'active');
+
+  // --- The access history is Creator-only, and every mutation left a row. ---
+  const auditOk = await fetch(base + `/api/v1/projects/${projC.id}/audit`, { headers: ownerC });
+  assert.equal(auditOk.status, 200);
+  assert.ok((await auditOk.json()).entries.length >= 4, 'each access mutation was audited');
+  assert.equal((await fetch(base + `/api/v1/projects/${projC.id}/audit`, { headers: manager })).status, 403,
+    'an admin cannot read the access history');
+
+  // --- Removal revokes access on one project only. ---
+  const removeMod = await fetch(base + `/api/v1/projects/${projA.id}/members/${managerId}`, { method: 'DELETE', headers: ownerA });
+  assert.equal(removeMod.status, 200);
+  assert.equal((await fetch(base + `/api/v1/projects/${projA.id}/review`, { headers: manager })).status, 403,
+    'removed access is refused immediately on A');
+  assert.equal((await fetch(base + `/api/v1/projects/${projC.id}/review`, { headers: manager })).status, 200,
+    'their admin access on C is untouched');
+  const auditRemoval = await pool.query(
+    `SELECT action FROM audit_logs WHERE entity_type='project' AND entity_id=$1 AND action='MODERATOR_REMOVED' ORDER BY id DESC LIMIT 1`, [projA.id]);
+  assert.equal(auditRemoval.rows[0].action, 'MODERATOR_REMOVED');
+
+  // --- Only the Creator may archive / delete, and it round-trips. ---
+  const softC = await fetch(base + `/api/v1/projects/${projC.id}`, { method: 'DELETE', headers: ownerC });
+  assert.equal(softC.status, 200, 'the creator can archive the project');
   const cAfter = await pool.query('SELECT status, deleted_at FROM projects WHERE id = $1', [projC.id]);
   assert.equal(cAfter.rows[0].status, 'archived');
   assert.ok(cAfter.rows[0].deleted_at, 'a soft delete stamps deleted_at');
-  // Restore: the owner can bring it back.
+  // Restore: the creator can bring it back.
   const restore = await fetch(base + `/api/v1/projects/${projC.id}`, {
     method: 'PATCH', headers: ownerC, body: JSON.stringify({ status: 'active' }),
   });
   assert.equal(restore.status, 200);
-  const restored = await (await restore.json()).project;
+  const restored = (await restore.json()).project;
   assert.equal(restored.status, 'active');
   assert.equal(restored.deleted_at, null, 'restoring clears the soft-delete mark');
 
@@ -818,7 +895,7 @@ t('project ownership: create assigns owner, cross-project ids are refused, delet
   assert.equal((await fetch(base + `/api/v1/projects/${projB.slug}`, { headers: nobody })).status, 404,
     'an archived project is not publicly reachable');
   assert.equal((await fetch(base + `/api/v1/projects/${projB.slug}`, { headers: ownerA })).status, 200,
-    'its owner can still open an archived project');
+    'its creator can still open an archived project');
   // Restore, then hard delete.
   assert.equal((await fetch(base + `/api/v1/projects/${projB.id}`, {
     method: 'PATCH', headers: ownerA, body: JSON.stringify({ status: 'active' }),
@@ -1139,7 +1216,7 @@ t('an on-chain task on a chain with no adapter is MANUAL_REVIEW, never a fake ve
 
   // A project/quest/task committed directly, on a family with no adapter yet.
   const proj = await pool.query(
-    `INSERT INTO projects (slug, owner_user_id, name) SELECT $1, u.id, 'Staging test onchain' FROM users u LIMIT 1 RETURNING id`,
+    `INSERT INTO projects (slug, creator_id, name) SELECT $1, u.id, 'Staging test onchain' FROM users u LIMIT 1 RETURNING id`,
     ['staging-test-onchain-' + Date.now() % 100000]);
   const camp = await pool.query(
     `INSERT INTO campaigns (project_id, slug, name, status) VALUES ($1, $2, 'Staging test campaign', 'active') RETURNING id`,

@@ -424,7 +424,7 @@ router.get('/admin/users/:id/risk', async (req, res) => {
 router.get('/admin/projects', async (req, res) => {
   if (!(await requireAdmin(req, res))) return;
   const { rows } = await pool.query(
-    `SELECT p.*, u.username AS owner_username FROM projects p JOIN users u ON u.id = p.owner_user_id ORDER BY p.created_at DESC`);
+    `SELECT p.*, u.username AS creator_username, u.username AS owner_username FROM projects p JOIN users u ON u.id = p.creator_id ORDER BY p.created_at DESC`);
   res.json({ projects: rows });
 });
 

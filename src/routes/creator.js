@@ -132,22 +132,11 @@ function userId(req) {
   return req.user ? req.user.db_id : null;
 }
 
-// Only the project owner (or a platform admin) may hand out the one ability
-// the role model withholds by default, so a project admin cannot
-// self-escalate to delete.
-function canManageDelete(req, project) {
-  return rbac.isAdmin(req) || rbac.isOwner(project, userId(req));
-}
-
-// Normalize a per-member permissions payload down to known boolean actions.
-function sanitizePermissions(input) {
-  if (input === undefined || input === null) return { value: {} };
-  if (typeof input !== 'object' || Array.isArray(input)) return { error: 'Permissions must be an object' };
-  const value = {};
-  for (const a of rbac.PROJECT_ACTIONS) {
-    if (input[a] !== undefined) value[a] = !!input[a];
-  }
-  return { value };
+// Project membership is Admin or Moderator only. The request accepts either
+// case and normalizes to the stored lower-case spelling.
+const MEMBER_ROLES = { admin: 'admin', moderator: 'moderator' };
+function normalizeMemberRole(input) {
+  return MEMBER_ROLES[String(input || '').trim().toLowerCase()] || null;
 }
 
 // Scoped leaderboards: metric picks the ledger table, period bounds the
@@ -213,15 +202,11 @@ router.post('/projects', async (req, res) => {
   try {
     await client.query('BEGIN');
     const p = await client.query(
-      `INSERT INTO projects (slug, owner_user_id, name, description, logo_url, website, social_links, visibility, banner_url)
+      `INSERT INTO projects (slug, creator_id, name, description, logo_url, website, social_links, visibility, banner_url)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [slug, owner, String(name).trim(), description || null, logo_url || null, website || null,
         social_links && typeof social_links === 'object' ? social_links : {},
         req.body.visibility === 'unlisted' ? 'unlisted' : 'public', req.body.banner_url || null]
-    );
-    await client.query(
-      'INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)',
-      [p.rows[0].id, owner, 'owner']
     );
     // Every project gets its own points system (Phase 2), so its quests
     // feed a project leaderboard as well as the global one.
@@ -243,8 +228,8 @@ router.get('/projects', async (req, res) => {
   const { rows } = await pool.query(
     `SELECT p.*, (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) AS members
      FROM projects p
-     WHERE p.owner_user_id = $1
-        OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $1)
+     WHERE p.creator_id = $1
+        OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $1 AND pm.status = 'active')
      ORDER BY p.created_at DESC`, [userId(req)]);
   res.json({ projects: rows });
 });
@@ -282,10 +267,18 @@ router.get('/projects/:id', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
   const uid = userId(req);
-  const canManage = rbac.isAdmin(req) || (await rbac.can(p.id, uid, 'manage', req));
-  // An archived/soft-deleted project is not publicly reachable: only a
-  // manager (or platform admin) can still open it.
-  if ((p.status !== 'active' || p.deleted_at) && !canManage) {
+  const isCreator = rbac.isCreator(p, uid);
+  const memberRole = isCreator ? null : await rbac.roleOn(uid, p.id);
+  // Every permission this viewer holds, so the dashboard can gate its
+  // sections from the payload rather than re-deriving a role.
+  const permissions = {};
+  for (const perm of rbac.PROJECT_PERMISSIONS) {
+    permissions[perm] = rbac.resolvePermission({ isCreator, role: memberRole, permission: perm });
+  }
+  const canSeePrivate = permissions['project.view_private'];
+  // An archived/soft-deleted project is not publicly reachable: only a viewer
+  // who can see private project state can still open it.
+  if ((p.status !== 'active' || p.deleted_at) && !canSeePrivate) {
     return res.status(404).json({ error: 'Project not found' });
   }
   const campaigns = await pool.query(
@@ -295,103 +288,142 @@ router.get('/projects/:id', async (req, res) => {
               JOIN quests q ON q.id = qc.quest_id WHERE q.campaign_id = c.id) AS participants
      FROM campaigns c
      WHERE c.project_id = $1 AND (c.status <> 'draft' OR $2 = TRUE)
-     ORDER BY c.created_at DESC`, [p.id, canManage]);
+     ORDER BY c.created_at DESC`, [p.id, canSeePrivate]);
   const quests = await pool.query(
     `SELECT q.id, q.campaign_id, q.slug, q.title, q.quest_type, q.xp_reward, q.points_reward,
             q.status, q.sort_order, q.starts_at, q.ends_at, q.is_required,
             (SELECT COUNT(DISTINCT qc.user_id)::int FROM quest_completions qc WHERE qc.quest_id = q.id) AS participants
      FROM quests q JOIN campaigns c ON c.id = q.campaign_id
      WHERE c.project_id = $1 AND (q.status = 'active' OR $2 = TRUE)
-     ORDER BY q.sort_order`, [p.id, canManage]);
+     ORDER BY q.sort_order`, [p.id, canSeePrivate]);
   const byCampaign = {};
   for (const q of quests.rows) (byCampaign[q.campaign_id] = byCampaign[q.campaign_id] || []).push(q);
   res.json({
     project: p,
-    can_manage: canManage,
-    // Drives the dashboard's danger zone: only a delete_project holder sees it.
-    can_delete: rbac.isAdmin(req) || (await rbac.can(p.id, uid, 'delete_project', req)),
-    is_owner: rbac.isOwner(p, uid),
+    is_creator: isCreator,
+    role: memberRole,
+    permissions,
+    can_manage: permissions['campaign.manage'] || permissions['access.manage'],
+    can_delete: permissions['project.delete'],
     campaigns: campaigns.rows.map(c => ({ ...c, quests: byCampaign[c.id] || [] })),
   });
 });
 
-// Project management members. Only a project manager (or platform admin) can
-// read or change the roster; a project owner holds the manage role.
+// The project's own access history. Only a viewer who can manage access (the
+// Creator) may read it.
+router.get('/projects/:id/audit', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'audit.view'))) return;
+  const { rows } = await pool.query(
+    `SELECT a.id, a.action, a.actor_user_id, u.username AS actor, a.entity_id,
+            a.before, a.after, a.metadata, a.created_at
+     FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_user_id
+     WHERE a.entity_type = 'project' AND a.entity_id = $1
+     ORDER BY a.created_at DESC LIMIT 100`, [p.id]);
+  res.json({ entries: rows });
+});
+
+// Project access. Only the Creator can read or change the roster; an Admin or
+// Moderator can never manage members. The Creator is shown from the project
+// row (creator_id) and never has a membership row.
 router.get('/projects/:id/members', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'access.manage'))) return;
+  const creator = await pool.query(
+    `SELECT u.id AS user_id, u.username, u.display_name, u.avatar_url
+     FROM users u WHERE u.id = $1`, [p.creator_id]);
   const { rows } = await pool.query(
-    `SELECT pm.user_id, pm.role, pm.permissions, u.username, u.display_name, u.avatar_url
+    `SELECT pm.id, pm.user_id, pm.role, pm.status, u.username, u.display_name, u.avatar_url
      FROM project_members pm JOIN users u ON u.id = pm.user_id
-     WHERE pm.project_id = $1 ORDER BY pm.role, u.username`, [p.id]);
-  res.json({ members: rows });
+     WHERE pm.project_id = $1 AND pm.status = 'active'
+     ORDER BY pm.role, u.username`, [p.id]);
+  res.json({
+    creator: creator.rows[0] || null,
+    members: rows.filter((m) => Number(m.user_id) !== Number(p.creator_id)),
+  });
 });
 
-// Add a member by username. The handle is resolved against the local users
-// table (a member has to have opened Questora at least once); an unknown
-// handle is refused rather than fabricated.
+// Add a member by username, as Admin or Moderator. The handle is resolved
+// against the local users table; an unknown handle is refused rather than
+// fabricated. Re-adding an existing member is refused so a role change goes
+// through PATCH.
 router.post('/projects/:id/members', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'access.manage'))) return;
   const username = String((req.body || {}).username || '').trim();
-  const role = String((req.body || {}).role || 'editor');
+  const role = normalizeMemberRole((req.body || {}).role);
   if (!username) return res.status(400).json({ error: 'A username is required' });
-  if (!rbac.PROJECT_ROLES.includes(role)) return res.status(400).json({ error: 'Unknown role' });
-  const perms = sanitizePermissions((req.body || {}).permissions);
-  if (perms.error) return res.status(400).json({ error: perms.error });
-  if (perms.value.delete_project === true && !canManageDelete(req, p)) {
-    return res.status(403).json({ error: 'Only the project owner can grant delete permission' });
-  }
+  if (!role) return res.status(400).json({ error: 'Choose Admin or Moderator' });
   const u = await pool.query('SELECT id, username FROM users WHERE lower(username) = lower($1)', [username]);
   if (!u.rows.length) return res.status(404).json({ error: 'No Questora account with that username yet' });
+  if (Number(u.rows[0].id) === Number(p.creator_id)) {
+    return res.status(400).json({ error: 'The Creator already runs this project' });
+  }
+  const existing = await pool.query(
+    "SELECT id FROM project_members WHERE project_id = $1 AND user_id = $2 AND status = 'active'",
+    [p.id, u.rows[0].id]);
+  if (existing.rows.length) {
+    return res.status(409).json({ error: 'That user already helps with this project. Change their role instead.' });
+  }
   await pool.query(
-    `INSERT INTO project_members (project_id, user_id, role, permissions) VALUES ($1, $2, $3, $4)
-     ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role, permissions = EXCLUDED.permissions`,
-    [p.id, u.rows[0].id, role, JSON.stringify(perms.value)]);
-  await audit(userId(req), 'project.member.add', 'project', p.id, null, { username, role, permissions: perms.value }, null);
-  res.json({ ok: true });
+    `INSERT INTO project_members (project_id, user_id, role, status, updated_at)
+     VALUES ($1, $2, $3, 'active', NOW())
+     ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role, status = 'active', updated_at = NOW()`,
+    [p.id, u.rows[0].id, role]);
+  await audit(userId(req), role === 'admin' ? 'ADMIN_ADDED' : 'MODERATOR_ADDED', 'project', p.id,
+    { role: null }, { role },
+    { target_user_id: u.rows[0].id, target_username: u.rows[0].username });
+  res.json({ ok: true, role, username: u.rows[0].username });
 });
 
+// Change a member between Admin and Moderator. Only the Creator may do this.
 router.patch('/projects/:id/members/:userId', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
-  const role = String((req.body || {}).role || '');
-  if (!rbac.PROJECT_ROLES.includes(role)) return res.status(400).json({ error: 'Unknown role' });
-  const perms = sanitizePermissions((req.body || {}).permissions);
-  if (perms.error) return res.status(400).json({ error: perms.error });
-  if (perms.value.delete_project === true && !canManageDelete(req, p)) {
-    return res.status(403).json({ error: 'Only the project owner can grant delete permission' });
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'access.manage'))) return;
+  const role = normalizeMemberRole((req.body || {}).role);
+  if (!role) return res.status(400).json({ error: 'Choose Admin or Moderator' });
+  const target = Number(req.params.userId);
+  if (target === Number(p.creator_id)) {
+    return res.status(400).json({ error: 'The Creator already runs this project' });
   }
-  const before = await pool.query('SELECT * FROM project_members WHERE project_id = $1 AND user_id = $2', [p.id, req.params.userId]);
+  const before = await pool.query(
+    "SELECT * FROM project_members WHERE project_id = $1 AND user_id = $2 AND status = 'active'",
+    [p.id, target]);
   if (!before.rows.length) return res.status(404).json({ error: 'That user is not a member of this project' });
-  if (before.rows[0].role === 'owner' && role !== 'owner') {
-    return res.status(400).json({ error: 'The project owner keeps their role.' });
-  }
-  if (Number(req.params.userId) === p.owner_user_id && perms.value.delete_project === false) {
-    return res.status(400).json({ error: 'The project owner always keeps delete permission.' });
-  }
-  const nextPerms = (req.body || {}).permissions === undefined
-    ? (before.rows[0].permissions || {}) : perms.value;
-  await pool.query('UPDATE project_members SET role = $3, permissions = $4 WHERE project_id = $1 AND user_id = $2',
-    [p.id, req.params.userId, role, JSON.stringify(nextPerms)]);
-  await audit(userId(req), 'project.member.update', 'project', p.id, before.rows[0], { role, permissions: nextPerms }, null);
-  res.json({ ok: true });
+  if (before.rows[0].role === role) return res.json({ ok: true, role, unchanged: true });
+  await pool.query(
+    'UPDATE project_members SET role = $3, updated_at = NOW() WHERE project_id = $1 AND user_id = $2',
+    [p.id, target, role]);
+  await audit(userId(req), 'ROLE_CHANGED', 'project', p.id,
+    { role: before.rows[0].role }, { role },
+    { target_user_id: target, previous_role: before.rows[0].role, new_role: role });
+  res.json({ ok: true, role });
 });
 
+// Remove a member by marking their membership removed. Access is revoked
+// immediately while the row is kept for the access history.
 router.delete('/projects/:id/members/:userId', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
-  const row = await pool.query('SELECT * FROM project_members WHERE project_id = $1 AND user_id = $2', [p.id, req.params.userId]);
-  if (!row.rows.length) return res.status(404).json({ error: 'That user is not a member of this project' });
-  if (row.rows[0].role === 'owner' || Number(req.params.userId) === p.owner_user_id) {
-    return res.status(400).json({ error: 'The project owner cannot be removed.' });
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'access.manage'))) return;
+  const target = Number(req.params.userId);
+  if (target === Number(p.creator_id)) {
+    return res.status(400).json({ error: 'The Creator cannot be removed from their own project' });
   }
-  await pool.query('DELETE FROM project_members WHERE project_id = $1 AND user_id = $2', [p.id, req.params.userId]);
-  await audit(userId(req), 'project.member.remove', 'project', p.id, row.rows[0], null, null);
+  const row = await pool.query(
+    "SELECT * FROM project_members WHERE project_id = $1 AND user_id = $2 AND status = 'active'",
+    [p.id, target]);
+  if (!row.rows.length) return res.status(404).json({ error: 'That user is not a member of this project' });
+  await pool.query(
+    "UPDATE project_members SET status = 'removed', updated_at = NOW() WHERE project_id = $1 AND user_id = $2",
+    [p.id, target]);
+  await audit(userId(req), row.rows[0].role === 'admin' ? 'ADMIN_REMOVED' : 'MODERATOR_REMOVED', 'project', p.id,
+    { role: row.rows[0].role }, null,
+    { target_user_id: target, previous_role: row.rows[0].role });
   res.json({ ok: true });
 });
 
@@ -401,7 +433,7 @@ router.delete('/projects/:id/members/:userId', async (req, res) => {
 router.patch('/projects/:id', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'project.edit'))) return;
   const allowed = {};
   if (req.body.name) allowed.name = String(req.body.name).slice(0, 255);
   if (req.body.description !== undefined) allowed.description = req.body.description;
@@ -439,7 +471,7 @@ router.patch('/projects/:id', async (req, res) => {
 router.get('/projects/:id/deletion-preview', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'delete_project'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'project.delete'))) return;
   const { rows } = await pool.query(
     `SELECT
        (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = $1) AS campaigns,
@@ -460,12 +492,12 @@ router.get('/projects/:id/deletion-preview', async (req, res) => {
 
 // Two-step destructive delete: soft (archive + deleted_at) by default, so a
 // confirm click cannot irreversibly wipe participant history. The permanent
-// path needs ?mode=hard and the same delete_project ability. Both are
+// path needs ?mode=hard and the same project.delete permission. Both are
 // audited; a soft delete stays restorable via PATCH status='active'.
 router.delete('/projects/:id', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'delete_project'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'project.delete'))) return;
   const mode = req.query.mode === 'hard' ? 'hard' : 'soft';
   if (mode === 'hard') {
     await pool.query('DELETE FROM projects WHERE id = $1', [p.id]);
@@ -508,7 +540,7 @@ const QUEST_TRANSITIONS = {
 router.post('/projects/:id/campaigns', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'campaign.manage'))) return;
   const { name, description, banner_url, category, chains, starts_at, ends_at, status, featured,
     visibility, rules, leaderboard_config } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'A campaign name is required' });
@@ -539,7 +571,7 @@ router.patch('/campaigns/:id', async (req, res) => {
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = c.rows[0];
   // Project RBAC, or a platform admin acting through the admin panel.
-  if (!(await rbac.requireProjectAction(req, res, campaign.project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, campaign.project_id, 'campaign.manage'))) return;
   const allowed = {};
   for (const k of ['name', 'description', 'banner_url', 'category', 'starts_at', 'ends_at', 'featured', 'rules']) {
     if (req.body[k] !== undefined) allowed[k] = req.body[k];
@@ -552,8 +584,8 @@ router.patch('/campaigns/:id', async (req, res) => {
   if (req.body.status !== undefined) {
     if (!CAMPAIGN_STATUSES.includes(req.body.status)) return res.status(400).json({ error: 'Unknown status' });
     const legal = CAMPAIGN_TRANSITIONS[campaign.status] || [];
-    const isPlatformAdmin = rbac.isAdmin(req);
-    if (req.body.status !== campaign.status && !legal.includes(req.body.status) && !isPlatformAdmin) {
+    const isCreator = await rbac.can(campaign.project_id, userId(req), 'project.edit');
+    if (req.body.status !== campaign.status && !legal.includes(req.body.status) && !isCreator) {
       return res.status(400).json({
         error: `A ${campaign.status} campaign cannot move to ${req.body.status}.`,
       });
@@ -581,7 +613,7 @@ router.post('/campaigns/:id/duplicate', async (req, res) => {
   const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = c.rows[0];
-  if (!(await rbac.requireProjectAction(req, res, campaign.project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, campaign.project_id, 'campaign.manage'))) return;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -636,7 +668,7 @@ router.delete('/campaigns/:id', async (req, res) => {
   const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = c.rows[0];
-  if (!(await rbac.requireProjectAction(req, res, campaign.project_id, 'manage'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, campaign.project_id, 'campaign.manage'))) return;
   const done = await pool.query(
     `SELECT COUNT(*)::int AS n FROM quest_completions qc
      JOIN quests q ON q.id = qc.quest_id WHERE q.campaign_id = $1`, [campaign.id]);
@@ -656,7 +688,7 @@ router.post('/campaigns/:id/quests', async (req, res) => {
   const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = c.rows[0];
-  if (!(await rbac.requireProjectAction(req, res, campaign.project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, campaign.project_id, 'quest.manage'))) return;
   const { title, description, instructions, is_required, xp_reward, points_reward, tasks, badge_id } = req.body || {};
   if (!title || !String(title).trim()) return res.status(400).json({ error: 'A quest title is required' });
   const client = await pool.connect();
@@ -744,7 +776,7 @@ router.patch('/quests/:id', async (req, res) => {
   const q = await pool.query(
     `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [req.params.id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
-  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, q.rows[0].project_id, 'quest.manage'))) return;
   const allowed = {};
   for (const k of ['title', 'description', 'instructions', 'image_url', 'quest_type', 'starts_at', 'ends_at']) {
     if (req.body[k] !== undefined) allowed[k] = req.body[k];
@@ -760,7 +792,7 @@ router.patch('/quests/:id', async (req, res) => {
   if (req.body.status !== undefined) {
     if (!QUEST_STATUSES.includes(req.body.status)) return res.status(400).json({ error: 'Unknown status' });
     const legal = QUEST_TRANSITIONS[q.rows[0].status] || [];
-    if (req.body.status !== q.rows[0].status && !legal.includes(req.body.status) && !rbac.isAdmin(req)) {
+    if (req.body.status !== q.rows[0].status && !legal.includes(req.body.status) && !(await rbac.can(q.rows[0].project_id, userId(req), 'project.edit'))) {
       return res.status(400).json({ error: `A ${q.rows[0].status} quest cannot move to ${req.body.status}.` });
     }
     allowed.status = req.body.status;
@@ -781,7 +813,7 @@ router.post('/quests/:id/duplicate', async (req, res) => {
   const q = await pool.query(
     `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [req.params.id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
-  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, q.rows[0].project_id, 'quest.manage'))) return;
   const quest = q.rows[0];
   const client = await pool.connect();
   try {
@@ -825,7 +857,7 @@ router.delete('/quests/:id', async (req, res) => {
     `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [req.params.id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
   const quest = q.rows[0];
-  if (!(await rbac.requireProjectAction(req, res, quest.project_id, 'manage'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, quest.project_id, 'quest.manage'))) return;
   const done = await pool.query('SELECT COUNT(*)::int AS n FROM quest_completions WHERE quest_id = $1', [quest.id]);
   if (done.rows[0].n > 0) {
     const { rows } = await pool.query(`UPDATE quests SET status = 'archived' WHERE id = $1 RETURNING *`, [quest.id]);
@@ -841,7 +873,7 @@ router.delete('/quests/:id', async (req, res) => {
 router.post('/campaigns/:id/quests/reorder', async (req, res) => {
   const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
-  if (!(await rbac.requireProjectAction(req, res, c.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, c.rows[0].project_id, 'quest.manage'))) return;
   const order = Array.isArray(req.body.order) ? req.body.order.map(Number).filter(Number.isFinite) : [];
   if (!order.length) return res.status(400).json({ error: 'An ordered list of quest ids is required' });
   const client = await pool.connect();
@@ -866,7 +898,7 @@ router.post('/campaigns/:id/quests/reorder', async (req, res) => {
 router.get('/projects/:id/review', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'review'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'submissions.review'))) return;
   const { rows } = await pool.query(
     `SELECT s.*, t.title AS task_title, t.type AS task_type, q.title AS quest_title,
             u.username
@@ -886,7 +918,7 @@ router.post('/submissions/:id/review', async (req, res) => {
   const q = await pool.query(
     `SELECT c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [sub.quest_id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
-  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'review'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, q.rows[0].project_id, 'submissions.review'))) return;
   const { decision, reason } = req.body || {};
   if (!['verified', 'rejected'].includes(decision)) return res.status(400).json({ error: 'Decision must be verified or rejected' });
   if (decision === 'rejected' && !String(reason || '').trim()) {
@@ -969,7 +1001,7 @@ router.get('/quests/:id/leaderboard', async (req, res) => {
 router.get('/projects/:id/overview', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'view_analytics'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'analytics.view'))) return;
   const stats = await pool.query(
     `SELECT
        (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = $1 AND c.status = 'active') AS active_campaigns,
@@ -1000,7 +1032,7 @@ router.get('/projects/:id/overview', async (req, res) => {
 router.get('/projects/:id/analytics', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'view_analytics'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'analytics.view'))) return;
   const perQuest = await pool.query(
     `SELECT q.id, q.title, q.xp_reward,
             (SELECT COUNT(*)::int FROM quest_completions qc WHERE qc.quest_id = q.id) AS completions,
@@ -1047,7 +1079,7 @@ function sanitizeNetworkRow(n, rpcs) {
 router.post('/projects/:id/networks', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'verification.manage'))) return;
   const b = req.body || {};
   if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'A network name is required' });
   const ns = String(b.chain_namespace || 'eip155');
@@ -1080,7 +1112,7 @@ router.post('/projects/:id/networks', async (req, res) => {
 router.get('/projects/:id/networks', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'verification.manage'))) return;
   const nets = await pool.query('SELECT * FROM task_networks WHERE project_id = $1 ORDER BY id', [p.id]);
   const rpcs = nets.rows.length ? await pool.query(
     'SELECT * FROM task_rpcs WHERE network_id = ANY($1) ORDER BY is_primary DESC, priority', [nets.rows.map(n => n.id)]) : { rows: [] };
@@ -1091,9 +1123,9 @@ router.get('/projects/:id/networks', async (req, res) => {
 
 router.get('/networks/:id', async (req, res) => {
   const n = await pool.query(
-    `SELECT n.*, p.owner_user_id FROM task_networks n JOIN projects p ON p.id = n.project_id WHERE n.id = $1`, [req.params.id]);
+    `SELECT n.*, p.creator_id FROM task_networks n JOIN projects p ON p.id = n.project_id WHERE n.id = $1`, [req.params.id]);
   if (!n.rows.length) return res.status(404).json({ error: 'Network not found' });
-  if (!(await rbac.requireProjectAction(req, res, n.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, n.rows[0].project_id, 'verification.manage'))) return;
   const rpcs = await pool.query('SELECT * FROM task_rpcs WHERE network_id = $1 ORDER BY is_primary DESC, priority', [n.rows[0].id]);
   res.json({ network: sanitizeNetworkRow(n.rows[0], rpcs.rows) });
 });
@@ -1101,7 +1133,7 @@ router.get('/networks/:id', async (req, res) => {
 router.patch('/networks/:id', async (req, res) => {
   const n = await pool.query('SELECT * FROM task_networks WHERE id = $1', [req.params.id]);
   if (!n.rows.length) return res.status(404).json({ error: 'Network not found' });
-  if (!(await rbac.requireProjectAction(req, res, n.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, n.rows[0].project_id, 'verification.manage'))) return;
   const b = req.body || {};
   const allowed = {};
   for (const k of ['name', 'native_symbol', 'explorer_url', 'explorer_tx_url', 'explorer_address_url', 'finality_model', 'address_format']) {
@@ -1123,7 +1155,7 @@ router.patch('/networks/:id', async (req, res) => {
 router.post('/networks/:id/test', async (req, res) => {
   const n = await pool.query('SELECT * FROM task_networks WHERE id = $1', [req.params.id]);
   if (!n.rows.length) return res.status(404).json({ error: 'Network not found' });
-  if (!(await rbac.requireProjectAction(req, res, n.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, n.rows[0].project_id, 'verification.manage'))) return;
   const result = await testNetworkEndpoints(n.rows[0]);
   res.json({ ok: !!result.ok, message: result.message, reported_chain_id: result.reported_chain_id || null,
     rpc_host: result.rpc_host || null, chain_id: n.rows[0].chain_id === null ? null : Number(n.rows[0].chain_id) });
@@ -1133,7 +1165,7 @@ router.post('/networks/:id/test', async (req, res) => {
 router.post('/networks/:id/rpcs', async (req, res) => {
   const n = await pool.query('SELECT * FROM task_networks WHERE id = $1', [req.params.id]);
   if (!n.rows.length) return res.status(404).json({ error: 'Network not found' });
-  if (!(await rbac.requireProjectAction(req, res, n.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, n.rows[0].project_id, 'verification.manage'))) return;
   const b = req.body || {};
   if (!validUrl(b.url)) return res.status(400).json({ error: 'The RPC URL must start with http or https' });
   const isPrimary = !!b.is_primary;
@@ -1152,7 +1184,7 @@ router.patch('/rpcs/:id', async (req, res) => {
   const r = await pool.query(
     `SELECT r.*, n.project_id FROM task_rpcs r JOIN task_networks n ON n.id = r.network_id WHERE r.id = $1`, [req.params.id]);
   if (!r.rows.length) return res.status(404).json({ error: 'RPC endpoint not found' });
-  if (!(await rbac.requireProjectAction(req, res, r.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, r.rows[0].project_id, 'verification.manage'))) return;
   const b = req.body || {};
   const allowed = {};
   if (b.url !== undefined) { if (!validUrl(b.url)) return res.status(400).json({ error: 'The RPC URL must start with http or https' }); allowed.url = String(b.url).trim(); }
@@ -1178,7 +1210,7 @@ router.delete('/rpcs/:id', async (req, res) => {
   const r = await pool.query(
     `SELECT r.*, n.project_id FROM task_rpcs r JOIN task_networks n ON n.id = r.network_id WHERE r.id = $1`, [req.params.id]);
   if (!r.rows.length) return res.status(404).json({ error: 'RPC endpoint not found' });
-  if (!(await rbac.requireProjectAction(req, res, r.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, r.rows[0].project_id, 'verification.manage'))) return;
   await pool.query('DELETE FROM task_rpcs WHERE id = $1', [r.rows[0].id]);
   await audit(userId(req), 'network.rpc.remove', 'network', r.rows[0].network_id, { host: maskUrl(r.rows[0].url) }, null, null);
   res.json({ deleted: true });
@@ -1188,7 +1220,7 @@ router.delete('/rpcs/:id', async (req, res) => {
 router.post('/projects/:id/tokens', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'verification.manage'))) return;
   const b = req.body || {};
   if (!b.network_id) return res.status(400).json({ error: 'Choose a network for this token' });
   const net = await pool.query('SELECT * FROM task_networks WHERE id = $1 AND project_id = $2', [b.network_id, p.id]);
@@ -1232,7 +1264,7 @@ router.post('/projects/:id/tokens', async (req, res) => {
 router.get('/projects/:id/tokens', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, p.id, 'verification.manage'))) return;
   const { rows } = await pool.query('SELECT * FROM task_tokens WHERE project_id = $1 ORDER BY id', [p.id]);
   res.json({ tokens: rows });
 });
@@ -1244,7 +1276,7 @@ router.post('/quests/:id/tasks', async (req, res) => {
     `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id
      WHERE ${isNum ? 'q.id = $1' : 'q.slug = $1'} LIMIT 1`, [req.params.id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
-  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, q.rows[0].project_id, 'task.manage'))) return;
   const b = req.body || {};
   const cfgErr = validateTaskConfig(b.type, b.config || {});
   if (cfgErr) return res.status(400).json({ error: cfgErr });
@@ -1289,7 +1321,7 @@ router.get('/quests/:id/tasks', async (req, res) => {
     `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id
      WHERE ${isNum ? 'q.id = $1' : 'q.slug = $1'} LIMIT 1`, [req.params.id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
-  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, q.rows[0].project_id, 'task.manage'))) return;
   const tasks = await pool.query('SELECT * FROM quest_tasks WHERE quest_id = $1 ORDER BY sort_order', [q.rows[0].id]);
   const versions = tasks.rows.length ? await pool.query(
     `SELECT DISTINCT ON (task_id) * FROM task_versions WHERE task_id = ANY($1) ORDER BY task_id, version DESC`,
@@ -1307,7 +1339,7 @@ router.get('/tasks/:id', async (req, res) => {
      JOIN campaigns c ON c.id = q.campaign_id WHERE t.id = $1`, [req.params.id]);
   if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
   const task = t.rows[0];
-  const canManage = await rbac.can(task.project_id, userId(req), 'edit', req);
+  const canManage = await rbac.can(task.project_id, userId(req), 'task.manage');
   if (!canManage) return res.status(403).json({ error: 'You do not have permission to manage this project' });
   const v = await pool.query('SELECT * FROM task_versions WHERE task_id = $1 ORDER BY version DESC LIMIT 1', [task.id]);
   res.json({ task: sanitizeTaskForCreator(task, v.rows[0] || null) });
@@ -1320,7 +1352,7 @@ router.patch('/tasks/:id', async (req, res) => {
     `SELECT t.*, q.status AS quest_status, c.project_id FROM quest_tasks t
      JOIN quests q ON q.id = t.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE t.id = $1`, [req.params.id]);
   if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
-  if (!(await rbac.requireProjectAction(req, res, t.rows[0].project_id, 'edit'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, t.rows[0].project_id, 'task.manage'))) return;
   const task = t.rows[0];
   const b = req.body || {};
   const client = await pool.connect();
@@ -1385,7 +1417,7 @@ router.post('/tasks/:id/publish', async (req, res) => {
     `SELECT t.*, q.status AS quest_status, c.project_id FROM quest_tasks t
      JOIN quests q ON q.id = t.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE t.id = $1`, [req.params.id]);
   if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
-  if (!(await rbac.requireProjectAction(req, res, t.rows[0].project_id, 'publish'))) return;
+  if (!(await rbac.requireProjectPermission(req, res, t.rows[0].project_id, 'task.publish'))) return;
   const task = t.rows[0];
   const v = await pool.query('SELECT * FROM task_versions WHERE task_id = $1 ORDER BY version DESC LIMIT 1', [task.id]);
   const config = (v.rows[0] && v.rows[0].config) || task.config || {};

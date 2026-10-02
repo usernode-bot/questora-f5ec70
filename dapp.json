@@ -77,11 +77,6 @@
       "expectText": "First Quest"
     },
     {
-      "name": "Teams page renders with seeded team",
-      "path": "/teams",
-      "expectText": "Staging demo Quest Crew"
-    },
-    {
       "id": "campaign.checklist",
       "name": "Campaign checklist flow",
       "path": "/projects/staging-demo-octra-builders/campaigns/staging-demo-welcome-campaign",
@@ -127,18 +122,6 @@
       ]
     },
     {
-      "id": "teams.board",
-      "name": "Teams board",
-      "path": "/teams",
-      "expectText": "Staging demo Quest Crew",
-      "visual": true,
-      "impact": [
-        "public/views.js",
-        "src/teams.js",
-        "src/routes/teams.js"
-      ]
-    },
-    {
       "name": "Projects directory renders",
       "path": "/projects",
       "expectText": "Projects"
@@ -162,6 +145,17 @@
       "name": "Dashboard blocks a non-member",
       "path": "/dashboard/projects/staging-demo-octra-builders",
       "expectText": "access"
+    },
+    {
+      "name": "Dashboard explains project roles",
+      "path": "/dashboard/projects/staging-demo-octra-builders",
+      "expectText": "moderator role",
+      "id": "project.access-gating",
+      "visual": true,
+      "impact": [
+        "public/**",
+        "src/**"
+      ]
     },
     {
       "name": "Project settings route resolves",
@@ -211,6 +205,17 @@
       "name": "Participant on-chain quest shows the Verify button",
       "path": "/quests/staging-demo-hold-sepolia-eth",
       "expectText": "Verify"
+    },
+    {
+      "id": "project.access-overview",
+      "name": "Project overview reaches the dashboard",
+      "path": "/projects/staging-demo-octra-builders",
+      "expectText": "Staging demo Octra Builders",
+      "visual": true,
+      "impact": [
+        "public/**",
+        "src/**"
+      ]
     }
   ],
   "visibility": {

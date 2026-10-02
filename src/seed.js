@@ -24,15 +24,13 @@ async function upsertUser(username, display_name) {
 async function upsertProject(ownerId, name, extra) {
   const slug = slugify(name);
   const { rows } = await pool.query(
-    `INSERT INTO projects (slug, owner_user_id, name, description, logo_url, website)
+    `INSERT INTO projects (slug, creator_id, name, description, logo_url, website)
      VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (slug) DO UPDATE SET description = EXCLUDED.description
      RETURNING id`,
     [slug, ownerId, name, extra.description, extra.logo_url, extra.website]
   );
-  await pool.query(
-    `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, 'owner')
-     ON CONFLICT (project_id, user_id) DO NOTHING`, [rows[0].id, ownerId]);
+  // The Creator lives on projects.creator_id, never as a membership row.
   return rows[0].id;
 }
 
@@ -401,20 +399,45 @@ async function seed() {
   for (const uname of ['staging-demo-user-1', 'staging-demo-user-2']) {
     for (const row of devQuests) await completeQuest(row.id, userIds[uname], 100, seasonId);
   }
-  // Membership roles so the permissions model has non-owner data: user 2 is
-  // an admin on Octra Builders, user 3 a reviewer, user 4 an analyst.
-  // The admin grant carries an explicit empty permissions map, so the
-  // default-deny rule on delete_project is visible rather than implicit.
-  const memberRoles = {
-    'staging-demo-user-2': { role: 'admin', permissions: {} },
-    'staging-demo-user-3': { role: 'reviewer', permissions: {} },
-    'staging-demo-user-4': { role: 'analyst', permissions: {} },
-  };
-  for (const [uname, def] of Object.entries(memberRoles)) {
+  // Project access so the Creator/Admin/Moderator model has real data: user 2
+  // is an Admin on Octra Builders, user 3 and user 4 are Moderators. The
+  // Creator (user 1) has no membership row.
+  const memberRoles = [
+    ['staging-demo-user-2', 'Staging demo Octra Builders', 'admin'],
+    ['staging-demo-user-3', 'Staging demo Octra Builders', 'moderator'],
+    ['staging-demo-user-4', 'Staging demo Octra Builders', 'moderator'],
+    // Same person, different role on another project: user 2 is only a
+    // Moderator on Nebula AI, so per-project isolation is visible.
+    ['staging-demo-user-2', 'Staging demo Nebula AI', 'moderator'],
+  ];
+  for (const [uname, project, role] of memberRoles) {
     await pool.query(
-      `INSERT INTO project_members (project_id, user_id, role, permissions) VALUES ($1, $2, $3, $4)
-       ON CONFLICT (project_id, user_id) DO NOTHING`,
-      [projectIds['Staging demo Octra Builders'], userIds[uname], def.role, JSON.stringify(def.permissions)]);
+      `INSERT INTO project_members (project_id, user_id, role, status) VALUES ($1, $2, $3, 'active')
+       ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role, status = 'active'`,
+      [projectIds[project], userIds[uname], role]);
+  }
+  // Access history for the Project Access card: the seeded Creator added an
+  // Admin and two Moderators, then changed one role. Actors are fake demo
+  // identities, never the visitor.
+  const creatorId = userIds['staging-demo-user-1'];
+  const octraId = projectIds['Staging demo Octra Builders'];
+  const accessAudit = [
+    ['ADMIN_ADDED', userIds['staging-demo-user-2'], null, 'admin'],
+    ['MODERATOR_ADDED', userIds['staging-demo-user-3'], null, 'moderator'],
+    ['MODERATOR_ADDED', userIds['staging-demo-user-4'], null, 'moderator'],
+    ['ROLE_CHANGED', userIds['staging-demo-user-3'], 'admin', 'moderator'],
+  ];
+  for (const [action, target, prev, next] of accessAudit) {
+    await pool.query(
+      `INSERT INTO audit_logs (actor_user_id, action, entity_type, entity_id, before, after, metadata)
+       SELECT $1::int, $2::text, 'project', $3::int, $4::jsonb, $5::jsonb, $6::jsonb
+       WHERE NOT EXISTS (SELECT 1 FROM audit_logs a
+                           WHERE a.action = $2::text AND a.entity_type = 'project' AND a.entity_id = $3::int
+                             AND (a.metadata->>'target_user_id')::int = $7::int)`,
+      [creatorId, action, octraId,
+        JSON.stringify({ role: prev }), JSON.stringify({ role: next }),
+        JSON.stringify({ target_user_id: target, previous_role: prev, new_role: next }),
+        target]);
   }
   // User 4 has a pending submission (review queue non-empty).
   const u4 = userIds['staging-demo-user-4'];
@@ -490,22 +513,6 @@ async function seed() {
      JOIN achievements a ON a.key = 'first-quest'
      WHERE u.username IN ('staging-demo-user-1', 'staging-demo-user-2', 'staging-demo-user-3')
      ON CONFLICT DO NOTHING`);
-
-  // Teams (Phase 3): one demo crew owned by user 1 with members 1-3.
-  const team = await pool.query(
-    `INSERT INTO teams (slug, name, tagline, owner_user_id, join_code)
-     VALUES ('staging-demo-quest-crew', 'Staging demo Quest Crew', 'Staging demo team for testing the team board.',
-             $1, 'demo-crew')
-     ON CONFLICT (slug) DO NOTHING RETURNING id`,
-    [userIds['staging-demo-user-1']]);
-  if (team.rows.length) {
-    for (const uname of ['staging-demo-user-1', 'staging-demo-user-2', 'staging-demo-user-3']) {
-      await pool.query(
-        `INSERT INTO team_members (team_id, user_id, role) VALUES ($1, $2, $3)
-         ON CONFLICT (team_id, user_id) DO NOTHING`,
-        [team.rows[0].id, userIds[uname], uname === 'staging-demo-user-1' ? 'owner' : 'member']);
-    }
-  }
 
   // Wallets (multi-chain link flow): fake, verified wallets per demo user so
   // the Profile Wallets panel has rows to show. Distinct per user and chain,

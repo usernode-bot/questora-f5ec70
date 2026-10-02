@@ -218,32 +218,47 @@ test('quest lock evaluator: pure logic over completed sets', () => {
   assert.equal(conditions.evaluateLock(7, 'all', [], new Set()), false);
 });
 
-// ---- Project Ownership: action resolution (pure) ----
-const { resolveAction, PROJECT_ACTIONS } = require('../src/rbac');
+// ---- Project access: permission resolution (pure) ----
+const { resolvePermission, PROJECT_PERMISSIONS } = require('../src/rbac');
 const util = require('../src/util');
 
-test('rbac default-deny: a project admin cannot delete without a grant', () => {
-  const admin = { ownerUserId: 1, userId: 2, role: 'admin', permissions: {}, action: 'delete_project' };
-  assert.equal(resolveAction(admin), false, 'admin has no delete_project by default');
-  assert.equal(resolveAction({ ...admin, action: 'manage' }), true, 'admin still manages');
-  assert.equal(resolveAction({ ...admin, action: 'edit' }), true);
-  assert.equal(resolveAction({ ...admin, action: 'publish' }), true);
-  assert.equal(resolveAction({ ...admin, action: 'review' }), true);
+test('rbac: the Creator resolves every permission', () => {
+  for (const permission of PROJECT_PERMISSIONS) {
+    assert.equal(resolvePermission({ isCreator: true, role: null, permission }), true, 'creator: ' + permission);
+  }
 });
 
-test('rbac explicit grant flips a withheld ability, and a revoke withholds a default', () => {
-  assert.equal(resolveAction({ ownerUserId: 1, userId: 2, role: 'admin', permissions: { delete_project: true }, action: 'delete_project' }), true);
-  // Explicit override beats the role default in either direction.
-  assert.equal(resolveAction({ ownerUserId: 1, userId: 2, role: 'admin', permissions: { edit: false }, action: 'edit' }), false);
-  assert.equal(resolveAction({ ownerUserId: 1, userId: 2, role: 'analyst', permissions: { edit: true }, action: 'edit' }), true);
+test('rbac: an Admin manages content but never the project or its access', () => {
+  const admin = { isCreator: false, role: 'admin' };
+  for (const p of ['campaign.manage', 'quest.manage', 'task.manage', 'task.publish', 'verification.manage', 'rewards.manage', 'submissions.review', 'analytics.view', 'leaderboard.view', 'participants.view', 'project.view_private']) {
+    assert.equal(resolvePermission({ ...admin, permission: p }), true, 'admin can ' + p);
+  }
+  for (const p of ['project.delete', 'project.edit', 'access.manage', 'audit.view']) {
+    assert.equal(resolvePermission({ ...admin, permission: p }), false, 'admin cannot ' + p);
+  }
 });
 
-test('rbac owner and platform admin resolve to true for every action', () => {
-  for (const action of PROJECT_ACTIONS) {
-    assert.equal(resolveAction({ isPlatformAdmin: true, ownerUserId: 1, userId: 9, role: null, permissions: null, action }), true, 'platform admin: ' + action);
-    assert.equal(resolveAction({ ownerUserId: 1, userId: 1, role: 'owner', permissions: {}, action }), true, 'owner: ' + action);
-    // A non-member gets nothing.
-    assert.equal(resolveAction({ ownerUserId: 1, userId: 42, role: null, permissions: null, action }), false);
+test('rbac: a Moderator reviews and moderates, and manages nothing', () => {
+  const mod = { isCreator: false, role: 'moderator' };
+  for (const p of ['submissions.review', 'moderation.moderate', 'participants.view', 'analytics.view', 'leaderboard.view', 'project.view_private']) {
+    assert.equal(resolvePermission({ ...mod, permission: p }), true, 'moderator can ' + p);
+  }
+  for (const p of ['campaign.manage', 'quest.manage', 'task.manage', 'task.publish', 'verification.manage', 'rewards.manage', 'project.delete', 'project.edit', 'access.manage', 'audit.view']) {
+    assert.equal(resolvePermission({ ...mod, permission: p }), false, 'moderator cannot ' + p);
+  }
+});
+
+test('rbac: a non-member resolves nothing, and there is no platform-admin global role', () => {
+  for (const permission of PROJECT_PERMISSIONS) {
+    assert.equal(resolvePermission({ isCreator: false, role: null, permission }), false, 'non-member: ' + permission);
+    assert.equal(resolvePermission({ isCreator: false, role: 'admin', permission, isPlatformAdmin: true }), resolvePermission({ isCreator: false, role: 'admin', permission }), 'platform admin is not special: ' + permission);
+  }
+});
+
+test('rbac: legacy granular roles collapse to moderator (least privilege)', () => {
+  for (const role of ['editor', 'reviewer', 'analyst']) {
+    assert.equal(resolvePermission({ isCreator: false, role, permission: 'submissions.review' }), true, role + ' reviews');
+    assert.equal(resolvePermission({ isCreator: false, role, permission: 'campaign.manage' }), false, role + ' does not manage');
   }
 });
 
