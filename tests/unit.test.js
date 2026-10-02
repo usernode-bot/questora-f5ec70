@@ -598,3 +598,47 @@ test('the orphan duplicate page components are no longer exported', () => {
   assert.ok(!/\bviewProject\b(?!Overview|Campaigns|Quests)/.test(exportLine), 'viewProject must not be exported');
   assert.ok(/viewNotFound/.test(exportLine), 'the not-found view must be exported');
 });
+
+
+test('shared icon helper renders one svg and never throws on an unknown name', () => {
+  // icons.js attaches to window.QUI; give it a window to attach to.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'icons.js'), 'utf8');
+  const sandbox = { window: { QUI: {} } };
+  // eslint-disable-next-line no-new-func
+  new Function('window', 'document', src)(sandbox.window, { createElement() { return {}; } });
+  const icon = sandbox.window.QUI.icon;
+  assert.equal(typeof icon, 'function');
+  const svg = icon('folder');
+  assert.match(svg, /^<svg /);
+  assert.match(svg, /aria-hidden="true"/);
+  assert.equal(icon('not-a-real-icon-name', {}), '', 'unknown name draws nothing and does not throw');
+  const names = sandbox.window.QUI.iconNames();
+  assert.ok(names.includes('more_vert') && names.includes('account_balance_wallet'));
+});
+
+test('one navigation source drives the desktop bar, drawer and bottom bar', () => {
+  const navMenu = require('../public/nav-menu.js');
+  assert.equal(typeof navMenu.NAV, 'object');
+  assert.equal(typeof navMenu.BOTTOM_NAV, 'object');
+  assert.equal(typeof navMenu.UTILITY_NAV, 'object');
+
+  const seen = new Map();
+  for (const dest of navMenu.NAV) seen.set(dest.path, dest.label);
+  for (const dest of navMenu.BOTTOM_NAV) seen.set(dest.path, dest.label);
+  for (const dest of navMenu.UTILITY_NAV) seen.set(dest.path, dest.label);
+  assert.equal(seen.get('/projects'), 'Projects', 'Projects is the same destination everywhere');
+  assert.equal(seen.get('/campaigns'), 'Campaigns');
+  // The four bottom-bar destinations are a subset of the shared labels.
+  for (const dest of navMenu.BOTTOM_NAV) {
+    assert.ok(dest.icon && dest.match, dest.label + ' needs an icon and a match');
+  }
+  assert.equal(navMenu.BOTTOM_NAV.length, 4, 'the bottom bar holds four destinations');
+  // Every destination has an icon and a match rule, and none is duplicated.
+  const paths = [];
+  for (const list of [navMenu.NAV, navMenu.BOTTOM_NAV, navMenu.UTILITY_NAV]) {
+    for (const dest of list) { assert.ok(dest.icon && dest.match); paths.push(dest.path); }
+  }
+  assert.equal(navMenu.matchRe(navMenu.NAV[0]).test('/projects/abc'), true);
+});

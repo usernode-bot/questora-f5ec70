@@ -1,6 +1,6 @@
 window.QV = (function () {
 'use strict';
-var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, statCard, pager, emptyState, dangerZone;
+var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, statCard, pager, emptyState, dangerZone, icon, tooltip, notificationRow, NOTIF_KINDS;
 // Resolve the orchestrator's helpers at call time: app.js loads after this
 // file, so a bind-time capture would freeze the fallbacks.
 var mount, errorCard, Render;
@@ -8,7 +8,7 @@ function bindRender() {
   mount = function (n) { var R = window.QV && window.QV.Render; return R && R.mount ? R.mount(n) : app().replaceChildren(n); };
   errorCard = function (m) { var R = window.QV && window.QV.Render; return R && R.errorCard ? R.errorCard(m) : el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">' + escapeHtml(m) + '</p></div>'); };
 }
-function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; dangerZone = q.dangerZone; }
+function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; dangerZone = q.dangerZone; icon = q.icon; tooltip = q.tooltip; notificationRow = q.notificationRow; NOTIF_KINDS = q.NOTIF_KINDS; }
 bindQUI();
 bindRender();
 // View renderers. Each returns a DocumentFragment-ish element appended by
@@ -187,13 +187,13 @@ async function viewQuest(id) {
       if (t.verification_reason && t.verification_status !== 'VERIFIED') {
         rejectLine.innerHTML = `<p class="text-xs text-zinc-400">${escapeHtml(t.verification_reason)}</p>`;
       }
-      if (t.verification_status === 'VERIFIED') stateDot.textContent = '✓';
+      if (t.verification_status === 'VERIFIED') stateDot.innerHTML = icon('check', { class: 'w-3.5 h-3.5' });
       if (t.verification_status === 'VERIFIED') { return row; }
     }
-    if (status === 'verified') { stateDot.textContent = '✓'; statusLine.innerHTML = statePill('verified'); }
+    if (status === 'verified') { stateDot.innerHTML = icon('check', { class: 'w-3.5 h-3.5' }); statusLine.innerHTML = statePill('verified'); }
     else if (status === 'pending') { statusLine.innerHTML = statePill('pending'); }
     else if (status === 'rejected') {
-      stateDot.textContent = '✕'; statusLine.innerHTML = statePill('rejected');
+      stateDot.innerHTML = icon('close', { class: 'w-3.5 h-3.5' }); statusLine.innerHTML = statePill('rejected');
       rejectLine.innerHTML = `<p class="text-sm text-red-300">${escapeHtml(st.review_note || 'Rejected')}</p>`;
       const again = el('<button class="resubmit mt-2 text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Resubmit</button>');
       again.addEventListener('click', () => actionFor(t, actionArea));
@@ -576,7 +576,7 @@ async function viewProfile(username, params) {
           <p class="text-sm text-zinc-500 mb-3">Share your link. When someone you invite finishes ${inv.qualification_quests} quests, you get +${inv.xp_reward} XP.</p>
           <div class="flex flex-col sm:flex-row gap-2">
             <input readonly value="${escapeHtml(joinLink)}" class="invite-link flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-300 focus:outline-none">
-            <button class="copy shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Copy link</button>
+            <button class="copy shrink-0 font-medium px-4 py-2.5 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">${icon('content_copy', { class: 'w-4 h-4' })}<span>Copy link</span></button>
           </div>
           ${inv.referrals.length ? `<p class="text-xs text-zinc-600 mt-3">${inv.referrals.length} invited · ${inv.referrals.filter(r => r.status === 'qualified').length} qualified</p>` : ''}
         </div>`);
@@ -1070,7 +1070,7 @@ async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
     const row = el(`
       <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
         <div class="flex items-start gap-3">
-          <span class="task-state w-6 h-6 rounded-full border-2 ${stateCls} shrink-0 mt-0.5 flex items-center justify-center text-xs">${status === 'verified' ? '\u2713' : status === 'rejected' ? '\u2715' : ''}</span>
+          <span class="task-state w-6 h-6 rounded-full border-2 ${stateCls} shrink-0 mt-0.5 flex items-center justify-center text-xs">${status === 'verified' ? icon('check', { class: 'w-3.5 h-3.5' }) : status === 'rejected' ? icon('close', { class: 'w-3.5 h-3.5' }) : ''}</span>
           <div class="min-w-0 flex-1">
             <p class="font-medium">${escapeHtml(t.title)}</p>
             <p class="text-xs text-zinc-500">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.proof_required ? ' \u00b7 proof required' : ''}${reqLine ? ' \u00b7 ' + escapeHtml(reqLine) : ''}</p>
@@ -1180,12 +1180,13 @@ const DASH_SECTIONS = [
 function actionMenu(items) {
   const node = el(`
     <details class="relative row-menu">
-      <summary class="list-none cursor-pointer select-none text-xs px-3 py-2 min-h-[44px] inline-flex items-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Actions</summary>
-      <div class="absolute right-0 z-20 mt-1 w-48 rounded-xl border border-zinc-700 bg-zinc-900 shadow-lg p-1 space-y-0.5"></div>
+      <summary class="list-none cursor-pointer select-none min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300" aria-label="More options" aria-haspopup="menu">${icon('more_vert')}</summary>
+      <div class="absolute right-0 z-20 mt-1 w-56 rounded-xl border border-zinc-700 bg-zinc-900 shadow-lg p-1 space-y-0.5"></div>
     </details>`);
+  tooltip(node.querySelector('summary'), 'More options');
   const menu = node.querySelector('div');
   for (const it of items) {
-    const b = el(`<button class="w-full text-left text-sm px-3 py-2 rounded-lg hover:bg-zinc-800 ${it.danger ? 'text-red-300' : 'text-zinc-200'}">${escapeHtml(it.label)}</button>`);
+    const b = el(`<button class="w-full text-left text-sm px-3 py-2 rounded-lg hover:bg-zinc-800 inline-flex items-center gap-3 text-zinc-400 ${it.danger ? 'text-red-300' : ''}">${icon(it.icon || 'chevron_down')}<span class="${it.danger ? 'text-red-300' : 'text-zinc-200'}">${escapeHtml(it.label)}</span></button>`);
     b.addEventListener('click', (e) => { e.preventDefault(); node.removeAttribute('open'); it.run(b); });
     menu.appendChild(b);
   }
@@ -1364,9 +1365,9 @@ function renderDashCampaigns(sectionEl, ctx) {
   const bulk = el(`
     <div class="bulk flex flex-wrap gap-2 mb-3 hidden">
       <span class="text-xs text-zinc-500 self-center"><span class="count">0</span> selected</span>
-      <button class="b-publish text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Publish</button>
-      <button class="b-unpublish text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Unpublish</button>
-      <button class="b-archive text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-200">Archive</button>
+      <button class="b-publish text-xs px-3 py-2 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">${icon('publish', { class: 'w-4 h-4' })}<span>Publish</span></button>
+      <button class="b-unpublish text-xs px-3 py-2 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">${icon('cancel', { class: 'w-4 h-4' })}<span>Unpublish</span></button>
+      <button class="b-archive text-xs px-3 py-2 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-200">${icon('archive', { class: 'w-4 h-4' })}<span>Archive</span></button>
     </div>`);
   sectionEl.appendChild(bulk);
 
@@ -1391,13 +1392,13 @@ function renderDashCampaigns(sectionEl, ctx) {
 
   function campaignActions(c) {
     const items = [];
-    items.push({ label: 'View', run: () => window.history.pushState({}, '', `/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}`) || window.dispatchEvent(new PopStateEvent('popstate')) });
-    items.push({ label: 'Manage quests', run: () => { window.history.pushState({}, '', `${ctx.base}/campaigns/${encodeURIComponent(c.slug)}`); window.dispatchEvent(new PopStateEvent('popstate')); } });
-    items.push({ label: 'Duplicate', run: async () => { try { await window.QuestoraAPI.api.post(`/api/v1/campaigns/${c.id}/duplicate`, {}); toast('Duplicated as a draft'); ctx.reload(); } catch (e) { toast(e.message, true); } } });
-    if (c.status !== 'active' && ['draft', 'scheduled', 'paused'].includes(c.status)) items.push({ label: 'Publish', run: async () => { await patchCampaign(c.id, { status: 'active' }); } });
-    if (c.status === 'active') items.push({ label: 'Unpublish', run: async () => { await patchCampaign(c.id, { status: 'paused' }); } });
-    items.push({ label: 'Archive', danger: true, run: async () => { await patchCampaign(c.id, { status: 'archived' }); } });
-    items.push({ label: 'Delete', danger: true, run: async (btn) => {
+    items.push({ label: 'View', icon: 'open_in_new', run: () => window.history.pushState({}, '', `/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}`) || window.dispatchEvent(new PopStateEvent('popstate')) });
+    items.push({ label: 'Manage quests', icon: 'edit', run: () => { window.history.pushState({}, '', `${ctx.base}/campaigns/${encodeURIComponent(c.slug)}`); window.dispatchEvent(new PopStateEvent('popstate')); } });
+    items.push({ label: 'Duplicate', icon: 'content_copy', run: async () => { try { await window.QuestoraAPI.api.post(`/api/v1/campaigns/${c.id}/duplicate`, {}); toast('Duplicated as a draft'); ctx.reload(); } catch (e) { toast(e.message, true); } } });
+    if (c.status !== 'active' && ['draft', 'scheduled', 'paused'].includes(c.status)) items.push({ label: 'Publish', icon: 'publish', run: async () => { await patchCampaign(c.id, { status: 'active' }); } });
+    if (c.status === 'active') items.push({ label: 'Unpublish', icon: 'cancel', run: async () => { await patchCampaign(c.id, { status: 'paused' }); } });
+    items.push({ label: 'Archive', icon: 'archive', danger: true, run: async () => { await patchCampaign(c.id, { status: 'archived' }); } });
+    items.push({ label: 'Delete', icon: 'delete', danger: true, run: async (btn) => {
       if (!btn.dataset.armed) { btn.dataset.armed = '1'; btn.textContent = 'Confirm delete'; return; }
       try { const r = await window.QuestoraAPI.api.del(`/api/v1/campaigns/${c.id}`); toast(r.archived ? r.reason : 'Campaign deleted'); ctx.reload(); } catch (e) { toast(e.message, true); }
     } });
@@ -1572,7 +1573,7 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
       const idx = quests.indexOf(q);
       const row = el(`
         <div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5">
-          <span class="drag-handle cursor-grab text-zinc-600 select-none" title="Drag to reorder" aria-hidden="true">\u2261</span>
+          <span class="drag-handle cursor-grab text-zinc-600 select-none" title="Drag to reorder" aria-hidden="true">${icon('drag_indicator')}</span>
           <span class="min-w-0 flex-1">
             <span class="block font-medium truncate">${escapeHtml(q.title)}</span>
             <span class="block text-xs text-zinc-600">${escapeHtml(q.quest_type || 'Mixed')} \u00b7 ${q.participants || 0} participants \u00b7 ${q.points_reward || 0} points</span>
@@ -1580,13 +1581,15 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
           ${statePill(q.status)}
           <span class="shrink-0 text-sm text-violet-300">+${q.xp_reward} XP</span>
           <span class="updown shrink-0 flex gap-1">
-            <button class="up text-xs px-2 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300" aria-label="Move up">\u2191</button>
-            <button class="down text-xs px-2 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300" aria-label="Move down">\u2193</button>
+            <button class="up min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 disabled:opacity-40" aria-label="Move up">${icon('arrow_upward')}</button>
+            <button class="down min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 disabled:opacity-40" aria-label="Move down">${icon('arrow_downward')}</button>
           </span>
           <span class="menu-slot shrink-0"></span>
         </div>`);
       row.querySelector('.up').disabled = idx === 0;
       row.querySelector('.down').disabled = idx === quests.length - 1;
+      tooltip(row.querySelector('.up'), 'Move up');
+      tooltip(row.querySelector('.down'), 'Move down');
       row.querySelector('.up').addEventListener('click', () => { if (idx > 0) { const l = quests.slice(); [l[idx - 1], l[idx]] = [l[idx], l[idx - 1]]; saveOrder(l).then(ctx.reload); } });
       row.querySelector('.down').addEventListener('click', () => { if (idx < quests.length - 1) { const l = quests.slice(); [l[idx + 1], l[idx]] = [l[idx], l[idx + 1]]; saveOrder(l).then(ctx.reload); } });
       // Drag and drop reordering: grab a row and drop it on another.
@@ -1601,16 +1604,16 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
         await saveOrder(l); ctx.reload();
       });
       const actions = [];
-      actions.push({ label: 'View', run: async () => { try { const d = await window.QuestoraAPI.api.get('/api/v1/quests/' + q.id); window.history.pushState({}, '', `/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(campaign.slug)}/quests/${encodeURIComponent(d.quest.slug || q.id)}`); window.dispatchEvent(new PopStateEvent('popstate')); } catch (e) { toast(e.message, true); } } });
-      actions.push({ label: 'Edit', run: () => promptEditQuest(row, q, async (body) => { await window.QuestoraAPI.api.patch(`/api/v1/quests/${q.id}`, body); toast('Quest updated'); ctx.reload(); }) });
-      actions.push({ label: 'Configure tasks', run: () => { window.history.pushState({}, '', `${ctx.base}/tasks/${q.id}`); window.dispatchEvent(new PopStateEvent('popstate')); } });
-      actions.push({ label: 'Duplicate', run: async () => { try { await window.QuestoraAPI.api.post(`/api/v1/quests/${q.id}/duplicate`, {}); toast('Duplicated as a draft'); ctx.reload(); } catch (e) { toast(e.message, true); } } });
-      actions.push({ label: 'Reorder', run: () => toast('Drag a row handle, or use the up and down arrows, to reorder quests.') });
-      if (q.status !== 'active') actions.push({ label: 'Publish', run: () => patchQuest(q.id, { status: 'active' }) });
-      if (q.status === 'active') actions.push({ label: 'Unpublish', run: () => patchQuest(q.id, { status: 'paused' }) });
-      if (q.status === 'active' || q.status === 'scheduled') actions.push({ label: 'Pause', run: () => patchQuest(q.id, { status: 'paused' }) });
-      actions.push({ label: 'Archive', danger: true, run: () => patchQuest(q.id, { status: 'archived' }) });
-      actions.push({ label: 'Delete', danger: true, run: async (btn) => {
+      actions.push({ label: 'View', icon: 'open_in_new', run: async () => { try { const d = await window.QuestoraAPI.api.get('/api/v1/quests/' + q.id); window.history.pushState({}, '', `/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(campaign.slug)}/quests/${encodeURIComponent(d.quest.slug || q.id)}`); window.dispatchEvent(new PopStateEvent('popstate')); } catch (e) { toast(e.message, true); } } });
+      actions.push({ label: 'Edit', icon: 'edit', run: () => promptEditQuest(row, q, async (body) => { await window.QuestoraAPI.api.patch(`/api/v1/quests/${q.id}`, body); toast('Quest updated'); ctx.reload(); }) });
+      actions.push({ label: 'Configure tasks', icon: 'checklist', run: () => { window.history.pushState({}, '', `${ctx.base}/tasks/${q.id}`); window.dispatchEvent(new PopStateEvent('popstate')); } });
+      actions.push({ label: 'Duplicate', icon: 'content_copy', run: async () => { try { await window.QuestoraAPI.api.post(`/api/v1/quests/${q.id}/duplicate`, {}); toast('Duplicated as a draft'); ctx.reload(); } catch (e) { toast(e.message, true); } } });
+      actions.push({ label: 'Reorder', icon: 'drag_indicator', run: () => toast('Drag a row handle, or use the up and down arrows, to reorder quests.') });
+      if (q.status !== 'active') actions.push({ label: 'Publish', icon: 'publish', run: () => patchQuest(q.id, { status: 'active' }) });
+      if (q.status === 'active') actions.push({ label: 'Unpublish', icon: 'cancel', run: () => patchQuest(q.id, { status: 'paused' }) });
+      if (q.status === 'active' || q.status === 'scheduled') actions.push({ label: 'Pause', icon: 'cancel', run: () => patchQuest(q.id, { status: 'paused' }) });
+      actions.push({ label: 'Archive', icon: 'archive', danger: true, run: () => patchQuest(q.id, { status: 'archived' }) });
+      actions.push({ label: 'Delete', icon: 'delete', danger: true, run: async (btn) => {
         if (!btn.dataset.armed) { btn.dataset.armed = '1'; btn.textContent = 'Confirm delete'; return; }
         try { const r = await window.QuestoraAPI.api.del(`/api/v1/quests/${q.id}`); toast(r.archived ? r.reason : 'Quest deleted'); ctx.reload(); } catch (e) { toast(e.message, true); }
       } });
@@ -2250,14 +2253,7 @@ async function viewNotifications() {
   if (!data.notifications.length) {
     body.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400">Nothing here yet.</p><p class="text-sm text-zinc-600 mt-1">Complete quests and follow campaigns to hear about it here.</p></div>'));
   } else {
-    for (const n of data.notifications) {
-      const inner = `
-          <p class="text-sm font-medium">${escapeHtml(n.title)}</p>
-          <p class="text-sm text-zinc-400">${escapeHtml(n.body || '')}</p>`;
-      const cls = 'block rounded-xl border ' + (n.read_at ? 'border-zinc-800' : 'border-violet-500/40') + ' bg-zinc-900/60 px-4 py-3';
-      if (n.link) body.appendChild(el(`<a href="${escapeHtml(n.link)}" class="${cls}">${inner}</a>`));
-      else body.appendChild(el(`<div class="${cls}">${inner}</div>`));
-    }
+    for (const n of data.notifications) body.appendChild(notificationRow(n, { full: true }));
   }
   wrap.querySelector('.prefs').addEventListener('click', async () => {
     const prefs = await window.QuestoraAPI.api.get('/api/v1/notifications/prefs');
@@ -2269,8 +2265,7 @@ async function viewNotifications() {
         <button class="save mt-4 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-violet-600 text-white">Save preferences</button>
       </div>`);
     const holder = panel.querySelector('.space-y-2');
-    const kinds = [['quest_completed', 'Quest completed'], ['badge_earned', 'Badge earned'], ['level_up', 'Level up'], ['submission_rejected', 'Submission rejected'], ['campaign_completed', 'Campaign completed'], ['credential_earned', 'Credential issued'], ['referral_qualified', 'Invite qualified']];
-    for (const [k, label] of kinds) {
+    for (const [k, label] of NOTIF_KINDS) {
       holder.appendChild(el(`<label class="flex items-center gap-3 rounded-lg border border-zinc-800 px-4 py-3 min-h-[44px] cursor-pointer"><input type="checkbox" data-kind="${k}" class="accent-violet-500" ${muted.includes(k) ? '' : 'checked'}><span class="text-sm">${label}</span></label>`));
     }
     panel.querySelector('.save').addEventListener('click', async () => {
@@ -2331,7 +2326,6 @@ async function viewSettings() {
   });
   body.appendChild(profile);
 
-  const kinds = [['quest_completed', 'Quest completed'], ['badge_earned', 'Badge earned'], ['level_up', 'Level up'], ['submission_rejected', 'Submission rejected'], ['campaign_completed', 'Campaign completed'], ['credential_earned', 'Credential issued'], ['referral_qualified', 'Invite qualified']];
   const muted = (prefsData.prefs && prefsData.prefs.muted) || [];
   const notif = el(`
     <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
@@ -2341,7 +2335,7 @@ async function viewSettings() {
       <button class="n-save mt-4 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Save notifications</button>
     </section>`);
   const klist = notif.querySelector('.k-list');
-  for (const [k, label] of kinds) {
+  for (const [k, label] of NOTIF_KINDS) {
     klist.appendChild(el(`<label class="flex items-center gap-3 rounded-lg border border-zinc-800 px-4 py-3 min-h-[44px] cursor-pointer"><input type="checkbox" data-kind="${k}" class="accent-violet-500" ${muted.includes(k) ? '' : 'checked'}><span class="text-sm">${label}</span></label>`));
   }
   notif.querySelector('.n-save').addEventListener('click', async (e) => {

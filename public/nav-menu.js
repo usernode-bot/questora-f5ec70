@@ -10,6 +10,28 @@
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this), function () {
   'use strict';
 
+  // One source of truth for navigation destinations, so the desktop bar, the
+  // mobile drawer and the bottom bar cannot drift. `icon` names resolve
+  // through window.QUI.icon at render time. `match` is the active-route test.
+  var NAV = [
+    { label: 'Projects', path: '/projects', icon: 'folder', match: '^/projects' },
+    { label: 'Campaigns', path: '/campaigns', icon: 'campaign', match: '^/campaigns' },
+  ];
+  // Top-level / high-frequency destinations, the ones the bottom bar shows.
+  var BOTTOM_NAV = [
+    { label: 'Projects', path: '/projects', icon: 'folder', match: '^/projects' },
+    { label: 'Campaigns', path: '/campaigns', icon: 'campaign', match: '^/campaigns' },
+    { label: 'Create', path: '/create', icon: 'add', match: '^/create' },
+    { label: 'Profile', path: '/me', icon: 'account_circle', match: '^/me' },
+  ];
+  // Secondary destinations, drawer-only.
+  var UTILITY_NAV = [
+    { label: 'My Projects', path: '/my-projects', icon: 'folder', match: '^/my-projects' },
+    { label: 'Profile', path: '/me', icon: 'person', match: '^/me' },
+    { label: 'Connected Wallets', path: '/me?tab=wallets', icon: 'account_balance_wallet', match: '^/me' },
+    { label: 'Settings', path: '/settings', icon: 'settings', match: '^/settings' },
+  ];
+
   function base(slug) { return '/dashboard/projects/' + encodeURIComponent(slug); }
 
   function actionsFor(slug) {
@@ -51,5 +73,7 @@
 
   function projectActions(project) { return actionsFor(project.slug); }
 
-  return { createMenuItems: createMenuItems, projectActions: projectActions, actionsFor: actionsFor };
+  function matchRe(dest) { return new RegExp(dest.match); }
+
+  return { NAV: NAV, BOTTOM_NAV: BOTTOM_NAV, UTILITY_NAV: UTILITY_NAV, matchRe: matchRe, createMenuItems: createMenuItems, projectActions: projectActions, actionsFor: actionsFor };
 });
