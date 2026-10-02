@@ -1,7 +1,7 @@
 window.QV = (function () {
 'use strict';
-var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, statCard, pager, emptyState;
-function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; }
+var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, statCard, pager, emptyState, permissionList, dangerZone;
+function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; permissionList = q.permissionList; dangerZone = q.dangerZone; }
 bindQUI();
 // View renderers. Each returns a DocumentFragment-ish element appended by
 // app.js. Data comes from /api/v1 via api.js; nothing renders a completion
@@ -860,9 +860,11 @@ async function viewCreate() {
         title: v('.q-title'), xp_reward: parseInt(v('.q-xp'), 10) || 0, points_reward: Math.round((parseInt(v('.q-xp'), 10) || 0) / 2), tasks: [task],
         credential_title: v('.q-cred') || undefined,
       });
-      toast('Campaign published');
+      toast('Project created');
+      // The creator is the project owner, so land them in their new
+      // dashboard immediately rather than on the public page.
       location.hash = '';
-      window.history.pushState({}, '', '/campaigns/' + camp.campaign.slug);
+      window.history.pushState({}, '', '/dashboard/projects/' + encodeURIComponent(proj.project.slug));
       window.dispatchEvent(new PopStateEvent('popstate'));
     } catch (err) {
       hint.textContent = err.message;
@@ -1482,6 +1484,7 @@ async function viewLeaderboardHub(params) {
 // ---------- project admin dashboard ----------
 // A management shell for one project: sidebar + management tables. Every
 // section re-navigates (the URL is the state), so it loads like any view.
+const PROJECT_ACTIONS = ['manage', 'review', 'edit', 'view_analytics', 'publish', 'delete_project'];
 const DASH_SECTIONS = [
   ['', 'Overview'],
   ['campaigns', 'Campaigns'],
@@ -2011,13 +2014,31 @@ async function renderDashAnalytics(sectionEl, ctx) {
 
 // Settings: project details plus the membership roster (RBAC management).
 async function renderDashSettings(sectionEl, ctx) {
-  const { p } = ctx;
+  const { p, data } = ctx;
   const form = el(`
     <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 mb-5 max-w-xl">
       <h2 class="font-semibold mb-2">Project details</h2>
       <input class="p-name w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.name)}" aria-label="Project name">
       <textarea class="p-desc w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 text-sm mb-2 focus:outline-none" rows="2" aria-label="Description">${escapeHtml(p.description || '')}</textarea>
-      <input class="p-web w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-3 focus:outline-none" value="${escapeHtml(p.website || '')}" placeholder="Website" aria-label="Website">
+      <input class="p-web w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.website || '')}" placeholder="Website" aria-label="Website">
+      <input class="p-logo w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.logo_url || '')}" placeholder="Logo URL" aria-label="Logo URL">
+      <input class="p-banner w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.banner_url || '')}" placeholder="Banner URL" aria-label="Banner URL">
+      <input class="p-links w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(linksToText(p.social_links))}" placeholder="Links, one per line: label | url" aria-label="Social links">
+      <div class="flex flex-wrap gap-2 mb-3">
+        <label class="text-xs text-zinc-500 flex-1 min-w-[140px]">Visibility
+          <select class="p-vis w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" aria-label="Visibility">
+            <option value="public" ${p.visibility === 'unlisted' ? '' : 'selected'}>Public</option>
+            <option value="unlisted" ${p.visibility === 'unlisted' ? 'selected' : ''}>Unlisted</option>
+          </select>
+        </label>
+        <label class="text-xs text-zinc-500 flex-1 min-w-[140px]">Status
+          <select class="p-status w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" aria-label="Status">
+            <option value="active" ${p.status === 'active' ? 'selected' : ''}>Active (published)</option>
+            <option value="paused" ${p.status === 'paused' ? 'selected' : ''}>Paused</option>
+            <option value="archived" ${p.status === 'archived' ? 'selected' : ''}>Archived</option>
+          </select>
+        </label>
+      </div>
       <button class="save font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Save project</button>
     </div>`);
   form.querySelector('.save').addEventListener('click', async () => {
@@ -2026,20 +2047,45 @@ async function renderDashSettings(sectionEl, ctx) {
         name: form.querySelector('.p-name').value.trim(),
         description: form.querySelector('.p-desc').value,
         website: form.querySelector('.p-web').value.trim() || null,
+        logo_url: form.querySelector('.p-logo').value.trim() || null,
+        banner_url: form.querySelector('.p-banner').value.trim() || null,
+        social_links: textToLinks(form.querySelector('.p-links').value),
+        visibility: form.querySelector('.p-vis').value,
+        status: form.querySelector('.p-status').value,
       });
       toast('Project saved'); ctx.reload();
     } catch (err) { toast(err.message, true); }
   });
   sectionEl.appendChild(form);
   await renderMembers(sectionEl, ctx);
+  if (data && data.can_delete) renderDangerZone(sectionEl, ctx);
+}
+
+// social_links <-> a simple "label | url" textarea, so the editor stays
+// dependency-free.
+function linksToText(links) {
+  if (!links || typeof links !== 'object') return '';
+  return Object.entries(links).map(([k, v]) => k + ' | ' + v).join('\n');
+}
+function textToLinks(text) {
+  const out = {};
+  for (const line of String(text || '').split('\n')) {
+    const i = line.indexOf('|');
+    if (i < 0) continue;
+    const k = line.slice(0, i).trim(); const v = line.slice(i + 1).trim();
+    if (k && v) out[k.slice(0, 40)] = v.slice(0, 500);
+  }
+  return out;
 }
 
 async function renderMembers(sectionEl, ctx) {
-  const { p } = ctx;
+  const { p, data } = ctx;
+  const isOwner = !!(data && data.is_owner);
+  const canGrantDelete = !!(data && data.can_delete) && isOwner;
   const card = el(`
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 max-w-xl">
-      <h2 class="font-semibold mb-1">Members</h2>
-      <p class="text-xs text-zinc-600 mb-3">Owner, admin, editor, reviewer and analyst each see a different part of this dashboard.</p>
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 max-w-xl mb-5">
+      <h2 class="font-semibold mb-1">Ownership and roles</h2>
+      <p class="text-xs text-zinc-600 mb-3">Owner, admin, editor, reviewer and analyst each see a different part of this dashboard. Tick an ability to grant it, untick to withhold it. Deleting the project is owner-only unless the owner grants it.</p>
       <div class="members space-y-2 mb-3"></div>
       <div class="flex flex-col sm:flex-row gap-2">
         <input class="m-user flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none" placeholder="Username">
@@ -2058,19 +2104,35 @@ async function renderMembers(sectionEl, ctx) {
     catch (err) { toast(err.message, true); }
   });
   holder.replaceChildren(el('<p class="text-sm text-zinc-600">Loading members\u2026</p>'));
-  let data;
-  try { data = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/members`); }
+  let members;
+  try { members = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/members`); }
   catch (err) { holder.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
   holder.replaceChildren();
-  for (const m of data.members) {
+  for (const m of members.members) {
+    const owner = m.role === 'owner';
     const row = el(`
-      <div class="flex items-center gap-2 rounded-lg border border-zinc-800 px-3 py-2">
-        <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(m.display_name || m.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(m.username)}</span></span>
-        <select class="role rounded-lg bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-xs focus:outline-none" ${m.role === 'owner' ? 'disabled' : ''}>
-          ${['owner', 'admin', 'editor', 'reviewer', 'analyst'].map(r => `<option value="${r}" ${m.role === r ? 'selected' : ''}>${r}</option>`).join('')}
-        </select>
-        ${m.role === 'owner' ? '' : '<button class="remove text-xs px-2 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-300">Remove</button>'}
+      <div class="rounded-lg border border-zinc-800 px-3 py-2">
+        <div class="flex items-center gap-2">
+          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(m.display_name || m.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(m.username)}${owner ? ' \u00b7 Project Owner' : ''}</span></span>
+          <select class="role rounded-lg bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-xs focus:outline-none" ${owner ? 'disabled' : ''}>
+            ${['owner', 'admin', 'editor', 'reviewer', 'analyst'].map(r => `<option value="${r}" ${m.role === r ? 'selected' : ''}>${r}</option>`).join('')}
+          </select>
+          ${owner ? '' : '<button class="remove text-xs px-2 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-300">Remove</button>'}
+        </div>
+        <div class="mt-2"></div>
       </div>`);
+    const permHolder = row.querySelector('.mt-2');
+    const perms = permissionList(PROJECT_ACTIONS, m.permissions, owner || !canGrantDelete);
+    permHolder.appendChild(perms);
+    perms.addEventListener('change', async () => {
+      const next = {};
+      perms.querySelectorAll('.perm-toggle').forEach((cb) => { next[cb.dataset.action] = cb.checked; });
+      try {
+        await window.QuestoraAPI.api.patch(`/api/v1/projects/${p.id}/members/${m.user_id}`,
+          { role: owner ? 'owner' : row.querySelector('.role').value, permissions: next });
+        toast('Permissions updated');
+      } catch (err) { toast(err.message, true); renderMembers(sectionEl, ctx); }
+    });
     const sel = row.querySelector('.role');
     if (sel && !sel.disabled) sel.addEventListener('change', async () => {
       try { await window.QuestoraAPI.api.patch(`/api/v1/projects/${p.id}/members/${m.user_id}`, { role: sel.value }); toast('Role updated'); }
@@ -2083,6 +2145,38 @@ async function renderMembers(sectionEl, ctx) {
     });
     holder.appendChild(row);
   }
+}
+
+// Two-step destructive delete. The preview loads the exact resources a hard
+// delete would remove, and the default action archives instead.
+async function renderDangerZone(sectionEl, ctx) {
+  const { p } = ctx;
+  const card = dangerZone();
+  sectionEl.appendChild(card);
+  const confirm = card.querySelector('.dz-confirm');
+  const summary = card.querySelector('.dz-summary');
+  const openBtn = card.querySelector('.dz-open');
+  openBtn.addEventListener('click', async () => {
+    openBtn.classList.add('hidden');
+    confirm.classList.remove('hidden');
+    summary.textContent = 'Counting affected resources\u2026';
+    try {
+      const prev = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/deletion-preview`);
+      const c = prev.counts || {};
+      summary.textContent = `This project holds ${c.campaigns} campaigns, ${c.quests} quests, ${c.tasks} tasks, ${c.rewards} rewards, ${c.completions} completions, ${c.xp_events} XP records and ${c.points_events} points records.`;
+    } catch (err) { summary.textContent = err.message; }
+  });
+  card.querySelector('.dz-cancel').addEventListener('click', () => {
+    confirm.classList.add('hidden'); openBtn.classList.remove('hidden');
+  });
+  card.querySelector('.dz-archive').addEventListener('click', async () => {
+    try { await window.QuestoraAPI.api.del(`/api/v1/projects/${p.id}`); toast('Project archived'); window.history.pushState({}, '', '/projects'); window.dispatchEvent(new PopStateEvent('popstate')); }
+    catch (err) { toast(err.message, true); }
+  });
+  card.querySelector('.dz-hard').addEventListener('click', async () => {
+    try { await window.QuestoraAPI.api.del(`/api/v1/projects/${p.id}?mode=hard`); toast('Project permanently deleted'); window.history.pushState({}, '', '/projects'); window.dispatchEvent(new PopStateEvent('popstate')); }
+    catch (err) { toast(err.message, true); }
+  });
 }
 
 // ---------- notifications ----------

@@ -167,6 +167,11 @@
       "expectText": "access"
     },
     {
+      "name": "Project settings route resolves",
+      "path": "/dashboard/projects/staging-demo-octra-builders/settings",
+      "expectText": "access"
+    },
+    {
       "name": "Profile projects tab renders",
       "path": "/u/staging-demo-user-1?tab=projects",
       "expectText": "Staging demo Octra Builders"

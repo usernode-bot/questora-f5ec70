@@ -155,6 +155,9 @@ async function seed() {
     { name: 'Staging demo Nova Gaming', user: 3, description: 'Staging demo project for gaming quests.', logo_url: null, website: 'https://example.com/nova' },
     { name: 'Staging demo Open DeFi', user: 4, description: 'Staging demo project for DeFi quests.', logo_url: null, website: 'https://example.com/defi' },
     { name: 'Staging demo Chain Academy', user: 5, description: 'Staging demo project for learning quests.', logo_url: null, website: 'https://example.com/academy' },
+    // Archived (soft-deleted): owned by user 6, hidden from the public
+    // directory, restorable through PATCH status='active'.
+    { name: 'Staging demo Legacy Vault', user: 6, description: 'Staging demo project: archived, kept for the restore path.', logo_url: null, website: 'https://example.com/legacy' },
   ];
   const userIds = {};
   for (const u of USERS) userIds[u.username] = await upsertUser(u.username, u.display_name);
@@ -176,6 +179,10 @@ async function seed() {
       [projectIds[p.name], p.name + ' points']);
     projectSystemIds[p.name] = sys.rows[0].id;
   }
+  // Soft-delete the Legacy Vault so the directory filter has an archived row.
+  await pool.query(
+    `UPDATE projects SET status = 'archived', deleted_at = NOW() WHERE slug = $1 AND deleted_at IS NULL`,
+    [slugify('Staging demo Legacy Vault')]);
 
   // Season (Phase 3): a 2x demo season, more recent than the Season 1 row
   // the migration creates, so seasons.current() picks this one in staging
@@ -387,11 +394,18 @@ async function seed() {
   }
   // Membership roles so the permissions model has non-owner data: user 2 is
   // an admin on Octra Builders, user 3 a reviewer, user 4 an analyst.
-  for (const [uname, role] of [['staging-demo-user-2', 'admin'], ['staging-demo-user-3', 'reviewer'], ['staging-demo-user-4', 'analyst']]) {
+  // The admin grant carries an explicit empty permissions map, so the
+  // default-deny rule on delete_project is visible rather than implicit.
+  const memberRoles = {
+    'staging-demo-user-2': { role: 'admin', permissions: {} },
+    'staging-demo-user-3': { role: 'reviewer', permissions: {} },
+    'staging-demo-user-4': { role: 'analyst', permissions: {} },
+  };
+  for (const [uname, def] of Object.entries(memberRoles)) {
     await pool.query(
-      `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)
+      `INSERT INTO project_members (project_id, user_id, role, permissions) VALUES ($1, $2, $3, $4)
        ON CONFLICT (project_id, user_id) DO NOTHING`,
-      [projectIds['Staging demo Octra Builders'], userIds[uname], role]);
+      [projectIds['Staging demo Octra Builders'], userIds[uname], def.role, JSON.stringify(def.permissions)]);
   }
   // User 4 has a pending submission (review queue non-empty).
   const u4 = userIds['staging-demo-user-4'];

@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name VARCHAR(255) NOT NULL,
   description TEXT,
   logo_url TEXT,
+  banner_url TEXT,
   website TEXT,
   social_links JSONB NOT NULL DEFAULT '{}',
   status VARCHAR(20) NOT NULL DEFAULT 'active',
@@ -423,6 +424,14 @@ async function migrate() {
     await client.query('ALTER TABLE points_events ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL');
     await client.query('ALTER TABLE points_events ADD COLUMN IF NOT EXISTS campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL');
     await client.query('ALTER TABLE points_events ADD COLUMN IF NOT EXISTS quest_id INTEGER REFERENCES quests(id) ON DELETE SET NULL');
+    // Project Ownership: visibility + soft-delete state, and a per-member
+    // permission override map so a grant can extend (or withhold) a role's
+    // default abilities without inventing a new role.
+    await client.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS banner_url TEXT');
+    await client.query("ALTER TABLE projects ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public'");
+    await client.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ');
+    await client.query("ALTER TABLE project_members ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{}'");
+    await client.query('CREATE INDEX IF NOT EXISTS projects_status_idx ON projects (status, deleted_at)');
     // Campaign / quest fields the multi-project spec adds.
     await client.query("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public'");
     await client.query('ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS rules TEXT');

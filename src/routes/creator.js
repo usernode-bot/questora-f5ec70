@@ -56,6 +56,24 @@ function userId(req) {
   return req.user ? req.user.db_id : null;
 }
 
+// Only the project owner (or a platform admin) may hand out the one ability
+// the role model withholds by default, so a project admin cannot
+// self-escalate to delete.
+function canManageDelete(req, project) {
+  return rbac.isAdmin(req) || rbac.isOwner(project, userId(req));
+}
+
+// Normalize a per-member permissions payload down to known boolean actions.
+function sanitizePermissions(input) {
+  if (input === undefined || input === null) return { value: {} };
+  if (typeof input !== 'object' || Array.isArray(input)) return { error: 'Permissions must be an object' };
+  const value = {};
+  for (const a of rbac.PROJECT_ACTIONS) {
+    if (input[a] !== undefined) value[a] = !!input[a];
+  }
+  return { value };
+}
+
 // Scoped leaderboards: metric picks the ledger table, period bounds the
 // window. All three scopes are a plain filtered sum, so a project board can
 // never include another project's rows.
@@ -119,10 +137,11 @@ router.post('/projects', async (req, res) => {
   try {
     await client.query('BEGIN');
     const p = await client.query(
-      `INSERT INTO projects (slug, owner_user_id, name, description, logo_url, website, social_links)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      `INSERT INTO projects (slug, owner_user_id, name, description, logo_url, website, social_links, visibility, banner_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [slug, owner, String(name).trim(), description || null, logo_url || null, website || null,
-        social_links && typeof social_links === 'object' ? social_links : {}]
+        social_links && typeof social_links === 'object' ? social_links : {},
+        req.body.visibility === 'unlisted' ? 'unlisted' : 'public', req.body.banner_url || null]
     );
     await client.query(
       'INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)',
@@ -166,7 +185,7 @@ router.get('/projects/directory', async (_req, res) => {
               JOIN quests q ON q.id = qc.quest_id JOIN campaigns c ON c.id = q.campaign_id
               WHERE c.project_id = p.id) AS participants,
             (SELECT COALESCE(SUM(x.amount), 0)::int FROM xp_events x WHERE x.project_id = p.id) AS total_xp
-     FROM projects p WHERE p.status = 'active'
+     FROM projects p WHERE p.status = 'active' AND p.deleted_at IS NULL
      ORDER BY total_xp DESC, p.created_at DESC LIMIT 100`);
   res.json({ projects: rows });
 });
@@ -187,7 +206,12 @@ router.get('/projects/:id', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
   const uid = userId(req);
-  const canManage = rbac.isAdmin(req) || (await rbac.can(p.id, uid, 'manage'));
+  const canManage = rbac.isAdmin(req) || (await rbac.can(p.id, uid, 'manage', req));
+  // An archived/soft-deleted project is not publicly reachable: only a
+  // manager (or platform admin) can still open it.
+  if ((p.status !== 'active' || p.deleted_at) && !canManage) {
+    return res.status(404).json({ error: 'Project not found' });
+  }
   const campaigns = await pool.query(
     `SELECT c.*,
             (SELECT COUNT(*)::int FROM quests q WHERE q.campaign_id = c.id) AS quest_count,
@@ -208,6 +232,9 @@ router.get('/projects/:id', async (req, res) => {
   res.json({
     project: p,
     can_manage: canManage,
+    // Drives the dashboard's danger zone: only a delete_project holder sees it.
+    can_delete: rbac.isAdmin(req) || (await rbac.can(p.id, uid, 'delete_project', req)),
+    is_owner: rbac.isOwner(p, uid),
     campaigns: campaigns.rows.map(c => ({ ...c, quests: byCampaign[c.id] || [] })),
   });
 });
@@ -219,7 +246,7 @@ router.get('/projects/:id/members', async (req, res) => {
   if (!p) return res.status(404).json({ error: 'Project not found' });
   if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
   const { rows } = await pool.query(
-    `SELECT pm.user_id, pm.role, u.username, u.display_name, u.avatar_url
+    `SELECT pm.user_id, pm.role, pm.permissions, u.username, u.display_name, u.avatar_url
      FROM project_members pm JOIN users u ON u.id = pm.user_id
      WHERE pm.project_id = $1 ORDER BY pm.role, u.username`, [p.id]);
   res.json({ members: rows });
@@ -236,13 +263,18 @@ router.post('/projects/:id/members', async (req, res) => {
   const role = String((req.body || {}).role || 'editor');
   if (!username) return res.status(400).json({ error: 'A username is required' });
   if (!rbac.PROJECT_ROLES.includes(role)) return res.status(400).json({ error: 'Unknown role' });
+  const perms = sanitizePermissions((req.body || {}).permissions);
+  if (perms.error) return res.status(400).json({ error: perms.error });
+  if (perms.value.delete_project === true && !canManageDelete(req, p)) {
+    return res.status(403).json({ error: 'Only the project owner can grant delete permission' });
+  }
   const u = await pool.query('SELECT id, username FROM users WHERE lower(username) = lower($1)', [username]);
   if (!u.rows.length) return res.status(404).json({ error: 'No Questora account with that username yet' });
   await pool.query(
-    `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)
-     ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
-    [p.id, u.rows[0].id, role]);
-  await audit(userId(req), 'project.member.add', 'project', p.id, null, { username, role }, null);
+    `INSERT INTO project_members (project_id, user_id, role, permissions) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role, permissions = EXCLUDED.permissions`,
+    [p.id, u.rows[0].id, role, JSON.stringify(perms.value)]);
+  await audit(userId(req), 'project.member.add', 'project', p.id, null, { username, role, permissions: perms.value }, null);
   res.json({ ok: true });
 });
 
@@ -252,13 +284,24 @@ router.patch('/projects/:id/members/:userId', async (req, res) => {
   if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
   const role = String((req.body || {}).role || '');
   if (!rbac.PROJECT_ROLES.includes(role)) return res.status(400).json({ error: 'Unknown role' });
+  const perms = sanitizePermissions((req.body || {}).permissions);
+  if (perms.error) return res.status(400).json({ error: perms.error });
+  if (perms.value.delete_project === true && !canManageDelete(req, p)) {
+    return res.status(403).json({ error: 'Only the project owner can grant delete permission' });
+  }
   const before = await pool.query('SELECT * FROM project_members WHERE project_id = $1 AND user_id = $2', [p.id, req.params.userId]);
   if (!before.rows.length) return res.status(404).json({ error: 'That user is not a member of this project' });
   if (before.rows[0].role === 'owner' && role !== 'owner') {
     return res.status(400).json({ error: 'The project owner keeps their role.' });
   }
-  await pool.query('UPDATE project_members SET role = $3 WHERE project_id = $1 AND user_id = $2', [p.id, req.params.userId, role]);
-  await audit(userId(req), 'project.member.update', 'project', p.id, before.rows[0], { role }, null);
+  if (Number(req.params.userId) === p.owner_user_id && perms.value.delete_project === false) {
+    return res.status(400).json({ error: 'The project owner always keeps delete permission.' });
+  }
+  const nextPerms = (req.body || {}).permissions === undefined
+    ? (before.rows[0].permissions || {}) : perms.value;
+  await pool.query('UPDATE project_members SET role = $3, permissions = $4 WHERE project_id = $1 AND user_id = $2',
+    [p.id, req.params.userId, role, JSON.stringify(nextPerms)]);
+  await audit(userId(req), 'project.member.update', 'project', p.id, before.rows[0], { role, permissions: nextPerms }, null);
   res.json({ ok: true });
 });
 
@@ -276,22 +319,35 @@ router.delete('/projects/:id/members/:userId', async (req, res) => {
   res.json({ ok: true });
 });
 
-// Owner/project-admin updates: status + role edits are audited.
+// Project settings: name, description, branding, links, visibility and
+// lifecycle status (publish / unpublish / archive / restore). A platform
+// admin passes the same shared guard as everyone else.
 router.patch('/projects/:id', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.can(p.id, userId(req), 'manage'))) {
-    return res.status(403).json({ error: 'You do not have permission to edit this project' });
-  }
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
   const allowed = {};
   if (req.body.name) allowed.name = String(req.body.name).slice(0, 255);
   if (req.body.description !== undefined) allowed.description = req.body.description;
   if (req.body.logo_url !== undefined) allowed.logo_url = req.body.logo_url;
+  if (req.body.banner_url !== undefined) allowed.banner_url = req.body.banner_url;
+  if (req.body.social_links !== undefined) {
+    if (req.body.social_links && typeof req.body.social_links === 'object') allowed.social_links = req.body.social_links;
+  }
   if (req.body.website !== undefined) {
     if (req.body.website && !validUrl(req.body.website)) return res.status(400).json({ error: 'The website must start with http or https' });
     allowed.website = req.body.website;
   }
-  if (req.body.status && ['active', 'paused', 'archived'].includes(req.body.status)) allowed.status = req.body.status;
+  if (req.body.visibility !== undefined) {
+    if (!['public', 'unlisted'].includes(req.body.visibility)) return res.status(400).json({ error: 'Unknown visibility' });
+    allowed.visibility = req.body.visibility;
+  }
+  if (req.body.status !== undefined) {
+    if (!['active', 'paused', 'archived'].includes(req.body.status)) return res.status(400).json({ error: 'Unknown status' });
+    allowed.status = req.body.status;
+    // Restoring an archived project clears its soft-delete mark.
+    if (req.body.status === 'active' && p.deleted_at) allowed.deleted_at = null;
+  }
   const sets = Object.keys(allowed);
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
   const { rows } = await pool.query(
@@ -300,6 +356,51 @@ router.patch('/projects/:id', async (req, res) => {
   );
   await audit(userId(req), 'project.update', 'project', p.id, p, rows[0], req.body.reason || null);
   res.json({ project: rows[0] });
+});
+
+// The counts the two-step delete confirmation shows before anyone commits:
+// exactly what a hard delete would take with it.
+router.get('/projects/:id/deletion-preview', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'delete_project'))) return;
+  const { rows } = await pool.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = $1) AS campaigns,
+       (SELECT COUNT(*)::int FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS quests,
+       (SELECT COUNT(*)::int FROM quest_tasks t JOIN quests q ON q.id = t.quest_id
+          JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS tasks,
+       (SELECT COUNT(*)::int FROM rewards r LEFT JOIN quests q ON q.id = r.quest_id
+          LEFT JOIN campaigns c2 ON c2.id = r.campaign_id
+          WHERE q.campaign_id IN (SELECT id FROM campaigns WHERE project_id = $1)
+             OR c2.project_id = $1) AS rewards,
+       (SELECT COUNT(*)::int FROM quest_completions qc JOIN quests q ON q.id = qc.quest_id
+          JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS completions,
+       (SELECT COUNT(*)::int FROM xp_events x WHERE x.project_id = $1) AS xp_events,
+       (SELECT COUNT(*)::int FROM points_events e WHERE e.project_id = $1) AS points_events`,
+    [p.id]);
+  res.json({ project: { id: p.id, name: p.name, slug: p.slug, status: p.status, deleted_at: p.deleted_at }, counts: rows[0] });
+});
+
+// Two-step destructive delete: soft (archive + deleted_at) by default, so a
+// confirm click cannot irreversibly wipe participant history. The permanent
+// path needs ?mode=hard and the same delete_project ability. Both are
+// audited; a soft delete stays restorable via PATCH status='active'.
+router.delete('/projects/:id', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'delete_project'))) return;
+  const mode = req.query.mode === 'hard' ? 'hard' : 'soft';
+  if (mode === 'hard') {
+    await pool.query('DELETE FROM projects WHERE id = $1', [p.id]);
+    await audit(userId(req), 'project.delete', 'project', p.id, p, null, req.body && req.body.reason ? String(req.body.reason) : null);
+    return res.json({ deleted: true, mode: 'hard' });
+  }
+  const { rows } = await pool.query(
+    `UPDATE projects SET status = 'archived', deleted_at = NOW() WHERE id = $1 RETURNING *`, [p.id]);
+  await audit(userId(req), 'project.archive', 'project', p.id, p, rows[0], (req.body && req.body.reason) || null);
+  res.json({ project: rows[0], archived: true, mode: 'soft',
+    reason: 'The project was archived. Its participant history is kept and it can be restored.' });
 });
 
 // ---- campaigns ----
@@ -479,9 +580,7 @@ router.post('/campaigns/:id/quests', async (req, res) => {
   const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = c.rows[0];
-  if (!(await rbac.can(campaign.project_id, userId(req), 'edit'))) {
-    return res.status(403).json({ error: 'You do not have permission to add quests here' });
-  }
+  if (!(await rbac.requireProjectAction(req, res, campaign.project_id, 'edit'))) return;
   const { title, description, instructions, is_required, xp_reward, points_reward, tasks, badge_id } = req.body || {};
   if (!title || !String(title).trim()) return res.status(400).json({ error: 'A quest title is required' });
   const client = await pool.connect();
@@ -683,9 +782,7 @@ router.post('/campaigns/:id/quests/reorder', async (req, res) => {
 router.get('/projects/:id/review', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.can(p.id, userId(req), 'review'))) {
-    return res.status(403).json({ error: 'Reviewer access required' });
-  }
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'review'))) return;
   const { rows } = await pool.query(
     `SELECT s.*, t.title AS task_title, t.type AS task_type, q.title AS quest_title,
             u.username
@@ -704,9 +801,8 @@ router.post('/submissions/:id/review', async (req, res) => {
   const sub = s.rows[0];
   const q = await pool.query(
     `SELECT c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [sub.quest_id]);
-  if (!q.rows.length || !(await rbac.can(q.rows[0].project_id, userId(req), 'review'))) {
-    return res.status(403).json({ error: 'Reviewer access required' });
-  }
+  if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
+  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'review'))) return;
   const { decision, reason } = req.body || {};
   if (!['verified', 'rejected'].includes(decision)) return res.status(400).json({ error: 'Decision must be verified or rejected' });
   if (decision === 'rejected' && !String(reason || '').trim()) {
@@ -820,9 +916,7 @@ router.get('/projects/:id/overview', async (req, res) => {
 router.get('/projects/:id/analytics', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.can(p.id, userId(req), 'view_analytics'))) {
-    return res.status(403).json({ error: 'Analyst access required' });
-  }
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'view_analytics'))) return;
   const perQuest = await pool.query(
     `SELECT q.id, q.title, q.xp_reward,
             (SELECT COUNT(*)::int FROM quest_completions qc WHERE qc.quest_id = q.id) AS completions,

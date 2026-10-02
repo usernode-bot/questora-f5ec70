@@ -161,6 +161,41 @@ function emptyState(text, actionLabel, actionHref) {
     <p class="text-zinc-400">${escapeHtml(text)}</p>${action}</div>`;
 }
 
-return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState };
+// Per-member ability toggles for the ownership roster. Each row is one
+// explicit override; leaving it alone falls back to the role's default.
+// lockDelete disables the one ability only the owner may hand out.
+function permissionList(actions, permissions, lockDelete) {
+  const perms = permissions || {};
+  const holder = el('<div class="flex flex-wrap gap-x-3 gap-y-1.5"></div>');
+  for (const a of actions) {
+    const granted = Object.prototype.hasOwnProperty.call(perms, a) ? !!perms[a] : null;
+    const locked = lockDelete && a === 'delete_project';
+    holder.appendChild(el(`<label class="flex items-center gap-1.5 text-[11px] text-zinc-400">
+      <input type="checkbox" class="perm-toggle accent-violet-500" data-action="${escapeHtml(a)}" ${granted === true ? 'checked' : ''} ${locked ? 'disabled' : ''}>
+      <span>${escapeHtml(a.replace(/_/g, ' '))}</span>
+    </label>`));
+  }
+  return holder;
+}
+
+// The project deletion card: two steps, archive-first. Only rendered for a
+// caller that holds delete_project.
+function dangerZone() {
+  return el(`<div class="rounded-xl border border-red-900/60 bg-red-950/20 p-4 max-w-xl">
+    <h2 class="font-semibold mb-1 text-red-300">Danger zone</h2>
+    <p class="text-xs text-zinc-400 mb-3">Archiving hides the project and keeps participant history. Permanent deletion removes everything and cannot be undone.</p>
+    <div class="dz-confirm hidden mb-3 rounded-lg border border-red-900/60 bg-zinc-900/60 p-3">
+      <p class="text-xs text-zinc-300 mb-2 dz-summary"></p>
+      <div class="flex flex-wrap gap-2">
+        <button class="dz-archive font-medium px-3 py-2 min-h-[40px] rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm">Archive project</button>
+        <button class="dz-hard font-medium px-3 py-2 min-h-[40px] rounded-lg bg-red-700 hover:bg-red-600 text-white text-sm">Delete permanently</button>
+        <button class="dz-cancel font-medium px-3 py-2 min-h-[40px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm">Cancel</button>
+      </div>
+    </div>
+    <button class="dz-open font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-red-700 hover:bg-red-600 text-white text-sm">Delete this project</button>
+  </div>`);
+}
+
+return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState, permissionList, dangerZone };
 
 })();

@@ -20,7 +20,7 @@ router.get('/discover', async (req, res) => {
            (SELECT COALESCE(SUM(q.xp_reward), 0) FROM quests q WHERE q.campaign_id = c.id) AS total_xp,
            (SELECT COUNT(DISTINCT qc.user_id) FROM quest_completions qc JOIN quests q ON q.id = qc.quest_id WHERE q.campaign_id = c.id) AS participants
     FROM campaigns c JOIN projects p ON p.id = c.project_id
-    WHERE c.status = 'active' AND p.status = 'active'`;
+    WHERE c.status = 'active' AND p.status = 'active' AND p.deleted_at IS NULL`;
   const [featured, trending, fresh, ending, cats] = await Promise.all([
     pool.query(base + ' AND c.featured = TRUE ORDER BY c.created_at DESC LIMIT 6'),
     pool.query(base + ' ORDER BY participants DESC, c.created_at DESC LIMIT 6'),
@@ -54,18 +54,19 @@ router.get('/search', async (req, res) => {
        ORDER BY username LIMIT 8`, [like]),
     pool.query(
       `SELECT slug, name, description, logo_url FROM projects
-       WHERE status = 'active' AND (name ILIKE $1 OR description ILIKE $1)
+       WHERE status = 'active' AND deleted_at IS NULL AND (name ILIKE $1 OR description ILIKE $1)
        ORDER BY name LIMIT 8`, [like]),
     pool.query(
       `SELECT c.slug, c.name, c.category, p.name AS project_name, p.slug AS project_slug,
               (SELECT COALESCE(SUM(q.xp_reward), 0) FROM quests q WHERE q.campaign_id = c.id) AS total_xp
        FROM campaigns c JOIN projects p ON p.id = c.project_id
-       WHERE c.status = 'active' AND p.status = 'active' AND (c.name ILIKE $1 OR c.description ILIKE $1)
+       WHERE c.status = 'active' AND p.status = 'active' AND p.deleted_at IS NULL
+         AND (c.name ILIKE $1 OR c.description ILIKE $1)
        ORDER BY c.name LIMIT 8`, [like]),
     pool.query(
       `SELECT q.id, q.title, q.xp_reward, c.slug AS campaign_slug, c.name AS campaign_name
        FROM quests q JOIN campaigns c ON c.id = q.campaign_id JOIN projects p ON p.id = c.project_id
-       WHERE q.status = 'active' AND c.status = 'active' AND p.status = 'active'
+       WHERE q.status = 'active' AND c.status = 'active' AND p.status = 'active' AND p.deleted_at IS NULL
          AND (q.title ILIKE $1 OR q.description ILIKE $1)
        ORDER BY q.title LIMIT 8`, [like]),
   ]);
@@ -246,7 +247,7 @@ router.get('/campaigns', async (req, res) => {
               JOIN quests q2 ON q2.id = qc.quest_id WHERE q2.campaign_id = c.id)::int AS participants
      FROM campaigns c JOIN projects p ON p.id = c.project_id
      LEFT JOIN quests q ON q.campaign_id = c.id AND q.status = 'active'
-     WHERE c.status = $1
+     WHERE c.status = $1 AND p.deleted_at IS NULL
      GROUP BY c.id, p.name, p.slug, p.logo_url
      ORDER BY c.created_at DESC`, [status]);
   res.json({ campaigns: rows });
