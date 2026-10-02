@@ -51,6 +51,7 @@
   </script>
   <title>Questora</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%237c3aed'/><circle cx='50' cy='50' r='18' fill='white'/></svg>">
+  <meta name="theme-color" content="#0B0B0F" id="theme-color-meta">
   <link rel="stylesheet" href="/tailwind.css">
   <script src="/usernode-bridge/v1/bridge.js"></script>
   <script>
@@ -59,15 +60,32 @@
   // The class lands on <html> before app.js renders, so there is no flash.
   (function () {
     var KEY = 'questora-theme';
-    var media = window.matchMedia('(prefers-color-scheme: dark)');
+    var media = window.matchMedia("(prefers-color-scheme: dark)");
+    // Paint the canvas (html background + the mobile browser chrome colour)
+    // from the theme token the moment the class is set, before /tailwind.css
+    // has necessarily applied. Reads the token when the stylesheet is ready
+    // and falls back to the literal so a cold load is still correct.
+    function setCanvas(theme) {
+      var hex = theme === "dark" ? "#0B0B0F" : "#FAFAFA";
+      var val = hex;
+      try {
+        var rgb = getComputedStyle(document.documentElement).getPropertyValue("--q-background").trim();
+        var p = rgb.split(/\s+/);
+        if (p.length === 3 && p[0]) val = "rgb(" + p[0] + ", " + p[1] + ", " + p[2] + ")";
+      } catch (e) {}
+      document.documentElement.style.backgroundColor = val;
+      var meta = document.getElementById("theme-color-meta");
+      if (meta) meta.setAttribute("content", hex);
+    }
     function apply() {
       var saved = null;
       try { saved = localStorage.getItem(KEY); } catch (e) {}
       var theme = saved || (window.usernode && window.usernode.theme) || (media.matches ? 'dark' : 'light');
       var root = document.documentElement;
-      root.classList.toggle('dark', theme === 'dark');
-      root.classList.toggle('light', theme !== 'dark');
+      root.classList.toggle("dark", theme === "dark");
+      root.classList.toggle("light", theme !== "dark");
       root.style.colorScheme = theme;
+      setCanvas(theme);
     }
     apply();
     window.addEventListener('usernode:theme-changed', function (e) {
@@ -101,31 +119,31 @@
   })();
   </script>
 </head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen">
+<body class="bg-background text-content-primary min-h-screen">
   <!-- Desktop top bar -->
-  <header class="hidden md:block fixed top-0 inset-x-0 z-40 bg-zinc-950/90 border-b border-zinc-800">
+  <header class="hidden md:block fixed top-0 inset-x-0 z-40 bg-background/90 border-b border-line">
     <div class="max-w-6xl mx-auto px-6 h-14 flex items-center gap-6">
-      <a href="/" class="flex items-center gap-2 font-bold text-lg text-violet-400">Questora</a>
+      <a href="/" class="flex items-center gap-2 font-bold text-lg text-accent-text">Questora</a>
       <nav class="flex items-center gap-1 text-sm" id="desktop-nav"></nav>
       <div class="ml-auto flex items-center gap-2">
         <div class="relative" id="theme-holder">
-          <button id="theme-btn" class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Theme" aria-haspopup="menu" aria-expanded="false"></button>
+          <button id="theme-btn" class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg hover:bg-surface-container-high text-icon-secondary hover:text-icon-primary" aria-label="Theme" aria-haspopup="menu" aria-expanded="false"></button>
         </div>
         <div class="relative" id="notif-holder-desktop">
-          <button id="notif-btn" class="relative min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Notifications" aria-haspopup="menu" aria-expanded="false">
+          <button id="notif-btn" class="relative min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg hover:bg-surface-container-high text-icon-secondary hover:text-icon-primary" aria-label="Notifications" aria-haspopup="menu" aria-expanded="false">
             <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 0 0-6 6c0 2.1-.6 3.6-1.3 4.6-.3.5 0 1.4.7 1.4h13.2c.7 0 1-.9.7-1.4C16.6 11.6 16 10.1 16 8a6 6 0 0 0-6-6ZM8 16a2 2 0 1 0 4 0H8Z"/></svg>
-            <span id="notif-badge" class="hidden absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-violet-600 text-white text-[10px] font-bold flex items-center justify-center"></span>
+            <span id="notif-badge" class="hidden absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-accent-contrast text-[10px] font-bold flex items-center justify-center"></span>
           </button>
         </div>
         <div class="relative" id="wallet-holder">
-          <button id="wallet-btn" class="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 min-h-[44px] rounded-lg border border-violet-500/40 text-violet-200 hover:bg-violet-600/20" aria-haspopup="menu" aria-expanded="false">
+          <button id="wallet-btn" class="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 min-h-[44px] rounded-lg border border-accent/40 text-accent-text hover:bg-accent/20" aria-haspopup="menu" aria-expanded="false">
             <span id="wallet-icon" class="inline-flex"></span>
             <span id="wallet-label">Connect wallet</span>
           </button>
         </div>
         <div class="relative" id="avatar-holder-desktop">
-          <button id="avatar-btn" class="min-w-[44px] min-h-[44px] flex items-center justify-center gap-2 p-1 rounded-full hover:bg-zinc-800" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">
-            <span id="avatar-initials" class="w-8 h-8 rounded-full bg-violet-600/30 text-violet-200 text-xs font-bold flex items-center justify-center">?</span>
+          <button id="avatar-btn" class="min-w-[44px] min-h-[44px] flex items-center justify-center gap-2 p-1 rounded-full hover:bg-surface-container-high" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">
+            <span id="avatar-initials" class="w-8 h-8 rounded-full bg-accent/30 text-accent-text text-xs font-bold flex items-center justify-center">?</span>
           </button>
         </div>
       </div>
@@ -133,23 +151,23 @@
   </header>
 
   <!-- Mobile top bar -->
-  <header class="md:hidden sticky top-0 z-40 bg-zinc-950/90 backdrop-blur border-b border-zinc-800">
+  <header class="md:hidden sticky top-0 z-40 bg-background/90 backdrop-blur border-b border-line">
     <div class="px-4 h-12 flex items-center justify-between">
       <div class="relative" id="menu-holder">
-        <button id="menu-btn" class="p-2 rounded-lg active:bg-zinc-800 text-zinc-300 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Menu" aria-haspopup="menu" aria-expanded="false">
+        <button id="menu-btn" class="p-2 rounded-lg active:bg-surface-container-high text-icon-secondary min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Menu" aria-haspopup="menu" aria-expanded="false">
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
         </button>
       </div>
-      <a href="/" class="font-bold text-violet-400">Questora</a>
+      <a href="/" class="font-bold text-accent-text">Questora</a>
       <div class="flex items-center gap-1">
         <div class="relative" id="notif-holder-mobile">
-          <button id="notif-btn-mobile" class="relative p-2 rounded-lg active:bg-zinc-800 text-zinc-400 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Notifications" aria-haspopup="menu" aria-expanded="false">
+          <button id="notif-btn-mobile" class="relative p-2 rounded-lg active:bg-surface-container-high text-icon-secondary min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Notifications" aria-haspopup="menu" aria-expanded="false">
             <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 0 0-6 6c0 2.1-.6 3.6-1.3 4.6-.3.5 0 1.4.7 1.4h13.2c.7 0 1-.9.7-1.4C16.6 11.6 16 10.1 16 8a6 6 0 0 0-6-6ZM8 16a2 2 0 1 0 4 0H8Z"/></svg>
-            <span id="notif-badge-mobile" class="hidden absolute top-1 right-1 min-w-[16px] h-[16px] px-0.5 rounded-full bg-violet-600 text-white text-[9px] font-bold flex items-center justify-center"></span>
+            <span id="notif-badge-mobile" class="hidden absolute top-1 right-1 min-w-[16px] h-[16px] px-0.5 rounded-full bg-accent text-accent-contrast text-[9px] font-bold flex items-center justify-center"></span>
           </button>
         </div>
         <div class="relative" id="avatar-holder-mobile">
-          <button id="avatar-btn-mobile" class="min-w-[44px] min-h-[44px] rounded-full bg-violet-600/30 text-violet-200 text-xs font-bold flex items-center justify-center" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">?</button>
+          <button id="avatar-btn-mobile" class="min-w-[44px] min-h-[44px] rounded-full bg-accent/30 text-accent-text text-xs font-bold flex items-center justify-center" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">?</button>
         </div>
       </div>
     </div>
@@ -159,7 +177,7 @@
 
   <!-- Mobile bottom navigation: four high-frequency destinations. Create
        opens the same Create menu as the desktop button. -->
-  <nav id="bottom-nav" aria-label="Primary" class="md:hidden fixed bottom-0 inset-x-0 z-40 bg-zinc-950/95 backdrop-blur border-t border-zinc-800 flex items-stretch" style="padding-bottom:var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px))"></nav>
+  <nav id="bottom-nav" aria-label="Primary" class="md:hidden fixed bottom-0 inset-x-0 z-40 bg-background/95 backdrop-blur border-t border-line flex items-stretch" style="padding-bottom:var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px))"></nav>
 
   <div id="toast-holder"></div>
 

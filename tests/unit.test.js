@@ -642,3 +642,107 @@ test('one navigation source drives the desktop bar, drawer and bottom bar', () =
   }
   assert.equal(navMenu.matchRe(navMenu.NAV[0]).test('/projects/abc'), true);
 });
+
+// ---- Design tokens: the contrast contract ----------------------------------
+// The semantic palette lives as RGB triplets in styles/tailwind-input.css.
+// This parses that block and re-checks every pair the components actually use,
+// so a future edit cannot silently dim a token below WCAG. Normal text must
+// clear 4.5:1, icons and control borders 3:1.
+function parseTokenBlock(css, selector) {
+  const start = css.indexOf(selector + ' {');
+  assert.ok(start >= 0, 'missing token block for ' + selector);
+  const open = css.indexOf('{', start);
+  const end = css.indexOf('}', open);
+  const body = css.slice(open + 1, end);
+  const tokens = {};
+  for (const line of body.split('\n')) {
+    const m = line.match(/--q-([a-z-]+):\s*(\d+)\s+(\d+)\s+(\d+)\s*;/);
+    if (m) tokens[m[1]] = [Number(m[2]), Number(m[3]), Number(m[4])];
+  }
+  return tokens;
+}
+function luminance([r, g, b]) {
+  const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+function contrast(a, b) {
+  const la = luminance(a), lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+test('design tokens meet WCAG AA in both themes', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'styles', 'tailwind-input.css'), 'utf8');
+  const dark = parseTokenBlock(css, ':root');
+  const light = parseTokenBlock(css, 'html.light');
+
+  // The tables hold every token the components consume; a missing key means
+  // the CSS block and this contract have drifted.
+  for (const t of [...Object.keys(dark), ...Object.keys(light)]) {
+    assert.ok(dark[t], 'dark theme defines --q-' + t);
+    assert.ok(light[t], 'light theme defines --q-' + t);
+  }
+
+  const surfaces = ['surface', 'surface-container', 'surface-container-high', 'surface-container-highest'];
+  const text = ['text-primary', 'text-secondary', 'text-tertiary'];
+  const icons = ['icon-primary', 'icon-secondary'];
+  const statuses = [['success', 'success-bg'], ['warning', 'warning-bg'], ['error', 'error-bg'], ['info', 'info-bg']];
+  const borders = [['border-strong', 'surface'], ['border-strong', 'surface-container'], ['border-strong', 'surface-container-high']];
+
+  for (const [theme, tk] of [['dark', dark], ['light', light]]) {
+    for (const fg of text) {
+      for (const bg of surfaces) {
+        const ratio = contrast(tk[fg], tk[bg]);
+        assert.ok(ratio >= 4.5, theme + ' ' + fg + ' on ' + bg + ' is ' + ratio.toFixed(2) + ':1 (needs 4.5)');
+      }
+    }
+    // accent-contrast text on the accent fill (primary buttons, links).
+    {
+      const ratio = contrast(tk['accent-contrast'], tk['accent']);
+      assert.ok(ratio >= 4.5, theme + ' accent-contrast on accent is ' + ratio.toFixed(2) + ':1');
+    }
+    // Status text on its own tint, both ways round.
+    for (const [fg, bg] of statuses) {
+      const ratio = contrast(tk[fg], tk[bg]);
+      assert.ok(ratio >= 4.5, theme + ' ' + fg + ' on ' + bg + ' is ' + ratio.toFixed(2) + ':1');
+    }
+    // Icons and control borders are non-text: 3:1.
+    for (const [fg, bg] of borders) {
+      const ratio = contrast(tk[fg], tk[bg]);
+      assert.ok(ratio >= 3, theme + ' ' + fg + ' on ' + bg + ' is ' + ratio.toFixed(2) + ':1 (needs 3)');
+    }
+    for (const fg of icons) {
+      const ratio = contrast(tk[fg], tk['surface-container-high']);
+      assert.ok(ratio >= 3, theme + ' ' + fg + ' on surface-container-high is ' + ratio.toFixed(2) + ':1');
+    }
+  }
+
+  // The two themes must actually differ, or the light block is a no-op.
+  assert.notDeepEqual(dark['background'], light['background']);
+  assert.equal(dark['accent'].join(' '), '124 58 237', 'the brand violet fill is unchanged');
+});
+
+test('the app markup has no raw palette colours left and status is never colour alone', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const files = ['public/index.html', 'public/app.js', 'public/components.js', 'public/views.js', 'public/wallets/ui.js'];
+  const banned = /\b(?:bg|text|border|placeholder:text|hover:bg|hover:text|hover:border|focus:border)-(?:zinc|violet|emerald|amber|red|sky|slate|gray)-(?:[0-9]{2,3})(?:\/[0-9]+)?/;
+  for (const f of files) {
+    const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
+    assert.ok(!banned.test(src), f + ' still contains a raw palette utility');
+    assert.ok(!/opacity-[0-9]/.test(src.replace(/opacity-0\b/g, '')) || f === 'public/app.js',
+      f + ' still dims content with a blanket opacity utility');
+  }
+  // statePill and the wallet PILL both carry a glyph, so status is not
+  // conveyed by colour alone.
+  const components = fs.readFileSync(path.join(__dirname, '..', 'public', 'components.js'), 'utf8');
+  assert.match(components, /const icons = \{[\s\S]*?pending: 'schedule'/);
+  const wallets = fs.readFileSync(path.join(__dirname, '..', 'public', 'wallets', 'ui.js'), 'utf8');
+  assert.match(wallets, /PILL_ICON = \{ ok: 'check'/);
+  // The shared primitives are the seam every caller inherits, so they must
+  // resolve through tokens rather than palette steps.
+  assert.match(components, /var BTN_PRIMARY = '[^']*bg-accent[^']*text-accent-contrast/);
+  assert.match(components, /var BTN_SECONDARY = '[^']*bg-surface-container[^']*border-line-strong/);
+  assert.match(components, /var BTN_ICON = '[^']*text-icon-secondary[^']*hover:text-icon-primary/);
+});
