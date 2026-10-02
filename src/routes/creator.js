@@ -3,6 +3,9 @@ const { pool } = require('../db');
 const rbac = require('../rbac');
 const { audit } = require('../audit');
 const { slugify, randomId, validUrl } = require('../util');
+const amount = require('../verify/amount');
+const { maskUrl } = require('../verify/evm/rpc-pool');
+const { adapterFor } = require('../verify/chain-adapter');
 
 const router = express.Router();
 
@@ -34,14 +37,87 @@ const TASK_SCHEMAS = {
     },
   },
   manual: { required: [], optional: [] },
-  // Phase 1 has no RPC-backed chain adapter, so an on-chain task can never
-  // be published: validation fails with the creator-facing message below
-  // rather than accepting a task nobody could verify.
+  // Simple Mode on-chain task (Slice 1). The static shape is validated here so
+  // the publish path can reject a task nobody could verify; connectivity and
+  // the chain-id match are checked asynchronously (validateOnChainAsync) by
+  // the publish route, which is where a real RPC is available.
   on_chain: {
-    required: [],
-    validate: () => 'This on-chain verification method is not currently supported.',
+    required: ['network_id', 'method'],
+    validate: (c) => {
+      if (!['native_balance', 'erc20_balance', 'transaction'].includes(c.method)) {
+        return 'Choose a supported verification method';
+      }
+      if (!Number.isFinite(Number(c.network_id))) return 'Choose a network for this task';
+      const req = c.requirement;
+      if (req !== undefined && req !== null) {
+        if (typeof req !== 'object') return 'The requirement must be an amount and a comparison';
+        if (!amount.normalizeOperator(req.operator)) return 'Unknown comparison operator';
+        if (req.amount !== undefined && req.amount !== '' && !/^\d+(\.\d+)?$/.test(String(req.amount))) {
+          return 'The required amount must be a positive number';
+        }
+      }
+      const wantsToken = c.method === 'erc20_balance' || (c.method === 'transaction' && c.token_id);
+      if (wantsToken) {
+        const inline = c.token && Number.isInteger(c.token.decimals);
+        if (!c.token_id && !inline) {
+          return 'Choose a token (with decimals) for a token balance task';
+        }
+      }
+      if (c.method === 'transaction' && c.confirmations !== undefined) {
+        const n = Number(c.confirmations);
+        if (!Number.isInteger(n) || n < 1) return 'Confirmations must be a whole number of at least 1';
+      }
+      return null;
+    },
   },
 };
+
+// Async part of on-chain validation: the network must belong to the project and
+// have at least one RPC whose reported chain id matches the configured one.
+// Returns a creator-facing message or null.
+async function validateOnChainAsync(projectId, config) {
+  const n = await pool.query(
+    `SELECT id, chain_namespace, chain_id, name FROM task_networks WHERE id = $1 AND project_id = $2`,
+    [config.network_id, projectId]);
+  if (!n.rows.length) return 'That network does not belong to this project';
+  const network = n.rows[0];
+  if (network.chain_namespace !== 'eip155') {
+    // Non-EVM namespaces have no adapter yet; a task is still publishable but
+    // will land in manual review rather than be refused outright.
+    return null;
+  }
+  const rpcs = await pool.query('SELECT COUNT(*)::int AS n FROM task_rpcs WHERE network_id = $1', [network.id]);
+  if (!rpcs.rows[0].n) return 'Add at least one RPC endpoint to this network before publishing';
+  const test = await testNetworkEndpoints(network);
+  if (!test.ok) return test.message;
+  return null;
+}
+
+// Probe every endpoint of a network, recording health, and confirm the
+// reported chain id matches the configured one.
+async function testNetworkEndpoints(network) {
+  const { rpcPoolFor } = require('../verify/evm/rpc-pool');
+  const rpcs = await pool.query(
+    `SELECT id, url, is_primary, priority FROM task_rpcs WHERE network_id = $1 ORDER BY is_primary DESC, priority`, [network.id]);
+  if (!rpcs.rows.length) return { ok: false, message: 'This network has no RPC endpoints yet' };
+  const pool_ = await rpcPoolFor(network.id);
+  try {
+    const { value } = await pool_.call((provider) => provider.getNetwork());
+    const reported = Number(value.chainId);
+    if (network.chain_id !== null && network.chain_id !== undefined && Number(network.chain_id) !== reported) {
+      return { ok: false, reported_chain_id: reported, message: `The RPC reports chain ${reported}, but this network is configured as chain ${network.chain_id}` };
+    }
+    for (const r of rpcs.rows) {
+      await pool.query(`UPDATE task_rpcs SET health_state = 'healthy', last_checked_at = NOW() WHERE id = $1`, [r.id]);
+    }
+    return { ok: true, reported_chain_id: reported, rpc_host: maskUrl(rpcs.rows[0].url), message: 'Connection healthy' };
+  } catch (err) {
+    for (const r of rpcs.rows) {
+      await pool.query(`UPDATE task_rpcs SET health_state = 'down', last_checked_at = NOW() WHERE id = $1`, [r.id]);
+    }
+    return { ok: false, message: 'No RPC endpoint could be reached' };
+  }
+}
 
 function validateTaskConfig(type, config) {
   const schema = TASK_SCHEMAS[type];
@@ -613,13 +689,21 @@ router.post('/campaigns/:id/quests', async (req, res) => {
       const t = tasks[i];
       const cfgErr = validateTaskConfig(t.type, t.config || {});
       if (cfgErr) { await client.query('ROLLBACK'); return res.status(400).json({ error: cfgErr }); }
-      const verification = t.type === 'quiz' ? 'automatic' : t.type === 'wallet_connect' ? 'automatic' : 'manual';
-      await client.query(
-        `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      const verification = ['quiz', 'wallet_connect', 'on_chain'].includes(t.type) ? 'automatic' : 'manual';
+      const taskIns = await client.query(
+        `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required,
+                                  project_id, campaign_id, xp_reward)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
         [questId, t.type, t.title || 'Task', JSON.stringify(t.config || {}), i, verification,
-          ['url_proof', 'manual', 'social'].includes(t.type)]
+          ['url_proof', 'manual', 'social'].includes(t.type),
+          campaign.project_id, campaign.id, Math.max(0, parseInt(t.xp_reward, 10) || 0)]
       );
+      // Every task has a v1 version so the engine always reads an active one.
+      const ver = await client.query(
+        `INSERT INTO task_versions (task_id, version, config, created_by) VALUES ($1, 1, $2, $3) RETURNING id`,
+        [taskIns.rows[0].id, JSON.stringify(t.config || {}), userId(req)]);
+      await client.query('UPDATE quest_tasks SET current_version_id = $2 WHERE id = $1',
+        [taskIns.rows[0].id, ver.rows[0].id]);
     }
     if (!tasks || !tasks.length) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'A quest needs at least one task' }); }
     if (badge_id) {
@@ -938,6 +1022,403 @@ router.get('/projects/:id/analytics', async (req, res) => {
 });
 
 router.validateTaskConfig = validateTaskConfig;
+router.validateOnChainAsync = validateOnChainAsync;
+router.testNetworkEndpoints = testNetworkEndpoints;
 // Exposed for tests: the legal campaign state transitions.
 router.CAMPAIGN_TRANSITIONS = CAMPAIGN_TRANSITIONS;
+// ---- on-chain networks, tokens and task versions (Slice 1) ----
+// Creator-facing shape of a network: never the RPC URL, only a masked host.
+const NETWORK_COLUMNS = ['name', 'chain_namespace', 'chain_id', 'native_symbol', 'native_decimals',
+  'explorer_url', 'explorer_tx_url', 'explorer_address_url', 'is_testnet', 'finality_model', 'address_format'];
+
+function sanitizeNetworkRow(n, rpcs) {
+  return {
+    id: n.id, project_id: n.project_id, name: n.name, chain_namespace: n.chain_namespace,
+    chain_id: n.chain_id === null || n.chain_id === undefined ? null : Number(n.chain_id),
+    native_symbol: n.native_symbol, native_decimals: n.native_decimals,
+    explorer_url: n.explorer_url, explorer_tx_url: n.explorer_tx_url,
+    explorer_address_url: n.explorer_address_url, is_testnet: n.is_testnet,
+    finality_model: n.finality_model, address_format: n.address_format,
+    rpcs: (rpcs || []).map(r => ({ id: r.id, kind: r.kind, priority: r.priority, is_primary: r.is_primary,
+      health_state: r.health_state, last_checked_at: r.last_checked_at, host: maskUrl(r.url) })),
+  };
+}
+
+router.post('/projects/:id/networks', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  const b = req.body || {};
+  if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'A network name is required' });
+  const ns = String(b.chain_namespace || 'eip155');
+  if (!adapterFor(ns)) {
+    // Non-EVM families are accepted for configuration but have no adapter yet,
+    // so tasks on them route to manual review. Only reject a namespace that no
+    // known wallet chain recognizes.
+    const walletChains = require('../verify/wallet-chains');
+    if (!walletChains.adapterFor(ns)) return res.status(400).json({ error: 'Unknown chain family' });
+  }
+  const chainId = b.chain_id === undefined || b.chain_id === null || b.chain_id === '' ? null : Number(b.chain_id);
+  if (chainId !== null && !Number.isFinite(chainId)) return res.status(400).json({ error: 'Chain id must be a number' });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO task_networks (project_id, chain_namespace, chain_id, name, native_symbol, native_decimals,
+        explorer_url, explorer_tx_url, explorer_address_url, is_testnet, finality_model, address_format)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [p.id, ns, chainId, String(b.name).trim().slice(0, 255), b.native_symbol || null,
+        Number.isInteger(Number(b.native_decimals)) ? Number(b.native_decimals) : null,
+        b.explorer_url || null, b.explorer_tx_url || null, b.explorer_address_url || null,
+        !!b.is_testnet, b.finality_model || null, b.address_format || null]);
+    await audit(userId(req), 'network.create', 'network', rows[0].id, null, sanitizeNetworkRow(rows[0], []), null);
+    res.json({ network: sanitizeNetworkRow(rows[0], []) });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'This project already has a network with that chain id' });
+    throw err;
+  }
+});
+
+router.get('/projects/:id/networks', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  const nets = await pool.query('SELECT * FROM task_networks WHERE project_id = $1 ORDER BY id', [p.id]);
+  const rpcs = nets.rows.length ? await pool.query(
+    'SELECT * FROM task_rpcs WHERE network_id = ANY($1) ORDER BY is_primary DESC, priority', [nets.rows.map(n => n.id)]) : { rows: [] };
+  const byNet = {};
+  for (const r of rpcs.rows) (byNet[r.network_id] = byNet[r.network_id] || []).push(r);
+  res.json({ networks: nets.rows.map(n => sanitizeNetworkRow(n, byNet[n.id] || [])) });
+});
+
+router.get('/networks/:id', async (req, res) => {
+  const n = await pool.query(
+    `SELECT n.*, p.owner_user_id FROM task_networks n JOIN projects p ON p.id = n.project_id WHERE n.id = $1`, [req.params.id]);
+  if (!n.rows.length) return res.status(404).json({ error: 'Network not found' });
+  if (!(await rbac.requireProjectAction(req, res, n.rows[0].project_id, 'edit'))) return;
+  const rpcs = await pool.query('SELECT * FROM task_rpcs WHERE network_id = $1 ORDER BY is_primary DESC, priority', [n.rows[0].id]);
+  res.json({ network: sanitizeNetworkRow(n.rows[0], rpcs.rows) });
+});
+
+router.patch('/networks/:id', async (req, res) => {
+  const n = await pool.query('SELECT * FROM task_networks WHERE id = $1', [req.params.id]);
+  if (!n.rows.length) return res.status(404).json({ error: 'Network not found' });
+  if (!(await rbac.requireProjectAction(req, res, n.rows[0].project_id, 'edit'))) return;
+  const b = req.body || {};
+  const allowed = {};
+  for (const k of ['name', 'native_symbol', 'explorer_url', 'explorer_tx_url', 'explorer_address_url', 'finality_model', 'address_format']) {
+    if (b[k] !== undefined) allowed[k] = b[k];
+  }
+  if (b.native_decimals !== undefined) allowed.native_decimals = Number.isInteger(Number(b.native_decimals)) ? Number(b.native_decimals) : null;
+  if (b.chain_id !== undefined) allowed.chain_id = b.chain_id === null || b.chain_id === '' ? null : Number(b.chain_id);
+  if (b.is_testnet !== undefined) allowed.is_testnet = !!b.is_testnet;
+  const sets = Object.keys(allowed);
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+  const { rows } = await pool.query(
+    `UPDATE task_networks SET ${sets.map((s, i) => `${s} = $${i + 2}`).join(', ')} WHERE id = $1 RETURNING *`,
+    [n.rows[0].id, ...sets.map(s => allowed[s])]);
+  await audit(userId(req), 'network.update', 'network', n.rows[0].id, sanitizeNetworkRow(n.rows[0], []), sanitizeNetworkRow(rows[0], []), null);
+  res.json({ network: sanitizeNetworkRow(rows[0], []) });
+});
+
+// The Test connection button. Never returns the raw URL to the client.
+router.post('/networks/:id/test', async (req, res) => {
+  const n = await pool.query('SELECT * FROM task_networks WHERE id = $1', [req.params.id]);
+  if (!n.rows.length) return res.status(404).json({ error: 'Network not found' });
+  if (!(await rbac.requireProjectAction(req, res, n.rows[0].project_id, 'edit'))) return;
+  const result = await testNetworkEndpoints(n.rows[0]);
+  res.json({ ok: !!result.ok, message: result.message, reported_chain_id: result.reported_chain_id || null,
+    rpc_host: result.rpc_host || null, chain_id: n.rows[0].chain_id === null ? null : Number(n.rows[0].chain_id) });
+});
+
+// RPC endpoints. The URL is accepted on write and never returned on read.
+router.post('/networks/:id/rpcs', async (req, res) => {
+  const n = await pool.query('SELECT * FROM task_networks WHERE id = $1', [req.params.id]);
+  if (!n.rows.length) return res.status(404).json({ error: 'Network not found' });
+  if (!(await rbac.requireProjectAction(req, res, n.rows[0].project_id, 'edit'))) return;
+  const b = req.body || {};
+  if (!validUrl(b.url)) return res.status(400).json({ error: 'The RPC URL must start with http or https' });
+  const isPrimary = !!b.is_primary;
+  if (isPrimary) await pool.query('UPDATE task_rpcs SET is_primary = FALSE WHERE network_id = $1', [n.rows[0].id]);
+  const { rows } = await pool.query(
+    `INSERT INTO task_rpcs (network_id, url, kind, priority, is_primary, credential_ref, timeout_ms, max_retries)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [n.rows[0].id, String(b.url).trim(), b.kind === 'wss' ? 'wss' : 'https',
+      Math.max(0, parseInt(b.priority, 10) || 0), isPrimary, b.credential_ref || null,
+      Math.max(1000, parseInt(b.timeout_ms, 10) || 8000), Math.max(0, parseInt(b.max_retries, 10) || 0)]);
+  await audit(userId(req), 'network.rpc.add', 'network', n.rows[0].id, null, sanitizeNetworkRow(n.rows[0], rows), null);
+  res.json({ rpc: sanitizeNetworkRow(n.rows[0], rows).rpcs[0] });
+});
+
+router.patch('/rpcs/:id', async (req, res) => {
+  const r = await pool.query(
+    `SELECT r.*, n.project_id FROM task_rpcs r JOIN task_networks n ON n.id = r.network_id WHERE r.id = $1`, [req.params.id]);
+  if (!r.rows.length) return res.status(404).json({ error: 'RPC endpoint not found' });
+  if (!(await rbac.requireProjectAction(req, res, r.rows[0].project_id, 'edit'))) return;
+  const b = req.body || {};
+  const allowed = {};
+  if (b.url !== undefined) { if (!validUrl(b.url)) return res.status(400).json({ error: 'The RPC URL must start with http or https' }); allowed.url = String(b.url).trim(); }
+  if (b.kind !== undefined) allowed.kind = b.kind === 'wss' ? 'wss' : 'https';
+  if (b.priority !== undefined) allowed.priority = Math.max(0, parseInt(b.priority, 10) || 0);
+  if (b.credential_ref !== undefined) allowed.credential_ref = b.credential_ref || null;
+  if (b.timeout_ms !== undefined) allowed.timeout_ms = Math.max(1000, parseInt(b.timeout_ms, 10) || 8000);
+  if (b.max_retries !== undefined) allowed.max_retries = Math.max(0, parseInt(b.max_retries, 10) || 0);
+  if (b.is_primary !== undefined) {
+    allowed.is_primary = !!b.is_primary;
+    if (allowed.is_primary) await pool.query('UPDATE task_rpcs SET is_primary = FALSE WHERE network_id = $1 AND id <> $2', [r.rows[0].network_id, r.rows[0].id]);
+  }
+  const sets = Object.keys(allowed);
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
+  const { rows } = await pool.query(
+    `UPDATE task_rpcs SET ${sets.map((s, i) => `${s} = $${i + 2}`).join(', ')} WHERE id = $1 RETURNING *`,
+    [r.rows[0].id, ...sets.map(s => allowed[s])]);
+  res.json({ rpc: { id: rows[0].id, kind: rows[0].kind, priority: rows[0].priority, is_primary: rows[0].is_primary,
+    health_state: rows[0].health_state, host: maskUrl(rows[0].url) } });
+});
+
+router.delete('/rpcs/:id', async (req, res) => {
+  const r = await pool.query(
+    `SELECT r.*, n.project_id FROM task_rpcs r JOIN task_networks n ON n.id = r.network_id WHERE r.id = $1`, [req.params.id]);
+  if (!r.rows.length) return res.status(404).json({ error: 'RPC endpoint not found' });
+  if (!(await rbac.requireProjectAction(req, res, r.rows[0].project_id, 'edit'))) return;
+  await pool.query('DELETE FROM task_rpcs WHERE id = $1', [r.rows[0].id]);
+  await audit(userId(req), 'network.rpc.remove', 'network', r.rows[0].network_id, { host: maskUrl(r.rows[0].url) }, null, null);
+  res.json({ deleted: true });
+});
+
+// Tokens: try the contract for name/symbol/decimals, fall back to manual entry.
+router.post('/projects/:id/tokens', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  const b = req.body || {};
+  if (!b.network_id) return res.status(400).json({ error: 'Choose a network for this token' });
+  const net = await pool.query('SELECT * FROM task_networks WHERE id = $1 AND project_id = $2', [b.network_id, p.id]);
+  if (!net.rows.length) return res.status(404).json({ error: 'Network not found in this project' });
+  if (!b.contract_address || !String(b.contract_address).trim()) return res.status(400).json({ error: 'A contract address is required' });
+  let symbol = b.symbol || null, name = b.name || null, decimals = Number.isInteger(Number(b.decimals)) ? Number(b.decimals) : null;
+  let source = 'manual';
+  // Best-effort on-chain metadata; failure just means the owner types it.
+  if (net.rows[0].chain_namespace === 'eip155' && (decimals === null || !symbol)) {
+    try {
+      const { rpcPoolFor } = require('../verify/evm/rpc-pool');
+      const { ethers } = require('ethers');
+      const pool_ = await rpcPoolFor(net.rows[0].id);
+      const abi = ['function name() view returns (string)', 'function symbol() view returns (string)', 'function decimals() view returns (uint8)'];
+      const got = await pool_.call(async (provider) => {
+        const c = new ethers.Contract(String(b.contract_address).trim(), abi, provider);
+        const [n2, s2, d2] = await Promise.all([c.name().catch(() => null), c.symbol().catch(() => null), c.decimals().catch(() => null)]);
+        return { name: n2, symbol: s2, decimals: d2 === null ? null : Number(d2) };
+      });
+      if (got.value) {
+        name = name || got.value.name; symbol = symbol || got.value.symbol;
+        if (decimals === null && Number.isInteger(got.value.decimals)) decimals = got.value.decimals;
+        source = 'contract';
+      }
+    } catch { /* leave manual */ }
+  }
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO task_tokens (network_id, project_id, contract_address, token_type, symbol, name, decimals, metadata_source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [net.rows[0].id, p.id, String(b.contract_address).trim(), b.token_type === 'erc721' || b.token_type === 'erc1155' ? b.token_type : 'erc20',
+        symbol, name, decimals, source]);
+    await audit(userId(req), 'token.create', 'token', rows[0].id, null, rows[0], null);
+    res.json({ token: rows[0] });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'That token already exists on this network' });
+    throw err;
+  }
+});
+
+router.get('/projects/:id/tokens', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  const { rows } = await pool.query('SELECT * FROM task_tokens WHERE project_id = $1 ORDER BY id', [p.id]);
+  res.json({ tokens: rows });
+});
+
+// ---- task builder: create / read / edit / publish ----
+router.post('/quests/:id/tasks', async (req, res) => {
+  const isNum = !isNaN(Number(req.params.id));
+  const q = await pool.query(
+    `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+     WHERE ${isNum ? 'q.id = $1' : 'q.slug = $1'} LIMIT 1`, [req.params.id]);
+  if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
+  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'edit'))) return;
+  const b = req.body || {};
+  const cfgErr = validateTaskConfig(b.type, b.config || {});
+  if (cfgErr) return res.status(400).json({ error: cfgErr });
+  if (b.type === 'on_chain') {
+    const asyncErr = await validateOnChainAsync(q.rows[0].project_id, b.config || {});
+    if (asyncErr) return res.status(400).json({ error: asyncErr });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const ord = await client.query('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM quest_tasks WHERE quest_id = $1', [q.rows[0].id]);
+    const verification = ['quiz', 'wallet_connect', 'on_chain'].includes(b.type) ? 'automatic' : 'manual';
+    const ins = await client.query(
+      `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required,
+                                project_id, campaign_id, xp_reward, completion_mode, max_completions,
+                                attempt_limit, cooldown_seconds)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+      [q.rows[0].id, b.type, String(b.title || 'Task').slice(0, 255), JSON.stringify(b.config || {}),
+        ord.rows[0].n, verification, ['url_proof', 'manual', 'social'].includes(b.type),
+        q.rows[0].project_id, q.rows[0].campaign_id, Math.max(0, parseInt(b.xp_reward, 10) || 0),
+        ['one_time', 'daily', 'weekly', 'monthly'].includes(b.completion_mode) ? b.completion_mode : 'one_time',
+        Math.max(1, parseInt(b.max_completions, 10) || 1),
+        b.attempt_limit ? Math.max(1, parseInt(b.attempt_limit, 10)) : null,
+        Math.max(0, parseInt(b.cooldown_seconds, 10) || 0)]);
+    const ver = await client.query(
+      `INSERT INTO task_versions (task_id, version, config, created_by) VALUES ($1, 1, $2, $3) RETURNING id`,
+      [ins.rows[0].id, JSON.stringify(b.config || {}), userId(req)]);
+    await client.query('UPDATE quest_tasks SET current_version_id = $2 WHERE id = $1', [ins.rows[0].id, ver.rows[0].id]);
+    await client.query('COMMIT');
+    res.json({ task: { ...ins.rows[0], current_version_id: ver.rows[0].id } });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+router.get('/quests/:id/tasks', async (req, res) => {
+  const isNum = !isNaN(Number(req.params.id));
+  const q = await pool.query(
+    `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+     WHERE ${isNum ? 'q.id = $1' : 'q.slug = $1'} LIMIT 1`, [req.params.id]);
+  if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
+  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'edit'))) return;
+  const tasks = await pool.query('SELECT * FROM quest_tasks WHERE quest_id = $1 ORDER BY sort_order', [q.rows[0].id]);
+  const versions = tasks.rows.length ? await pool.query(
+    `SELECT DISTINCT ON (task_id) * FROM task_versions WHERE task_id = ANY($1) ORDER BY task_id, version DESC`,
+    [tasks.rows.map(t => t.id)]) : { rows: [] };
+  const byTask = {};
+  for (const v of versions.rows) byTask[v.task_id] = v;
+  res.json({ quest: { id: q.rows[0].id, title: q.rows[0].title, status: q.rows[0].status,
+      starts_at: q.rows[0].starts_at, ends_at: q.rows[0].ends_at, project_id: q.rows[0].project_id },
+    tasks: tasks.rows.map(t => sanitizeTaskForCreator(t, byTask[t.id] || null)) });
+});
+
+router.get('/tasks/:id', async (req, res) => {
+  const t = await pool.query(
+    `SELECT t.*, c.project_id FROM quest_tasks t JOIN quests q ON q.id = t.quest_id
+     JOIN campaigns c ON c.id = q.campaign_id WHERE t.id = $1`, [req.params.id]);
+  if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
+  const task = t.rows[0];
+  const canManage = await rbac.can(task.project_id, userId(req), 'edit', req);
+  if (!canManage) return res.status(403).json({ error: 'You do not have permission to manage this project' });
+  const v = await pool.query('SELECT * FROM task_versions WHERE task_id = $1 ORDER BY version DESC LIMIT 1', [task.id]);
+  res.json({ task: sanitizeTaskForCreator(task, v.rows[0] || null) });
+});
+
+// PATCH creates a new version when the task is live; while it is a draft of an
+// unpublished quest it edits in place so the owner can iterate cheaply.
+router.patch('/tasks/:id', async (req, res) => {
+  const t = await pool.query(
+    `SELECT t.*, q.status AS quest_status, c.project_id FROM quest_tasks t
+     JOIN quests q ON q.id = t.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE t.id = $1`, [req.params.id]);
+  if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
+  if (!(await rbac.requireProjectAction(req, res, t.rows[0].project_id, 'edit'))) return;
+  const task = t.rows[0];
+  const b = req.body || {};
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const inPlace = ['draft', 'scheduled'].includes(task.quest_status);
+    const sets = {};
+    if (b.title !== undefined) sets.title = String(b.title).slice(0, 255);
+    if (b.xp_reward !== undefined) sets.xp_reward = Math.max(0, parseInt(b.xp_reward, 10) || 0);
+    if (b.completion_mode !== undefined) sets.completion_mode = ['one_time', 'daily', 'weekly', 'monthly'].includes(b.completion_mode) ? b.completion_mode : 'one_time';
+    if (b.max_completions !== undefined) sets.max_completions = Math.max(1, parseInt(b.max_completions, 10) || 1);
+    if (b.attempt_limit !== undefined) sets.attempt_limit = b.attempt_limit ? Math.max(1, parseInt(b.attempt_limit, 10)) : null;
+    if (b.cooldown_seconds !== undefined) sets.cooldown_seconds = Math.max(0, parseInt(b.cooldown_seconds, 10) || 0);
+
+    let newConfig = task.config;
+    if (b.config !== undefined) {
+      const cfgErr = validateTaskConfig(task.type, b.config || {});
+      if (cfgErr) { await client.query('ROLLBACK'); return res.status(400).json({ error: cfgErr }); }
+      if (task.type === 'on_chain') {
+        const asyncErr = await validateOnChainAsync(task.project_id, b.config || {});
+        if (asyncErr) { await client.query('ROLLBACK'); return res.status(400).json({ error: asyncErr }); }
+      }
+      newConfig = b.config;
+    }
+    if (inPlace) {
+      const all = { ...sets };
+      if (b.config !== undefined) all.config = JSON.stringify(newConfig);
+      const keys = Object.keys(all);
+      if (keys.length) {
+        await client.query(
+          `UPDATE quest_tasks SET ${keys.map((s, i) => `${s} = $${i + 2}`).join(', ')} WHERE id = $1`,
+          [task.id, ...keys.map(k => all[k])]);
+      }
+      if (task.current_version_id) await client.query('UPDATE task_versions SET config = $2 WHERE id = $1', [task.current_version_id, JSON.stringify(newConfig)]);
+    } else {
+      const nextVer = await client.query('SELECT COALESCE(MAX(version), 0) + 1 AS v FROM task_versions WHERE task_id = $1', [task.id]);
+      const ver = await client.query(
+        `INSERT INTO task_versions (task_id, version, config, created_by) VALUES ($1, $2, $3, $4) RETURNING id`,
+        [task.id, nextVer.rows[0].v, JSON.stringify(newConfig), userId(req)]);
+      sets.config = JSON.stringify(newConfig);
+      sets.current_version_id = ver.rows[0].id;
+      const keys = Object.keys(sets);
+      await client.query(
+        `UPDATE quest_tasks SET ${keys.map((s, i) => `${s} = $${i + 2}`).join(', ')} WHERE id = $1`,
+        [task.id, ...keys.map(k => sets[k])]);
+    }
+    await client.query('COMMIT');
+    const fresh = await pool.query('SELECT * FROM quest_tasks WHERE id = $1', [task.id]);
+    const v = await pool.query('SELECT * FROM task_versions WHERE task_id = $1 ORDER BY version DESC LIMIT 1', [task.id]);
+    await audit(userId(req), 'task.update', 'task', task.id, sanitizeTaskForCreator(task, null), sanitizeTaskForCreator(fresh.rows[0], v.rows[0]), null);
+    res.json({ task: sanitizeTaskForCreator(fresh.rows[0], v.rows[0]) });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/tasks/:id/publish', async (req, res) => {
+  const t = await pool.query(
+    `SELECT t.*, q.status AS quest_status, c.project_id FROM quest_tasks t
+     JOIN quests q ON q.id = t.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE t.id = $1`, [req.params.id]);
+  if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
+  if (!(await rbac.requireProjectAction(req, res, t.rows[0].project_id, 'publish'))) return;
+  const task = t.rows[0];
+  const v = await pool.query('SELECT * FROM task_versions WHERE task_id = $1 ORDER BY version DESC LIMIT 1', [task.id]);
+  const config = (v.rows[0] && v.rows[0].config) || task.config || {};
+  const cfgErr = validateTaskConfig(task.type, config);
+  if (cfgErr) return res.status(400).json({ error: cfgErr });
+  if (task.type === 'on_chain') {
+    const asyncErr = await validateOnChainAsync(task.project_id, config);
+    if (asyncErr) return res.status(400).json({ error: asyncErr });
+  }
+  await pool.query(
+    `UPDATE quest_tasks SET verification_type = 'automatic', current_version_id = COALESCE(current_version_id, $2) WHERE id = $1`,
+    [task.id, v.rows[0] ? v.rows[0].id : null]);
+  await pool.query(`UPDATE quests SET status = 'active' WHERE id = $1 AND status IN ('draft','scheduled')`, [task.quest_id]);
+  await audit(userId(req), 'task.publish', 'task', task.id, null, { published: true }, null);
+  res.json({ ok: true, published: true });
+});
+
+// Creator-facing task shape: only allow-listed on-chain config fields; never
+// any RPC URL or credential.
+function sanitizeTaskForCreator(task, version) {
+  const config = (version && version.config) || task.config || {};
+  const safe = { ...config };
+  delete safe.__raw;
+  return {
+    id: task.id, quest_id: task.quest_id, project_id: task.project_id, campaign_id: task.campaign_id,
+    type: task.type, title: task.title, sort_order: task.sort_order,
+    verification_type: task.verification_type, proof_required: task.proof_required,
+    xp_reward: task.xp_reward, completion_mode: task.completion_mode, max_completions: task.max_completions,
+    attempt_limit: task.attempt_limit, cooldown_seconds: task.cooldown_seconds,
+    current_version_id: task.current_version_id,
+    version: version ? { id: version.id, version: version.version, config: safe } : null,
+    config: safe,
+  };
+}
+
 module.exports = router;

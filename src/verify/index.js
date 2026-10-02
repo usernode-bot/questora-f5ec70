@@ -1,7 +1,6 @@
 const { ethers } = require('ethers');
 const { pool } = require('../db');
 const { manualSocialVerifier } = require('./social-verifier');
-const { NullChainAdapter } = require('./chain-adapter');
 
 // Every verifier implements verify(ctx) -> { result: 'verified'|'rejected',
 // detail }. ctx = { task, config, user, submission }. Verifiers NEVER trust
@@ -42,22 +41,33 @@ const verifiers = {
   // the result at Pending review; a future OAuth adapter lands here.
   social: (ctx) => manualSocialVerifier.verify(ctx),
 
-  // On-chain checks go through the ChainAdapter. Phase 1 has no RPC, so
-  // NullChainAdapter reports unsupported and the task is rejected rather
-  // than faked. Returns a promise (adapter calls are async); callers await
-  // the verdict.
+  // On-chain checks go through the universal chain-adapter interface, never a
+  // chain-specific API. The engine resolves the task's active version, its
+  // project-scoped network and token, and the caller's wallet on that chain,
+  // then hands a normalized context to the adapter. The verdict is always
+  // stored as an enum; here it is mapped to the coarse value the quest and
+  // reward layers understand. Unsupported adapters/methods become
+  // MANUAL_REVIEW (coarse pending), never a faked verdict. Persisting the
+  // attempt and paying task XP is the Verify endpoint's job (engine
+  // runVerification); this verifier only decides.
   on_chain: async (ctx) => {
-    const adapter = new NullChainAdapter();
-    const method = (ctx.config && ctx.config.method) || 'verifyContractCall';
-    const fn = typeof adapter[method] === 'function' ? method : 'verifyContractCall';
-    const res = await adapter[fn]();
-    if (!res || res.supported === false) {
-      return {
-        result: 'rejected',
-        detail: { reason: 'This on-chain verification method is not currently supported.', adapter: 'NullChainAdapter' },
-      };
+    const engine = require('./engine');
+    const statusMod = require('./status');
+    if (!ctx.task || !ctx.task.id) {
+      const result = statusMod.classify('MANUAL_REVIEW');
+      return { result: result.storedStatus, detail: { status: 'MANUAL_REVIEW', reason: 'No on-chain task to verify.' } };
     }
-    return { result: res.result || 'rejected', detail: res.detail || res };
+    const { config, network, token } = await engine.resolveChainContext(ctx.task);
+    const namespace = network ? network.chain_namespace : null;
+    const userId = ctx.user && ctx.user.db_id;
+    const wallet = userId ? await engine.resolveWallet(userId, namespace) : null;
+    const result = await engine.evaluateVerification({
+      task: ctx.task, config: config || ctx.config || {}, network, token, wallet, submission: ctx.submission || {},
+    });
+    return {
+      result: statusMod.classify(result.status).storedStatus,
+      detail: { status: result.status, reason: result.reason, evidence: result.evidence },
+    };
   },
   manual: (ctx) => {
     const data = ctx.submission.proof_data || {};

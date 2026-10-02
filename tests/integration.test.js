@@ -46,9 +46,10 @@ t('schema + seed + reward flow', async () => {
   const marked = await pool.query(
     `SELECT c.relname FROM pg_class c
      LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = 0
-     WHERE c.relname IN ('wallet_challenges','social_accounts','task_submissions','verification_events','reward_claims','audit_logs')
+     WHERE c.relname IN ('wallet_challenges','social_accounts','task_submissions','verification_events','reward_claims','audit_logs',
+                         'task_rpcs','verification_attempts','verification_logs')
        AND d.description = 'staging:private'`);
-  assert.equal(marked.rows.length, 6, 'all six private tables must be marked');
+  assert.equal(marked.rows.length, 9, 'all nine private tables must be marked');
 
   // Reward idempotency: completing a seeded quest twice pays once.
   const { completeQuest } = require('../src/reward');
@@ -1028,6 +1029,189 @@ t('wallet limit: 3 per chain, 4th refused by API and DB, concurrency safe, manag
   assert.equal((await fetch(base + '/api/v1/wallets', { method: 'DELETE', headers: auth })).status, 200);
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM wallets WHERE user_id = $1', [uid])).rows[0].n, 0);
 }, { timeout: 60000 });
+
+t('on-chain foundation: versions, project scoping, isolation and XP idempotency', async () => {
+  const db = require('../src/db');
+  await db.migrate();
+  const { seed } = require('../src/seed');
+  await seed();
+
+  // The new tables exist.
+  const tables = await pool.query(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'
+       AND table_name IN ('task_versions','task_networks','task_rpcs','task_tokens','task_completions',
+                          'verification_attempts','verification_logs')`);
+  assert.equal(tables.rows.length, 7, 'all seven on-chain tables exist');
+
+  // Public task_completions must NOT carry a foreign key to the private
+  // task_rpcs table (the migration linter forbids a public->private FK).
+  const fk = await pool.query(
+    `SELECT 1 FROM information_schema.table_constraints tc
+     JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name
+     WHERE tc.table_name = 'task_completions' AND ccu.table_name = 'task_rpcs'`);
+  assert.equal(fk.rows.length, 0, 'task_completions never references the private RPC table');
+
+  // Every task is scoped to its quest's project and campaign, and has a v1
+  // version with a current pointer.
+  const scope = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM quest_tasks t
+     JOIN quests q ON q.id = t.quest_id JOIN campaigns c ON c.id = q.campaign_id
+     WHERE t.project_id IS DISTINCT FROM c.project_id OR t.campaign_id IS DISTINCT FROM q.campaign_id`);
+  assert.equal(scope.rows[0].n, 0, 'every task inherits its quest scope');
+  const unversioned = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM quest_tasks t WHERE t.current_version_id IS NULL`);
+  assert.equal(unversioned.rows[0].n, 0, 'every task has an active version');
+  const versions = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM task_versions v JOIN quest_tasks t ON t.id = v.task_id WHERE v.version = 1`);
+  assert.ok(versions.rows[0].n > 0, 'a v1 version row exists for tasks');
+
+  // The seeded on-chain task belongs to the Open DeFi project and its network
+  // carries a primary RPC plus a backup.
+  const seeded = await pool.query(
+    `SELECT t.id AS task_id, t.current_version_id, t.project_id, n.id AS network_id
+     FROM quest_tasks t
+     JOIN task_networks n ON n.project_id = t.project_id AND n.chain_id = 11155111
+     WHERE t.type = 'on_chain' ORDER BY t.id LIMIT 1`);
+  assert.ok(seeded.rows.length, 'a seeded on-chain task exists');
+  const { task_id, current_version_id, project_id, network_id } = seeded.rows[0];
+  const rpcs = await pool.query('SELECT COUNT(*)::int AS n FROM task_rpcs WHERE network_id = $1', [network_id]);
+  assert.ok(rpcs.rows[0].n >= 2, 'the demo network has a primary and a backup RPC');
+
+  // Project isolation: a task in project A cannot use project B's network.
+  const creator = require('../src/routes/creator');
+  const otherProject = await pool.query(
+    `SELECT p.id FROM projects p WHERE p.id <> $1 AND p.deleted_at IS NULL LIMIT 1`, [project_id]);
+  const outsiderNetwork = await pool.query('SELECT id FROM task_networks WHERE project_id = $1 LIMIT 1', [otherProject.rows[0].id]);
+  let foreignNetwork;
+  if (outsiderNetwork.rows.length) {
+    foreignNetwork = outsiderNetwork.rows[0].id;
+  } else {
+    const ins = await pool.query(
+      `INSERT INTO task_networks (project_id, chain_namespace, chain_id, name) VALUES ($1, 'eip155', 999, 'Other chain') RETURNING id`,
+      [otherProject.rows[0].id]);
+    foreignNetwork = ins.rows[0].id;
+  }
+  const refusal = await creator.validateOnChainAsync(project_id, { network_id: foreignNetwork, method: 'native_balance' });
+  assert.match(refusal, /does not belong/i, 'a network from another project is refused');
+
+  // XP idempotency: completeTask records one completion and pays once.
+  const { completeTask } = require('../src/reward');
+  const user = await pool.query(`SELECT id FROM users WHERE username = 'staging-demo-user-6'`);
+  const uid = user.rows[0].id;
+  const key = `test-onchain-${task_id}-${uid}-${Date.now()}`;
+  // Clear any prior run's rows for this (task, user): the XP ledger's unique
+  // constraint is on (source_type, source_id, user_id), not the key.
+  await pool.query(`DELETE FROM task_completions WHERE task_id = $1 AND user_id = $2`, [task_id, uid]);
+  await pool.query(`DELETE FROM xp_events WHERE source_type = 'task' AND source_id = $1 AND user_id = $2`, [task_id, uid]);
+  const opts = { taskId: task_id, versionId: current_version_id, userId: uid, walletAddress: '0x' + 'a'.repeat(40),
+    chainId: 11155111, method: 'native_balance', evidence: { balance_base_units: '1' },
+    completionPeriod: 'once', idempotencyKey: key, xpReward: 25 };
+  const first = await completeTask(opts);
+  assert.equal(first.completed, true);
+  assert.ok(first.xp > 0, 'task XP is paid on the first completion');
+  const second = await completeTask(opts);
+  assert.equal(second.completed, false);
+  assert.equal(second.reason, 'duplicate');
+  const rows = await pool.query('SELECT COUNT(*)::int AS n FROM task_completions WHERE idempotency_key = $1', [key]);
+  assert.equal(rows.rows[0].n, 1, 'one completion row for one key');
+  const xp = await pool.query('SELECT COUNT(*)::int AS n, COALESCE(SUM(amount),0)::int AS s FROM xp_events WHERE idempotency_key = $1', [key]);
+  assert.equal(xp.rows[0].n, 1, 'exactly one XP ledger row for the key');
+  assert.equal(xp.rows[0].s, first.xp, 'a second completion pays nothing more');
+  // The completion is scoped to the task's project / campaign / quest.
+  const c = await pool.query('SELECT project_id, campaign_id, quest_id FROM task_completions WHERE idempotency_key = $1', [key]);
+  assert.equal(c.rows[0].project_id, project_id);
+}, { timeout: 30000 });
+
+t('an on-chain task on a chain with no adapter is MANUAL_REVIEW, never a fake verdict', async () => {
+  const jwt = require('jsonwebtoken');
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const uid = 710000000 + Math.floor(Math.random() * 90000000);
+  const runUser = 'staging-demo-onchain-' + Date.now() % 100000000;
+  const token = jwt.sign({ id: uid, username: runUser, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' });
+  const auth = { 'x-usernode-token': token, 'content-type': 'application/json' };
+
+  // A project/quest/task committed directly, on a family with no adapter yet.
+  const proj = await pool.query(
+    `INSERT INTO projects (slug, owner_user_id, name) SELECT $1, u.id, 'Staging test onchain' FROM users u LIMIT 1 RETURNING id`,
+    ['staging-test-onchain-' + Date.now() % 100000]);
+  const camp = await pool.query(
+    `INSERT INTO campaigns (project_id, slug, name, status) VALUES ($1, $2, 'Staging test campaign', 'active') RETURNING id`,
+    [proj.rows[0].id, 'staging-test-campaign-' + Date.now() % 100000]);
+  const quest = await pool.query(
+    `INSERT INTO quests (campaign_id, title, status, slug) VALUES ($1, 'Staging test quest', 'active', $2) RETURNING id`,
+    [camp.rows[0].id, 'staging-test-quest-' + Date.now() % 100000]);
+  const net = await pool.query(
+    `INSERT INTO task_networks (project_id, chain_namespace, name) VALUES ($1, 'solana', 'Staging test Solana') RETURNING id`,
+    [proj.rows[0].id]);
+  const task = await pool.query(
+    `INSERT INTO quest_tasks (quest_id, type, title, config, project_id, campaign_id)
+     VALUES ($1, 'on_chain', 'Hold SOL', $2, $3, $4) RETURNING id`,
+    [quest.rows[0].id, JSON.stringify({ method: 'native_balance', network_id: net.rows[0].id }), proj.rows[0].id, camp.rows[0].id]);
+  const ver = await pool.query(
+    `INSERT INTO task_versions (task_id, version, config) VALUES ($1, 1, $2) RETURNING id`,
+    [task.rows[0].id, JSON.stringify({ method: 'native_balance', network_id: net.rows[0].id })]);
+  await pool.query('UPDATE quest_tasks SET current_version_id = $2 WHERE id = $1', [task.rows[0].id, ver.rows[0].id]);
+
+  const res = await fetch(base + `/api/v1/tasks/${task.rows[0].id}/verify`, { method: 'POST', headers: auth, body: '{}' });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.status, 'MANUAL_REVIEW');
+  assert.equal(body.verified, false);
+  // The coarse submission state is pending, not rejected.
+  const sub = await pool.query(
+    `SELECT status, verification_status FROM task_submissions WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1`, [task.rows[0].id]);
+  assert.equal(sub.rows[0].status, 'pending');
+  assert.equal(sub.rows[0].verification_status, 'MANUAL_REVIEW');
+  // A second attempt is allowed (this is not a completed task) and appends.
+  const res2 = await fetch(base + `/api/v1/tasks/${task.rows[0].id}/verify`, { method: 'POST', headers: auth, body: '{}' });
+  assert.equal(res2.status, 200);
+  const attempts = await pool.query('SELECT COUNT(*)::int AS n FROM verification_attempts WHERE task_id = $1', [task.rows[0].id]);
+  assert.equal(attempts.rows[0].n, 2, 'attempts are append-only');
+}, { timeout: 30000 });
+
+t('participant quest route returns on-chain config without leaking RPC URLs', async () => {
+  const db = require('../src/db');
+  await db.migrate();
+  const { seed } = require('../src/seed');
+  await seed();
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const uid = 810000000 + Math.floor(Math.random() * 80000000);
+  const runUser = 'staging-demo-questview-' + (Date.now() % 100000000);
+  const token = jwt.sign({ id: uid, username: runUser, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' });
+  const auth = { 'x-usernode-token': token, 'content-type': 'application/json' };
+
+  // The seeded on-chain quest is reachable by slug (this is the route the
+  // dashboard links to) and its on-chain config is allow-listed.
+  const res = await fetch(base + '/api/v1/quests/staging-demo-hold-sepolia-eth', { headers: auth });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(body.quest && body.quest.slug === 'staging-demo-hold-sepolia-eth');
+  const task = (body.tasks || []).find((x) => x.type === 'on_chain');
+  assert.ok(task, 'the on-chain task is present');
+  assert.equal(task.config.method, 'native_balance');
+  assert.equal(task.config.requirement.amount, '0.05');
+  // The state query must run for a signed-in caller (regression: it used to
+  // select submission columns from quest_tasks and 500 on every authed read).
+  assert.ok('verification_status' in task);
+  // RPC URLs live in a private table and never appear in the payload.
+  const raw = JSON.stringify(body);
+  assert.ok(!raw.includes('ethereum-sepolia-rpc.publicnode.com'), 'no primary RPC URL leaks');
+  assert.ok(!raw.includes('rpc.sepolia.org'), 'no backup RPC URL leaks');
+}, { timeout: 30000 });
 
 after(async () => {
   if (httpServer) await new Promise(resolve => httpServer.close(resolve));

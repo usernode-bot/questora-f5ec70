@@ -10,6 +10,13 @@
       "required": true,
       "private": true,
       "staging_default": "staging-demo-admin"
+    },
+    {
+      "key": "EVM_RPC_CREDENTIALS",
+      "description": "JSON map of credential name to header additions for RPC endpoints that need auth (e.g. {\"alchemy\": {\"headers\": {\"Authorization\": \"Bearer ...\"}}}). Optional; endpoints without auth need nothing.",
+      "required": false,
+      "private": true,
+      "staging_default": {}
     }
   ],
   "tests": [
@@ -199,6 +206,11 @@
       "path": "/me?tab=wallets",
       "expectSelector": ".wallet-manager",
       "expectText": "Link up to 3 addresses on each network"
+    },
+    {
+      "name": "Participant on-chain quest shows the Verify button",
+      "path": "/quests/staging-demo-hold-sepolia-eth",
+      "expectText": "Verify"
     }
   ],
   "visibility": {

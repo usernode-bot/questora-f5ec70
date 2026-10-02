@@ -161,16 +161,35 @@ test('ManualSocialVerifier stays at pending review, never verifies', async () =>
   assert.ok(new ManualSocialVerifier() instanceof SocialVerifier);
 });
 
-test('on_chain tasks report unsupported through NullChainAdapter, never fake', async () => {
-  const verdict = await verifyTask('on_chain', { config: {}, submission: { proof_url: 'https://x' } });
-  assert.equal(verdict.result, 'rejected');
-  assert.equal(verdict.detail.adapter, 'NullChainAdapter');
-  assert.match(verdict.detail.reason, /not currently supported/i);
+test('on_chain tasks on a chain with no adapter report MANUAL_REVIEW, never fake', async () => {
+  // The engine routes an unsupported family (or an unknown method) to manual
+  // review; it never invents a verdict and never a user-facing failure.
+  const engine = require('../src/verify/engine');
+  const solana = await engine.evaluateVerification({
+    task: { id: 1 }, config: { method: 'native_balance' },
+    network: { chain_namespace: 'solana' }, token: null, wallet: null, submission: {} });
+  assert.equal(solana.status, 'MANUAL_REVIEW');
+  assert.match(solana.reason, /no verification adapter/i);
+
+  const unknownMethod = await engine.evaluateVerification({
+    task: { id: 1 }, config: { method: 'abracadabra' },
+    network: { chain_namespace: 'eip155' }, token: null, wallet: null, submission: {} });
+  assert.equal(unknownMethod.status, 'MANUAL_REVIEW');
+
+  // verifyTask folds that to the coarse 'pending', not 'rejected'.
+  const verdict = await verifyTask('on_chain', { config: {}, submission: {} });
+  assert.equal(verdict.result, 'pending');
+  assert.equal(verdict.detail.status, 'MANUAL_REVIEW');
 });
 
-test('task config validation rejects on-chain publishes', () => {
+test('task config validation accepts a valid Simple Mode on-chain task and rejects the gaps', () => {
   const creator = require('../src/routes/creator');
-  assert.ok(creator.validateTaskConfig('on_chain', {}), 'on_chain is not publishable in Phase 1');
+  const good = { network_id: 1, method: 'native_balance', requirement: { amount: '100', operator: 'gte' } };
+  assert.equal(creator.validateTaskConfig('on_chain', good), null);
+  assert.match(creator.validateTaskConfig('on_chain', { method: 'native_balance' }), /network_id/);
+  assert.match(creator.validateTaskConfig('on_chain', { network_id: 1, method: 'nope' }), /supported verification method/i);
+  assert.match(creator.validateTaskConfig('on_chain', { network_id: 1, method: 'native_balance', requirement: { amount: '1', operator: 'wat' } }), /comparison operator/i);
+  assert.match(creator.validateTaskConfig('on_chain', { network_id: 1, method: 'erc20_balance' }), /token/i);
   assert.equal(creator.validateTaskConfig('social', { url: 'https://x' }), null);
 });
 
@@ -326,4 +345,209 @@ test('Solana still verifies a raw Ed25519 signature over the message', () => {
   const address = require('../src/verify/bs58').encode(raw);
   const sig = crypto.sign(null, Buffer.from(MSG), kp.privateKey);
   assert.ok(adapterFor('solana').verify({ address, message: MSG, signature: sig.toString('base64') }));
+});
+
+
+// ---- Slice 1: universal verification core (pure) ----
+const status = require('../src/verify/status');
+const idempotency = require('../src/verify/idempotency');
+const amountMod = require('../src/verify/amount');
+const chainAdapter = require('../src/verify/chain-adapter');
+const evmVerifier = require('../src/verify/evm/evm-verifier');
+const { RpcUnavailableError } = require('../src/verify/errors');
+
+test('status.classify maps all nine enum values to the coarse task state', () => {
+  assert.equal(status.STATUSES.length, 9);
+  const expect = {
+    VERIFIED: ['verified', false, true],
+    FAILED: ['rejected', true, false],
+    EXPIRED: ['rejected', true, false],
+    PENDING: ['pending', false, false],
+    WAITING_CONFIRMATIONS: ['pending', false, false],
+    INDEXING_DELAY: ['pending', false, false],
+    RPC_UNAVAILABLE: ['pending', false, false],
+    MANUAL_REVIEW: ['pending', false, false],
+    INVALID_CONFIGURATION: ['invalid', false, false],
+  };
+  for (const [k, [stored, fail, awards]] of Object.entries(expect)) {
+    const c = status.classify(k);
+    assert.equal(c.storedStatus, stored, k + ' stored');
+    assert.equal(c.isUserFailure, fail, k + ' user failure');
+    assert.equal(c.awardsCompletion, awards, k + ' awards');
+  }
+  // An unknown enum value is treated as infrastructure, never a failure.
+  assert.equal(status.classify('WHO_KNOWS').storedStatus, 'pending');
+  assert.equal(status.classify('WHO_KNOWS').isUserFailure, false);
+});
+
+test('idempotency key builder produces both shapes', () => {
+  assert.equal(
+    idempotency.transactionKey({ chainNamespace: 'eip155', chainId: 1, transactionId: '0xABC', logIndex: null, taskId: 7 }),
+    'chain:eip155:1:tx:0xABC:log:-:task:7');
+  assert.equal(
+    idempotency.transactionKey({ chainNamespace: 'eip155', chainId: 1, transactionId: '0xABC', logIndex: 2, taskId: 7 }),
+    'chain:eip155:1:tx:0xABC:log:2:task:7');
+  assert.equal(
+    idempotency.stateKey({ userId: 3, taskId: 7, completionPeriod: 'once' }),
+    'user:3:task:7:once');
+  assert.equal(
+    idempotency.stateKey({ userId: 3, taskId: 7, completionPeriod: '2026-10-02' }),
+    'user:3:task:7:2026-10-02');
+  // The keyForResult chooser picks the shape from whether a tx id is present.
+  assert.match(idempotency.keyForResult({ transactionId: '0x1', chainNamespace: 'eip155', chainId: 5 }, { userId: 1, taskId: 2 }), /^chain:eip155:5:tx:0x1/);
+  assert.match(idempotency.keyForResult({ transactionId: null }, { userId: 1, taskId: 2, completionPeriod: 'once' }), /^user:1:task:2:once/);
+});
+
+test('amount comparison is BigInt-only and refuses malformed input', () => {
+  assert.equal(amountMod.compare('100000000000000000000', { amount: '100', decimals: 18, operator: 'gte' }).ok, true);
+  assert.equal(amountMod.compare('99999999999999999999', { amount: '100', decimals: 18, operator: 'gte' }).ok, false);
+  assert.equal(amountMod.compare('100', { amount: '100', decimals: 0, operator: 'eq' }).ok, true);
+  assert.equal(amountMod.compare('100', { amount: '100', decimals: 0, operator: 'gt' }).ok, false);
+  assert.equal(amountMod.compare('5', { amount: '10', decimals: 0, operator: 'lte' }).ok, true);
+  // Operators accept symbols and words.
+  assert.equal(amountMod.normalizeOperator('>='), 'gte');
+  assert.equal(amountMod.normalizeOperator('at_least'), 'gte');
+  assert.equal(amountMod.normalizeOperator('nonsense'), null);
+  // Refuse extra precision rather than rounding money silently.
+  assert.equal(amountMod.toBaseUnits('1.234', 2), null);
+  assert.equal(amountMod.toBaseUnits('1.20', 2).toString(), '120');
+  assert.equal(amountMod.toBaseUnits('-1', 0), null);
+  assert.equal(amountMod.compare('100', { amount: '1.2.3', decimals: 0, operator: 'gte' }).invalid, true);
+});
+
+test('the chain adapter registry resolves EVM and refuses families with no adapter', () => {
+  const evm = chainAdapter.adapterFor('eip155');
+  assert.ok(evm, 'EVM adapter is registered');
+  assert.equal(evm.capabilities().nativeBalance, true);
+  assert.equal(evm.capabilities().fungibleBalance, true);
+  assert.deepEqual(evm.supportedMethods().sort(), ['erc20_balance', 'native_balance', 'transaction']);
+  // A family with no adapter returns null so the engine routes to manual review.
+  assert.equal(chainAdapter.adapterFor('solana'), null);
+  // The interface declares the broader conceptual surface; unsupported calls
+  // say so rather than faking.
+  assert.equal(chainAdapter.adapterFor('eip155').capabilities().nftOwnership, false);
+});
+
+// A fake pool: the seam evm-verifier accepts via ctx.pool, so the EVM checks
+// are unit-tested with no live RPC.
+function fakePool(map) {
+  return {
+    entries: [{}],
+    async call(fn) { return { value: await fn(map.provider || fakeProvider(map)), endpoint: { url: 'https://fake.example' } }; },
+    async latestBlock() { return map.latestBlock === undefined ? 100 : map.latestBlock; },
+  };
+}
+function fakeProvider(map) {
+  return {
+    async getNetwork() { return { chainId: BigInt(map.chainId === undefined ? 11155111 : map.chainId) }; },
+    async getBalance() { return BigInt(map.balance || 0); },
+    async getBlockNumber() { return map.latestBlock === undefined ? 100 : map.latestBlock; },
+    async getTransaction(hash) { return map.tx === undefined ? null : map.tx; },
+    async getTransactionReceipt(hash) { return map.receipt === undefined ? null : map.receipt; },
+  };
+}
+
+const NETWORK = { id: 1, name: 'Sepolia', chain_namespace: 'eip155', chain_id: 11155111, native_symbol: 'ETH', native_decimals: 18 };
+const WALLET = { address: '0x1111111111111111111111111111111111111111' };
+
+test('evm native balance verifies, fails honestly, and needs a wallet', async () => {
+  const adapter = chainAdapter.adapterFor('eip155');
+  const base = { method: 'native_balance', config: { requirement: { amount: '1', operator: 'gte' } },
+    network: NETWORK, token: null, wallet: WALLET, submission: {}, adapter };
+  const ok = await evmVerifier.verifyEvm({ ...base, pool: fakePool({ balance: '1000000000000000000' }) });
+  assert.equal(ok.status, 'VERIFIED');
+  assert.equal(ok.verified, true);
+  const low = await evmVerifier.verifyEvm({ ...base, pool: fakePool({ balance: '999' }) });
+  assert.equal(low.status, 'FAILED');
+  assert.equal(status.classify(low.status).isUserFailure, true);
+  const noWallet = await evmVerifier.verifyEvm({ ...base, wallet: null, pool: fakePool({ balance: '0' }) });
+  assert.equal(noWallet.status, 'INVALID_CONFIGURATION');
+});
+
+test('evm erc20 balance uses contract decimals and BigInt math', async () => {
+  const adapter = chainAdapter.adapterFor('eip155');
+  const provider = {
+    async getNetwork() { return { chainId: 11155111n }; },
+    async getBlockNumber() { return 100; },
+  };
+  // The contract call path is exercised through the pool's call(fn).
+  const pool = {
+    async call(fn) { return { value: await fn(makeErc20Provider('250000000000000000000', 18)) }; },
+    async latestBlock() { return 100; },
+  };
+  const ctx = { method: 'erc20_balance', config: { requirement: { amount: '100', operator: 'gte' } },
+    network: NETWORK, token: { contract_address: '0xtoken', symbol: 'USDX', decimals: 18 },
+    wallet: WALLET, submission: {}, adapter, pool };
+  const r = await evmVerifier.verifyEvm(ctx);
+  assert.equal(r.status, 'VERIFIED');
+  const r2 = await evmVerifier.verifyEvm({ ...ctx, config: { requirement: { amount: '1000', operator: 'gte' } } });
+  assert.equal(r2.status, 'FAILED');
+});
+
+function makeErc20Provider(balance, decimals) {
+  const { ethers } = require('ethers');
+  const iface = new ethers.Interface([
+    'function balanceOf(address) view returns (uint256)',
+    'function decimals() view returns (uint8)',
+  ]);
+  // The verifier's only provider dependency is eth_call; decode the selector
+  // and answer with properly encoded results.
+  return {
+    async getNetwork() { return { chainId: 11155111n }; },
+    async getBlockNumber() { return 100; },
+    async call({ to, data }) {
+      const selector = data.slice(0, 10);
+      if (selector === iface.getFunction('decimals').selector) {
+        return iface.encodeFunctionResult('decimals', [decimals]);
+      }
+      if (selector === iface.getFunction('balanceOf').selector) {
+        return iface.encodeFunctionResult('balanceOf', [BigInt(balance)]);
+      }
+      throw new Error('unexpected eth_call ' + selector);
+    },
+  };
+}
+
+test('evm transaction: verified, reverted, waiting, and unseen all behave distinctly', async () => {
+  const adapter = chainAdapter.adapterFor('eip155');
+  const tx = { from: WALLET.address, to: '0x2222222222222222222222222222222222222222', value: 1000000000000000000n };
+  const base = { method: 'transaction', config: { confirmations: 3 },
+    network: NETWORK, token: null, wallet: WALLET, submission: { transaction_hash: '0x' + 'a'.repeat(64) }, adapter };
+
+  const okReceipt = { status: 1, from: WALLET.address, to: tx.to, blockNumber: 98, logs: [] };
+  const ok = await evmVerifier.verifyEvm({ ...base, pool: fakePool({ tx, receipt: okReceipt, latestBlock: 100 }) });
+  assert.equal(ok.status, 'VERIFIED');
+  assert.equal(ok.confirmations, 3);
+  assert.equal(ok.finality, 'finalized');
+
+  const wait = await evmVerifier.verifyEvm({ ...base, pool: fakePool({ tx, receipt: okReceipt, latestBlock: 99 }) });
+  assert.equal(wait.status, 'WAITING_CONFIRMATIONS');
+  assert.equal(status.classify(wait.status).storedStatus, 'pending');
+
+  const reverted = await evmVerifier.verifyEvm({ ...base, pool: fakePool({ tx, receipt: { ...okReceipt, status: 0 }, latestBlock: 100 }) });
+  assert.equal(reverted.status, 'FAILED');
+  assert.equal(status.classify(reverted.status).isUserFailure, true);
+
+  const unseen = await evmVerifier.verifyEvm({ ...base, pool: fakePool({ tx: null, receipt: null, latestBlock: 100 }) });
+  assert.equal(unseen.status, 'INDEXING_DELAY');
+  assert.equal(status.classify(unseen.status).isUserFailure, false);
+
+  const otherSender = await evmVerifier.verifyEvm({ ...base,
+    pool: fakePool({ tx: { ...tx, from: '0x9999999999999999999999999999999999999999' }, receipt: okReceipt, latestBlock: 100 }) });
+  assert.equal(otherSender.status, 'FAILED');
+});
+
+test('all RPC endpoints down is RPC_UNAVAILABLE, never a user failure', async () => {
+  const evmVerifierLocal = require('../src/verify/evm/evm-verifier');
+  const adapter = chainAdapter.adapterFor('eip155');
+  const deadPool = {
+    async call() { throw new RpcUnavailableError('down', { tried: ['https://a'] }); },
+    async latestBlock() { throw new RpcUnavailableError('down'); },
+  };
+  const r = await evmVerifierLocal.verifyEvm({
+    method: 'native_balance', config: { requirement: { amount: '1', operator: 'gte' } },
+    network: NETWORK, token: null, wallet: WALLET, submission: {}, adapter, pool: deadPool });
+  assert.equal(r.status, 'RPC_UNAVAILABLE');
+  assert.equal(status.classify(r.status).storedStatus, 'pending');
+  assert.equal(status.classify(r.status).isUserFailure, false);
 });

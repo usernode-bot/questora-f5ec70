@@ -27,13 +27,17 @@ async function awardXp(client, userId, amount, sourceType, sourceId, scope) {
   const prev = await client.query('SELECT COALESCE(SUM(amount),0) AS xp FROM xp_events WHERE user_id = $1', [userId]);
   const beforeXp = Number(prev.rows[0].xp);
   scope = scope || {};
+  // A caller may also pin an idempotency key (task XP), so the partial unique
+  // index on xp_events.idempotency_key guards it a second time alongside the
+  // (source_type, source_id, user_id) constraint.
   const ins = await client.query(
-    `INSERT INTO xp_events (user_id, amount, source_type, source_id, season_id, project_id, campaign_id, quest_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO xp_events (user_id, amount, source_type, source_id, season_id, project_id, campaign_id, quest_id, idempotency_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (source_type, source_id, user_id) DO NOTHING
      RETURNING amount`,
     [userId, allowed, sourceType, sourceId, season ? season.id : null,
-      scope.project_id || null, scope.campaign_id || null, scope.quest_id || null]
+      scope.project_id || null, scope.campaign_id || null, scope.quest_id || null,
+      scope.idempotency_key || null]
   );
   if (!ins.rows.length) return { awarded: 0, capped: false };
   await levels.maybeLevelUp(client, userId, beforeXp, beforeXp + allowed);
@@ -220,4 +224,77 @@ async function completeQuest(questId, userId) {
   }
 }
 
-module.exports = { awardXp, awardPoints, awardBadge, completeQuest };
+// Task-level completion: the program's "completion" record and task XP. One
+// task cannot pay twice: the idempotency key is UNIQUE on task_completions and
+// the same key is stamped on the xp_events row. Task XP is a distinct source
+// from quest XP, so a quest still completes and pays its own XP only once
+// every task is verified (completeQuest below is unchanged).
+//
+// Accepted as an options object, or the positional signature from the spec
+// (taskId, versionId, userId, walletAddress, chainId, method, evidence,
+// completionPeriod, idempotencyKey).
+async function completeTask(optsOrId, versionId, userId, walletAddress, chainId, method, evidence, completionPeriod, idempotencyKey, xpReward) {
+  const o = (optsOrId && typeof optsOrId === 'object')
+    ? optsOrId
+    : { taskId: optsOrId, versionId, userId, walletAddress, chainId, method, evidence, completionPeriod, idempotencyKey, xpReward };
+  const taskId = o.taskId;
+
+  // Resolve project/campaign scope server-side, never from the caller.
+  let scope;
+  if (o.task && o.task.project_id) {
+    scope = { project_id: o.task.project_id, campaign_id: o.task.campaign_id, quest_id: o.task.quest_id };
+  } else {
+    const r = await pool.query(
+      `SELECT t.quest_id, q.campaign_id, c.project_id
+       FROM quest_tasks t JOIN quests q ON q.id = t.quest_id
+       JOIN campaigns c ON c.id = q.campaign_id WHERE t.id = $1`, [taskId]);
+    if (!r.rows.length) return { completed: false, reason: 'task_not_found' };
+    scope = r.rows[0];
+  }
+  const period = o.completionPeriod || 'once';
+  const key = o.idempotencyKey || `user:${o.userId}:task:${taskId}:${period}`;
+  const xp = Math.max(0, parseInt(o.xpReward === undefined ? (o.task && o.task.xp_reward) : o.xpReward, 10) || 0);
+
+  const client = await pool.connect();
+  let inserted = false;
+  let awarded = 0;
+  try {
+    await client.query('BEGIN');
+    const ins = await client.query(
+      `INSERT INTO task_completions
+         (task_id, task_version_id, user_id, project_id, campaign_id, quest_id, wallet_address,
+          chain_id, method, evidence, completion_period, idempotency_key, xp_awarded, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0, 'completed')
+       ON CONFLICT (idempotency_key) DO NOTHING
+       RETURNING id`,
+      [taskId, o.versionId || null, o.userId, scope.project_id || null, scope.campaign_id || null,
+        scope.quest_id || null, o.walletAddress || null, o.chainId === undefined ? null : o.chainId,
+        o.method || null, o.evidence ? JSON.stringify(o.evidence) : null, period, key]
+    );
+    if (ins.rows.length) {
+      inserted = true;
+      // Task XP uses the same key as a second guard and the task scope, so a
+      // project/campaign/quest leaderboard counts it once.
+      const res = await awardXp(client, o.userId, xp, 'task', taskId, {
+        project_id: scope.project_id, campaign_id: scope.campaign_id, quest_id: scope.quest_id,
+        idempotency_key: key,
+      });
+      awarded = res.awarded;
+      await client.query('UPDATE task_completions SET xp_awarded = $2 WHERE id = $1', [ins.rows[0].id, awarded]);
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (!inserted) return { completed: false, reason: 'duplicate', xp: 0 };
+
+  // The quest still completes (and pays quest XP) only when every task is
+  // verified; completeQuest owns that rule and its own idempotency.
+  const quest = await completeQuest(scope.quest_id, o.userId);
+  return { completed: true, xp: awarded, completion_id: key, quest };
+}
+
+module.exports = { awardXp, awardPoints, awardBadge, completeQuest, completeTask };

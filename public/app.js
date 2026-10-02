@@ -173,8 +173,8 @@
     if ((m = path.match(/^\/projects\/([^/]+)$/))) {
       return V.viewProjectOverview(decodeURIComponent(m[1]), params, null, ctx);
     }
-    if ((m = path.match(/^\/quest\/(\d+)$/))) return V.viewQuest(m[1], ctx);
-    if ((m = path.match(/^\/quests\/(\d+)$/))) return V.viewQuest(m[1], ctx);
+    if ((m = path.match(/^\/quest\/([^/]+)$/))) return V.viewQuest(decodeURIComponent(m[1]), ctx);
+    if ((m = path.match(/^\/quests\/([^/]+)$/))) return V.viewQuest(decodeURIComponent(m[1]), ctx);
     if ((m = path.match(/^\/campaigns\/([^/]+)$/))) {
       const s = await V.resolveCampaignPath(decodeURIComponent(m[1]));
       return V.viewCampaignDetail(s.projectSlug, decodeURIComponent(m[1]), ctx);

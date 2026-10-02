@@ -286,11 +286,45 @@ router.get('/quests/:id', async (req, res) => {
   const tasks = await pool.query(
     `SELECT id, type, title, sort_order, verification_type, proof_required, config
      FROM quest_tasks WHERE quest_id = $1 ORDER BY sort_order`, [quest.id]);
+  // The caller's own verification state, so the checklist can show a Verify
+  // button and an honest reason line. Only the caller's rows are read.
+  let myState = {};
+  if (req.user && req.user.db_id) {
+    const mine = await pool.query(
+      `SELECT t.id, s.status, s.verification_status, s.review_note,
+              (SELECT reason FROM verification_attempts a WHERE a.task_id = t.id AND a.user_id = $2
+                ORDER BY a.created_at DESC LIMIT 1) AS verification_reason
+       FROM quest_tasks t
+       LEFT JOIN LATERAL (
+         SELECT status, verification_status, review_note FROM task_submissions s
+         WHERE s.task_id = t.id AND s.user_id = $2
+         ORDER BY s.created_at DESC LIMIT 1
+       ) s ON TRUE
+       WHERE t.quest_id = $1`, [quest.id, req.user.db_id]);
+    for (const r of mine.rows) myState[r.id] = r;
+  }
   const safeTasks = tasks.rows.map(t => {
+    const base = { ...t, ...(myState[t.id] ? {
+      status: myState[t.id].status, verification_status: myState[t.id].verification_status,
+      verification_reason: myState[t.id].verification_reason,
+    } : {}) };
     if (t.type === 'quiz') {
-      return { ...t, config: { ...(t.config || {}), questions: ((t.config || {}).questions || []).map(x => ({ q: x.q, options: x.options })) } };
+      // Never ship the correct answer.
+      return { ...base, config: { ...(t.config || {}), questions: ((t.config || {}).questions || []).map(x => ({ q: x.q, options: x.options })) } };
     }
-    return t;
+    if (t.type === 'on_chain') {
+      // Allow-list only chain-neutral, non-secret config. RPC URLs and
+      // credentials live in private tables the public route never joins.
+      const c = t.config || {};
+      return { ...base, config: {
+        method: c.method || null,
+        requirement: c.requirement || null,
+        network_id: c.network_id || null,
+        token_id: c.token_id || null,
+        confirmations: c.confirmations || null,
+      } };
+    }
+    return base;
   });
   const participants = await pool.query('SELECT COUNT(*)::int AS n FROM quest_completions WHERE quest_id = $1', [quest.id]);
   res.json({ quest: { ...quest, locked: lock.locked, locked_reason: lock.reason }, tasks: safeTasks, participants: participants.rows[0].n });
