@@ -203,6 +203,12 @@
       "name": "Wallet chain picker is reachable",
       "path": "/me?tab=wallets",
       "expectText": "Wallets"
+    },
+    {
+      "name": "Wallets tab shows the per-network address manager",
+      "path": "/me?tab=wallets",
+      "expectSelector": ".wallet-manager",
+      "expectText": "Link up to 3 addresses on each network"
     }
   ],
   "visibility": {

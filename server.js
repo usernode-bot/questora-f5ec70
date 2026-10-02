@@ -77,6 +77,14 @@ app.use('/api/v1', require('./src/routes/misc'));
 // clean pointer to the real API.
 app.use('/api', (req, res) => res.status(404).json({ error: 'Use /api/v1' }));
 
+// The 0xio SDK ships as a browser bundle inside its npm package; serve it from
+// node_modules (one pinned copy, no vendored file in the repo) so the Octra
+// connector can load it on demand.
+app.get('/vendor/0xio-sdk.js', (_req, res) => {
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.sendFile(path.join(__dirname, 'node_modules/@0xio/sdk/dist/index.umd.js'));
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // HTML shell: authenticated visits get the app; unauthenticated top-level

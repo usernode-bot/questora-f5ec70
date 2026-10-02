@@ -261,28 +261,15 @@ async function viewQuest(id) {
     return row;
   }
 
-  // Real wallet flow: request accounts, get a server nonce for THAT address,
-  // personal_sign the exact challenge message, and send the signature back.
-  // The server recovers the signer and compares it to the claimed address.
-  async function walletConnectFlow(button) {
-    if (!window.ethereum) throw new Error('No browser wallet found. Install MetaMask or another wallet.');
-    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-    const address = accounts && accounts[0];
-    if (!address) throw new Error('Connect a wallet account first');
-    // Already verified? Skip the signature (one verified wallet is enough).
-    try {
-      const mine = await window.QuestoraAPI.api.get('/api/v1/wallets');
-      const w = (mine.wallets || []).find(x => x.address && x.address.toLowerCase() === address.toLowerCase());
-      if (w && w.verified_at) {
-        toast('Wallet already verified');
-        return address;
-      }
-    } catch { /* fall through to the full flow */ }
-    const ch = await window.QuestoraAPI.api.post('/api/v1/wallets/challenge', { chain: 'eip155', address });
-    const signature = await window.QuestoraAPI.signMessage(address, ch.message);
-    await window.QuestoraAPI.api.post('/api/v1/wallets/verify', { chain: 'eip155', address, signature, nonce: ch.nonce });
-    toast('Wallet verified');
-    return address;
+  // Wallet quest: the server decides (it checks the wallets table for a
+  // verified address). If the user has none, the Connect wallet modal runs the
+  // real connect-and-sign flow, and the quest continues once it closes.
+  async function walletConnectFlow() {
+    const has = async () => ((await window.QuestoraAPI.api.get('/api/v1/wallets')).wallets || []).some(w => w.verified_at);
+    if (await has()) { toast('Wallet already verified'); return; }
+    await new Promise((resolve) => { window.QuestoraWallets.openModal(undefined, { onClose: resolve }); });
+    window.QuestoraAPI.api.invalidate();
+    if (!(await has())) throw new Error('Connect and verify a wallet to finish this quest.');
   }
 
   function actionFor(t, holder) {
@@ -292,7 +279,7 @@ async function viewQuest(id) {
       b.addEventListener('click', async () => {
         b.disabled = true; b.textContent = 'Waiting for wallet…';
         try {
-          await walletConnectFlow(b);
+          await walletConnectFlow();
           await window.QuestoraAPI.api.post(`/api/v1/tasks/${t.id}/submit`, {});
           refreshStates();
         } catch (err) {
@@ -445,43 +432,12 @@ async function viewProfile(username, params) {
     }
     return list;
   }
-  // Re-read the profile payload so a just-added wallet appears without
-  // remounting the whole view.
-  async function reloadWallets() {
-    try {
-      const fresh = await window.QuestoraAPI.api.get('/api/v1/users/' + encodeURIComponent(username));
-      data.wallets = fresh.wallets || [];
-    } catch { /* keep the rows we already have */ }
-  }
   function renderWallets() {
-    body.replaceChildren(walletRows());
-    if (!isOwn) return;
-    const addBtn = el('<button class="connect-wallet mt-3 w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Connect wallet</button>');
-    addBtn.addEventListener('click', () => {
-      // Chain picker first, then the connector hands off to the wallet.
-      const pick = el('<div class="space-y-2"></div>');
-      for (const c of window.QuestoraWallets.CHAINS) {
-        const b = el(`<button class="chain-pick w-full text-left font-medium px-4 py-3 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100">${escapeHtml(c.label)}</button>`);
-        b.addEventListener('click', async () => {
-          pick.replaceChildren(el('<p class="text-sm text-zinc-400">Connect and sign in your wallet\u2026</p>'));
-          try {
-            await window.QuestoraWallets.link(c.chain);
-            toast('Wallet verified');
-            await reloadWallets();
-            renderWallets();
-          } catch (err) {
-            toast(err.message || 'Could not verify the wallet', true);
-            renderWallets();
-          }
-        });
-        pick.appendChild(b);
-      }
-      const panel = el('<div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4"></div>');
-      panel.appendChild(el('<p class="text-sm font-medium mb-2">Choose a chain</p>'));
-      panel.appendChild(pick);
-      body.replaceChildren(panel);
-    });
-    body.appendChild(addBtn);
+    if (!isOwn) { body.replaceChildren(walletRows()); return; }
+    // Your own wallets: the unified manager (multiple addresses per network,
+    // labels, active address, per-address disconnect, connect modal).
+    body.replaceChildren();
+    window.QuestoraWallets.mountPanel(body);
   }
   let lastTab = 'activity';
   function show(tab) {

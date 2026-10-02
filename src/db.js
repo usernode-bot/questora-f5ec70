@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const { MAX_ADDRESSES_PER_CHAIN } = require('./wallet-limits');
 
 const IS_STAGING = process.env.USERNODE_ENV === 'staging';
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -421,6 +422,40 @@ async function migrate() {
     await client.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS public_key TEXT');
     await client.query('ALTER TABLE wallet_challenges ALTER COLUMN wallet_address TYPE VARCHAR(128)');
     await client.query("ALTER TABLE wallet_challenges ADD COLUMN IF NOT EXISTS chain_namespace VARCHAR(32) NOT NULL DEFAULT 'eip155'");
+    // Wallet manager: which wallet app proved the address, a user label, the
+    // one active address per chain, and recency.
+    await client.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS wallet_id VARCHAR(64)');
+    await client.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS wallet_name VARCHAR(80)');
+    await client.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS label VARCHAR(40)');
+    await client.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT FALSE');
+    await client.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ');
+    // Rows from before the manager: the oldest verified wallet on each chain
+    // is that chain's active address.
+    await client.query(`UPDATE wallets w SET is_active = TRUE
+       WHERE w.verified_at IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM wallets a WHERE a.user_id = w.user_id
+                           AND a.chain_namespace = w.chain_namespace AND a.is_active)
+         AND w.id = (SELECT MIN(f.id) FROM wallets f WHERE f.user_id = w.user_id
+                       AND f.chain_namespace = w.chain_namespace AND f.verified_at IS NOT NULL)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS wallets_one_active_idx
+       ON wallets (user_id, chain_namespace) WHERE is_active`);
+    // At most 3 addresses per user per chain, enforced by the database so no
+    // code path (or pair of concurrent requests) can create a 4th. The
+    // advisory lock serialises inserts for one (user, chain); the count then
+    // runs in a fresh READ COMMITTED snapshot that sees the other insert.
+    await client.query(`CREATE OR REPLACE FUNCTION enforce_wallet_limit() RETURNS trigger AS $fn$
+      BEGIN
+        PERFORM pg_advisory_xact_lock(NEW.user_id, hashtext(NEW.chain_namespace));
+        IF (SELECT COUNT(*) FROM wallets
+              WHERE user_id = NEW.user_id AND chain_namespace = NEW.chain_namespace) >= ${MAX_ADDRESSES_PER_CHAIN} THEN
+          RAISE EXCEPTION 'wallet_limit' USING ERRCODE = '23514';
+        END IF;
+        RETURN NEW;
+      END
+      $fn$ LANGUAGE plpgsql`);
+    await client.query('DROP TRIGGER IF EXISTS wallets_limit_trg ON wallets');
+    await client.query(`CREATE TRIGGER wallets_limit_trg BEFORE INSERT ON wallets
+       FOR EACH ROW EXECUTE FUNCTION enforce_wallet_limit()`);
     // Phase 3: seasonal XP ledger stamps and normalized proof fingerprints.
     await client.query('ALTER TABLE xp_events ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id)');
     await client.query('ALTER TABLE task_submissions ADD COLUMN IF NOT EXISTS proof_hash VARCHAR(64)');

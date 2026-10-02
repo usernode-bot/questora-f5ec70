@@ -902,17 +902,21 @@ t('multi-chain wallet link signs over HTTP and refuses cross-account claims', as
   assert.equal(Number(owner.rows[0].user_id), (await pool.query('SELECT id FROM users WHERE usernode_id = $1', [String(idA)])).rows[0].id,
     'ownership did not move');
 
-  // A 66-char Sui-style address is accepted, proving the column widening.
-  const suiAddr = '0x' + raw.toString('hex');
+  // Sui: the address is blake2b-256(0x00 || key), and the wallet's personal
+  // message signature (flag || sig || key) is over blake2b(intent || message).
+  const { blake2b } = require('../src/verify/blake2b');
+  const suiAddr = '0x' + blake2b(Buffer.concat([Buffer.from([0]), raw]), 32).toString('hex');
   const chS = await (await fetch(base + '/api/v1/wallets/challenge', {
     method: 'POST', headers: authA,
     body: JSON.stringify({ chain: 'sui', address: suiAddr }),
   })).json();
   assert.ok(chS.nonce, 'a 66-char Sui address is accepted');
-  const sigS = crypto.sign(null, Buffer.from(chS.message), kp.privateKey);
+  const msgBytes = Buffer.from(chS.message);
+  const suiDigest = blake2b(Buffer.concat([Buffer.from([3, 0, 0]), require('../src/verify/blake2b').uleb(msgBytes.length), msgBytes]), 32);
+  const suiSig = Buffer.concat([Buffer.from([0]), crypto.sign(null, suiDigest, kp.privateKey), raw]);
   const suiOk = await fetch(base + '/api/v1/wallets/verify', {
     method: 'POST', headers: authA,
-    body: JSON.stringify({ chain: 'sui', address: suiAddr, signature: sigS.toString('base64'), publicKey: raw.toString('base64'), nonce: chS.nonce }),
+    body: JSON.stringify({ chain: 'sui', address: suiAddr, signature: suiSig.toString('base64'), nonce: chS.nonce }),
   });
   assert.equal(suiOk.status, 200, 'the same key on a different chain is a separate wallet');
 
@@ -931,6 +935,99 @@ t('multi-chain wallet link signs over HTTP and refuses cross-account claims', as
   assert.ok(prof.wallets.some(w => w.chain_namespace === 'solana'), 'each row names its chain');
 }, { timeout: 40000 });
 
+
+// At most 3 addresses per chain per user, enforced by the API and the
+// database (trigger), including under concurrent requests.
+t('wallet limit: 3 per chain, 4th refused by API and DB, concurrency safe, manage endpoints', async () => {
+  const crypto = require('node:crypto');
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const id = 700000000 + Math.floor(Math.random() * 90000000);
+  const tokenFor = (n, username) => jwt.sign(
+    { id: n, username, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' });
+  const auth = { 'content-type': 'application/json', 'x-usernode-token': tokenFor(id, 'staging-demo-limit-' + Date.now() % 100000) };
+  const bs58 = require('../src/verify/bs58');
+  const solKey = () => {
+    const kp = crypto.generateKeyPairSync('ed25519');
+    return { kp, address: bs58.encode(kp.publicKey.export({ type: 'spki', format: 'der' }).slice(12)) };
+  };
+  const link = async (k, extra = {}) => {
+    const ch = await (await fetch(base + '/api/v1/wallets/challenge', { method: 'POST', headers: auth, body: JSON.stringify({ chain: 'solana', address: k.address }) })).json();
+    if (!ch.nonce) return { status: 409, body: ch };
+    const sig = crypto.sign(null, Buffer.from(ch.message), k.kp.privateKey).toString('base64');
+    const r = await fetch(base + '/api/v1/wallets/verify', { method: 'POST', headers: auth, body: JSON.stringify({ chain: 'solana', address: k.address, signature: sig, nonce: ch.nonce, walletId: 'phantom', walletName: 'Phantom', ...extra }) });
+    return { status: r.status, body: await r.json() };
+  };
+
+  const keys = [solKey(), solKey(), solKey(), solKey()];
+  for (let i = 0; i < 3; i++) assert.equal((await link(keys[i])).status, 200);
+  const fourth = await link(keys[3]);
+  assert.equal(fourth.status, 409);
+  assert.equal(fourth.body.code, 'wallet_limit');
+  assert.match(fourth.body.error, /Maximum 3 Solana addresses connected/);
+
+  const mine = await (await fetch(base + '/api/v1/wallets', { headers: auth })).json();
+  assert.equal(mine.wallets.length, 3);
+  assert.equal(mine.wallets.filter(w => w.is_active).length, 1, 'exactly one active address per chain');
+  assert.equal(mine.wallets[0].wallet_name, 'Phantom');
+
+  // The database refuses a 4th row on its own, with no API in front of it.
+  const uid = (await pool.query('SELECT id FROM users WHERE usernode_id = $1', [String(id)])).rows[0].id;
+  await assert.rejects(pool.query(`INSERT INTO wallets (user_id, address, chain_namespace, verified_at) VALUES ($1, 'direct-insert', 'solana', NOW())`, [uid]), /wallet_limit/);
+  // A different chain has its own allowance of 3.
+  await pool.query(`INSERT INTO wallets (user_id, address, chain_namespace, verified_at) VALUES ($1, $2, 'eip155', NOW())`, [uid, '0x' + crypto.randomBytes(20).toString('hex')]);
+
+  // Rename, switch active, disconnect one, then a replacement fits.
+  const target = mine.wallets.find(w => !w.is_active);
+  const patched = await fetch(base + '/api/v1/wallets/' + target.id, { method: 'PATCH', headers: auth, body: JSON.stringify({ label: 'Trading', active: true }) });
+  assert.equal(patched.status, 200);
+  const after1 = (await (await fetch(base + '/api/v1/wallets', { headers: auth })).json()).wallets.filter(w => w.chain === 'solana');
+  assert.equal(after1.find(w => w.id === target.id).nickname, 'Trading');
+  assert.equal(after1.filter(w => w.is_active).length, 1);
+  assert.ok(after1.find(w => w.id === target.id).is_active, 'the chosen address is now active');
+  const active = after1.find(w => w.is_active);
+  const del = await fetch(base + '/api/v1/wallets/' + active.id, { method: 'DELETE', headers: auth });
+  assert.equal(del.status, 200);
+  const after2 = (await (await fetch(base + '/api/v1/wallets', { headers: auth })).json()).wallets.filter(w => w.chain === 'solana');
+  assert.equal(after2.length, 2);
+  assert.equal(after2.filter(w => w.is_active).length, 1, 'the active flag moved to a remaining address');
+  assert.equal((await link(keys[3])).status, 200, 'a replacement fits after disconnecting one');
+
+  // Another user cannot rename or remove these rows.
+  const other = { 'content-type': 'application/json', 'x-usernode-token': tokenFor(id + 1, 'staging-demo-limit-b-' + Date.now() % 100000) };
+  assert.equal((await fetch(base + '/api/v1/wallets/' + target.id, { method: 'DELETE', headers: other })).status, 404);
+
+  // Concurrency: 6 simultaneous links on a fresh chain (Sui) never exceed 3.
+  const { blake2b } = require('../src/verify/blake2b');
+  const suiKey = () => {
+    const kp = crypto.generateKeyPairSync('ed25519');
+    const raw = kp.publicKey.export({ type: 'spki', format: 'der' }).slice(12);
+    return { kp, raw, address: '0x' + blake2b(Buffer.concat([Buffer.from([0]), raw]), 32).toString('hex') };
+  };
+  const linkSui = async (k) => {
+    const ch = await (await fetch(base + '/api/v1/wallets/challenge', { method: 'POST', headers: auth, body: JSON.stringify({ chain: 'sui', address: k.address }) })).json();
+    if (!ch.nonce) return 409;
+    const m = Buffer.from(ch.message);
+    const digest = blake2b(Buffer.concat([Buffer.from([3, 0, 0]), require('../src/verify/blake2b').uleb(m.length), m]), 32);
+    const sig = Buffer.concat([Buffer.from([0]), crypto.sign(null, digest, k.kp.privateKey), k.raw]).toString('base64');
+    return (await fetch(base + '/api/v1/wallets/verify', { method: 'POST', headers: auth, body: JSON.stringify({ chain: 'sui', address: k.address, signature: sig, nonce: ch.nonce }) })).status;
+  };
+  const statuses = await Promise.all(Array.from({ length: 6 }, () => linkSui(suiKey())));
+  assert.equal(statuses.filter(s => s === 200).length, 3, JSON.stringify(statuses));
+  const suiRows = await pool.query(`SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE is_active)::int AS a FROM wallets WHERE user_id = $1 AND chain_namespace = 'sui'`, [uid]);
+  assert.equal(suiRows.rows[0].n, 3);
+  assert.equal(suiRows.rows[0].a, 1);
+
+  // Disconnect all.
+  assert.equal((await fetch(base + '/api/v1/wallets', { method: 'DELETE', headers: auth })).status, 200);
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM wallets WHERE user_id = $1', [uid])).rows[0].n, 0);
+}, { timeout: 60000 });
 
 after(async () => {
   if (httpServer) await new Promise(resolve => httpServer.close(resolve));
