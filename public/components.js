@@ -29,7 +29,7 @@ function campaignCard(c) {
       <div class="flex items-center gap-2 mb-2">
         ${c.project_logo ? `<img src="${escapeHtml(c.project_logo)}" alt="" class="w-5 h-5 rounded-full">` : `<span class="w-5 h-5 rounded-full bg-violet-600/30 inline-block"></span>`}
         <span class="text-xs text-zinc-500">${escapeHtml(c.project_name)}</span>
-        ${c.status !== 'live' ? `<span class="ml-auto text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400">${escapeHtml(c.status)}</span>` : ''}
+        ${c.status !== 'active' ? `<span class="ml-auto text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400">${escapeHtml(c.status)}</span>` : ''}
       </div>
       <h3 class="font-semibold text-zinc-100 mb-1 leading-snug">${escapeHtml(c.name)}</h3>
       <p class="text-sm text-zinc-400 line-clamp-2 mb-3">${escapeHtml(c.description || '')}</p>
@@ -106,6 +106,61 @@ const statePill = (status) => {
   return `<span class="inline-block text-xs font-medium px-2.5 py-1 rounded-full ${cls}">${label}</span>`;
 };
 
-return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill };
+// Hierarchical navigation: Project -> Campaign -> Quest. Each item is
+// { label, href }; the last one is the current page and is not a link.
+function breadcrumb(items) {
+  const parts = [];
+  items.forEach((it, i) => {
+    if (i > 0) parts.push('<span class="text-zinc-600" aria-hidden="true">/</span>');
+    const last = i === items.length - 1;
+    if (last || !it.href) {
+      parts.push(`<span class="text-zinc-300">${escapeHtml(it.label)}</span>`);
+    } else {
+      parts.push(`<a href="${escapeHtml(it.href)}" class="text-zinc-500 hover:text-violet-300">${escapeHtml(it.label)}</a>`);
+    }
+  });
+  return `<nav class="flex items-center flex-wrap gap-1.5 text-xs mb-3" aria-label="Breadcrumb">${parts.join('')}</nav>`;
+}
+
+// The banner a scoped leaderboard (or a scoped directory) leads with. Plain
+// language: whose ranking this is, or what lives under this scope.
+function scopeBanner(title, scopeLabel, subtitle) {
+  return `<div class="rounded-2xl border border-zinc-800 bg-gradient-to-b from-violet-600/20 to-transparent p-5 mb-4">
+    <p class="text-xs uppercase tracking-wide text-violet-300 mb-1">${escapeHtml(scopeLabel)}</p>
+    <h1 class="text-xl font-bold">${escapeHtml(title)}</h1>
+    ${subtitle ? `<p class="text-sm text-zinc-400 mt-1">${escapeHtml(subtitle)}</p>` : ''}
+  </div>`;
+}
+
+function statCard(label, value, accent) {
+  return `<div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+    <p class="text-xs text-zinc-500">${escapeHtml(label)}</p>
+    <p class="text-xl font-bold ${accent || ''}">${escapeHtml(String(value))}</p>
+  </div>`;
+}
+
+function pager(page, hasMore, makeHref) {
+  const holder = el('<div class="flex items-center justify-center gap-3 mt-4"></div>');
+  if (page > 1) {
+    const prev = el(`<a href="${escapeHtml(makeHref(page - 1))}" class="text-sm font-medium px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Previous</a>`);
+    holder.appendChild(prev);
+  }
+  holder.appendChild(el(`<span class="text-sm text-zinc-500">Page ${page}</span>`));
+  if (hasMore) {
+    holder.appendChild(el(`<a href="${escapeHtml(makeHref(page + 1))}" class="text-sm font-medium px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Next</a>`));
+  }
+  return holder;
+}
+
+// Empty state with a plain next step.
+function emptyState(text, actionLabel, actionHref) {
+  const action = actionLabel
+    ? `<a href="${escapeHtml(actionHref || '#')}" class="inline-block mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">${escapeHtml(actionLabel)}</a>`
+    : '';
+  return `<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center">
+    <p class="text-zinc-400">${escapeHtml(text)}</p>${action}</div>`;
+}
+
+return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState };
 
 })();

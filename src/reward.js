@@ -8,7 +8,7 @@ const risk = require('./risk');
 // The ONLY writer of XP, points and badges. One transaction; the UNIQUE
 // constraints on xp_events/points_events/user_badges make every award
 // idempotent, so a double click or a retried request can never pay twice.
-async function awardXp(client, userId, amount, sourceType, sourceId) {
+async function awardXp(client, userId, amount, sourceType, sourceId, scope) {
   // Seasonal multiplier (Phase 3): the active season boosts every XP
   // source, and the ledger row is stamped with the season so seasonal
   // leaderboards are a plain filter on xp_events.
@@ -26,43 +26,48 @@ async function awardXp(client, userId, amount, sourceType, sourceId) {
   if (allowed <= 0) return { awarded: 0, capped: true };
   const prev = await client.query('SELECT COALESCE(SUM(amount),0) AS xp FROM xp_events WHERE user_id = $1', [userId]);
   const beforeXp = Number(prev.rows[0].xp);
+  scope = scope || {};
   const ins = await client.query(
-    `INSERT INTO xp_events (user_id, amount, source_type, source_id, season_id)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO xp_events (user_id, amount, source_type, source_id, season_id, project_id, campaign_id, quest_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (source_type, source_id, user_id) DO NOTHING
      RETURNING amount`,
-    [userId, allowed, sourceType, sourceId, season ? season.id : null]
+    [userId, allowed, sourceType, sourceId, season ? season.id : null,
+      scope.project_id || null, scope.campaign_id || null, scope.quest_id || null]
   );
   if (!ins.rows.length) return { awarded: 0, capped: false };
   await levels.maybeLevelUp(client, userId, beforeXp, beforeXp + allowed);
   return { awarded: allowed, capped: allowed < amount };
 }
 
-async function awardPoints(client, userId, amount, sourceType, sourceId, extraSystemId) {
+// One points row per award, tagged with its scope. The scope FKs are the
+// thing leaderboards filter on, so there is no second 'global' row to
+// double-count once a project leaderboard sums by project_id.
+async function awardPoints(client, userId, amount, sourceType, sourceId, scope) {
   if (!amount) return { awarded: 0 };
-  const sys = await client.query("SELECT id FROM points_systems WHERE key = 'global' LIMIT 1");
-  if (!sys.rows.length) return { awarded: 0 };
+  scope = scope || {};
+  // Prefer the project's own points system when one exists (Phase 2 named
+  // ledger); fall back to the legacy global system so an award never drops.
+  let systemId = null;
+  if (scope.project_id) {
+    const sys = await client.query(
+      'SELECT id FROM points_systems WHERE project_id = $1 ORDER BY id LIMIT 1', [scope.project_id]);
+    systemId = sys.rows.length ? sys.rows[0].id : null;
+  }
+  if (!systemId) {
+    const sys = await client.query("SELECT id FROM points_systems WHERE key = 'global' LIMIT 1");
+    if (!sys.rows.length) return { awarded: 0 };
+    systemId = sys.rows[0].id;
+  }
   const ins = await client.query(
-    `INSERT INTO points_events (system_id, user_id, amount, source_type, source_id)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO points_events (system_id, user_id, amount, source_type, source_id, project_id, campaign_id, quest_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (source_type, source_id, user_id, system_id) DO NOTHING
      RETURNING amount`,
-    [sys.rows[0].id, userId, amount, sourceType, sourceId]
+    [systemId, userId, amount, sourceType, sourceId,
+      scope.project_id || null, scope.campaign_id || null, scope.quest_id || null]
   );
-  // Project points systems (Phase 2): the same event also lands on the
-  // project's own leaderboard, which is a separate tally.
-  let projectAwarded = 0;
-  if (extraSystemId && extraSystemId !== sys.rows[0].id) {
-    const pIns = await client.query(
-      `INSERT INTO points_events (system_id, user_id, amount, source_type, source_id)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (source_type, source_id, user_id, system_id) DO NOTHING
-       RETURNING amount`,
-      [extraSystemId, userId, amount, sourceType, sourceId]
-    );
-    projectAwarded = pIns.rows.length ? amount : 0;
-  }
-  return { awarded: ins.rows.length ? amount : 0, project_awarded: projectAwarded };
+  return { awarded: ins.rows.length ? amount : 0 };
 }
 
 async function awardBadge(client, userId, badgeId, sourceType, sourceId) {
@@ -114,22 +119,21 @@ async function completeQuest(questId, userId) {
       'SELECT xp_multiplier, project_id FROM campaigns WHERE id = $1', [quest.campaign_id]);
     const mult = camp.rows[0] ? Number(camp.rows[0].xp_multiplier) : 1;
     const xp = Math.round(quest.xp_reward * mult);
+    const scope = {
+      project_id: camp.rows[0] ? camp.rows[0].project_id : null,
+      campaign_id: quest.campaign_id,
+      quest_id: questId,
+    };
 
     await client.query(
-      `INSERT INTO quest_completions (quest_id, user_id, status, xp_awarded)
-       VALUES ($1, $2, 'completed', $3)`,
-      [questId, userId, xp]
+      `INSERT INTO quest_completions (quest_id, user_id, project_id, campaign_id, status, xp_awarded)
+       VALUES ($1, $2, $3, $4, 'completed', $5)`,
+      [questId, userId, scope.project_id, scope.campaign_id, xp]
     );
-    const xpRes = await awardXp(client, userId, xp, 'quest', questId);
-    // Points go to the global tally and, when the project has its own points
-    // system, to that project's leaderboard too.
-    let projectSystemId = null;
-    if (camp.rows[0] && camp.rows[0].project_id) {
-      const ps = await client.query(
-        'SELECT id FROM points_systems WHERE project_id = $1 LIMIT 1', [camp.rows[0].project_id]);
-      projectSystemId = ps.rows.length ? ps.rows[0].id : null;
-    }
-    const ptsRes = await awardPoints(client, userId, quest.points_reward, 'quest', questId, projectSystemId);
+    const xpRes = await awardXp(client, userId, xp, 'quest', questId, scope);
+    // One points row, scoped to the project / campaign / quest. Project and
+    // campaign leaderboards are sums over these scope columns.
+    const ptsRes = await awardPoints(client, userId, quest.points_reward, 'quest', questId, scope);
 
     // Quest-level badge reward, configured as quest.badge_reward via rewards
     // rows (kind = badge, quest_id set).

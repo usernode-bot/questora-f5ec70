@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS campaigns (
   status VARCHAR(20) NOT NULL DEFAULT 'draft',
   xp_multiplier NUMERIC(6,2) NOT NULL DEFAULT 1.0,
   featured BOOLEAN NOT NULL DEFAULT FALSE,
+  visibility VARCHAR(20) NOT NULL DEFAULT 'public',
+  rules TEXT,
+  leaderboard_config JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (project_id, slug)
 );
@@ -107,14 +110,22 @@ CREATE INDEX IF NOT EXISTS campaigns_status_ends_idx ON campaigns (status, ends_
 CREATE TABLE IF NOT EXISTS quests (
   id SERIAL PRIMARY KEY,
   campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  slug VARCHAR(100),
   title VARCHAR(255) NOT NULL,
   description TEXT,
   instructions TEXT,
+  image_url TEXT,
+  quest_type VARCHAR(40),
   sort_order INTEGER NOT NULL DEFAULT 0,
   is_required BOOLEAN NOT NULL DEFAULT TRUE,
   xp_reward INTEGER NOT NULL DEFAULT 0,
   points_reward INTEGER NOT NULL DEFAULT 0,
-  status VARCHAR(20) NOT NULL DEFAULT 'published',
+  starts_at TIMESTAMPTZ,
+  ends_at TIMESTAMPTZ,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  visibility VARCHAR(20) NOT NULL DEFAULT 'public',
+  max_participants INTEGER,
+  completion_limit INTEGER NOT NULL DEFAULT 1,
   max_completions INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -145,6 +156,8 @@ CREATE TABLE IF NOT EXISTS quest_completions (
   id SERIAL PRIMARY KEY,
   quest_id INTEGER NOT NULL REFERENCES quests(id) ON DELETE CASCADE,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'completed',
   xp_awarded INTEGER NOT NULL DEFAULT 0,
   completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -401,6 +414,86 @@ async function migrate() {
     // Phase 3: seasonal XP ledger stamps and normalized proof fingerprints.
     await client.query('ALTER TABLE xp_events ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id)');
     await client.query('ALTER TABLE task_submissions ADD COLUMN IF NOT EXISTS proof_hash VARCHAR(64)');
+    // Multi-project restructure: explicit scope on every reward record so a
+    // leaderboard is a scoped sum, never a mix of projects. Nullable because
+    // referral / season XP belongs to no project.
+    await client.query('ALTER TABLE xp_events ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL');
+    await client.query('ALTER TABLE xp_events ADD COLUMN IF NOT EXISTS campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL');
+    await client.query('ALTER TABLE xp_events ADD COLUMN IF NOT EXISTS quest_id INTEGER REFERENCES quests(id) ON DELETE SET NULL');
+    await client.query('ALTER TABLE points_events ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL');
+    await client.query('ALTER TABLE points_events ADD COLUMN IF NOT EXISTS campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL');
+    await client.query('ALTER TABLE points_events ADD COLUMN IF NOT EXISTS quest_id INTEGER REFERENCES quests(id) ON DELETE SET NULL');
+    // Campaign / quest fields the multi-project spec adds.
+    await client.query("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public'");
+    await client.query('ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS rules TEXT');
+    await client.query("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS leaderboard_config JSONB NOT NULL DEFAULT '{}'");
+    await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS slug VARCHAR(100)');
+    await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS image_url TEXT');
+    await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS quest_type VARCHAR(40)');
+    await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ');
+    await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS ends_at TIMESTAMPTZ');
+    await client.query("ALTER TABLE quests ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public'");
+    await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS max_participants INTEGER');
+    await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS completion_limit INTEGER NOT NULL DEFAULT 1');
+    await client.query('ALTER TABLE quest_completions ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL');
+    await client.query('ALTER TABLE quest_completions ADD COLUMN IF NOT EXISTS campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL');
+    await client.query('CREATE INDEX IF NOT EXISTS quest_completions_project_user_idx ON quest_completions (project_id, user_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS quest_completions_campaign_user_idx ON quest_completions (campaign_id, user_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS xp_events_project_user_idx ON xp_events (project_id, user_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS xp_events_campaign_user_idx ON xp_events (campaign_id, user_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS xp_events_quest_user_idx ON xp_events (quest_id, user_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS points_events_project_user_idx ON points_events (project_id, user_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS points_events_campaign_user_idx ON points_events (campaign_id, user_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS points_events_quest_user_idx ON points_events (quest_id, user_id)');
+    // Every project needs somewhere for points to land, even one created
+    // before the points system existed. Idempotent, and a no-op in production
+    // where the rows already exist.
+    await client.query(`
+      INSERT INTO points_systems (project_id, key, name)
+      SELECT p.id, 'default', p.name FROM projects p
+      WHERE NOT EXISTS (SELECT 1 FROM points_systems ps WHERE ps.project_id = p.id)`);
+    // Backfill scope on pre-existing completions so a project/campaign board
+    // can be told apart from the quest it was earned in.
+    await client.query(`
+      UPDATE quest_completions qc SET
+        campaign_id = q.campaign_id,
+        project_id = c.project_id
+      FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+      WHERE qc.quest_id = q.id AND qc.project_id IS NULL`);
+    // Status vocabulary: a running campaign is 'active', a live quest is
+    // 'active' too (they were 'live' / 'published').
+    await client.query("UPDATE campaigns SET status = 'active' WHERE status = 'live'");
+    await client.query("UPDATE quests SET status = 'active' WHERE status = 'published'");
+    // Backfill scope on pre-existing quest reward rows (one-time, idempotent).
+    await client.query(`
+      UPDATE xp_events e SET
+        quest_id = e.source_id,
+        campaign_id = q.campaign_id,
+        project_id = c.project_id
+      FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+      WHERE e.source_type = 'quest' AND e.quest_id IS NULL AND q.id = e.source_id`);
+    await client.query(`
+      UPDATE points_events e SET
+        quest_id = e.source_id,
+        campaign_id = q.campaign_id,
+        project_id = c.project_id
+      FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+      WHERE e.source_type = 'quest' AND e.quest_id IS NULL AND q.id = e.source_id`);
+    // Quest slugs, backfilled from titles (only where still null).
+    await client.query(`
+      UPDATE quests SET slug = trim(both '-' from regexp_replace(lower(title), '[^a-z0-9]+', '-', 'g'))
+      WHERE slug IS NULL`);
+    await client.query(`UPDATE quests SET slug = 'quest-' || id WHERE slug IS NULL OR slug = ''`);
+    // Same title twice in one campaign would break the unique index below;
+    // disambiguate duplicates with the row id.
+    await client.query(`
+      UPDATE quests q SET slug = q.slug || '-' || q.id
+      FROM (
+        SELECT id, row_number() OVER (PARTITION BY campaign_id, slug ORDER BY id) AS rn
+        FROM quests
+      ) d
+      WHERE d.id = q.id AND d.rn > 1`);
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS quests_campaign_slug_key ON quests (campaign_id, slug)');
     // Fresh schemas lack gen_random_uuid (pgcrypto) on older servers.
     await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto').catch(() => {});
     for (const t of PRIVATE_TABLES) {

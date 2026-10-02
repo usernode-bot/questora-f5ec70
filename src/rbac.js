@@ -38,4 +38,17 @@ async function requireAdmin(req, res) {
   return true;
 }
 
-module.exports = { setPool, projectRole, can, isAdmin, requireAdmin, PROJECT_ROLES };
+// Guard a project-scoped write: a platform admin passes, otherwise the
+// caller must hold a project role granting `action`. Returns the loaded
+// project on success, or false after answering 403 (the caller returns).
+async function requireProjectAction(req, res, projectId, action) {
+  if (isAdmin(req)) return true;
+  const ok = await can(projectId, req.user && req.user.db_id, action);
+  if (!ok) {
+    res.status(403).json({ error: 'You do not have permission to manage this project' });
+    return false;
+  }
+  return true;
+}
+
+module.exports = { setPool, projectRole, can, isAdmin, requireAdmin, requireProjectAction, PROJECT_ROLES };

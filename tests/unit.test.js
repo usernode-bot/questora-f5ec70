@@ -175,11 +175,11 @@ test('task config validation rejects on-chain publishes', () => {
 });
 
 test('campaign state machine only allows forward transitions', () => {
-  assert.ok(CAMPAIGN_TRANSITIONS.live.includes('paused'));
-  assert.ok(CAMPAIGN_TRANSITIONS.paused.includes('live'));
+  assert.ok(CAMPAIGN_TRANSITIONS.active.includes('paused'));
+  assert.ok(CAMPAIGN_TRANSITIONS.paused.includes('active'));
   assert.ok(CAMPAIGN_TRANSITIONS.ended.includes('archived'));
-  assert.ok(!CAMPAIGN_TRANSITIONS.live.includes('archived'), 'live campaigns end, they are not archived directly');
-  assert.ok(!CAMPAIGN_TRANSITIONS.live.includes('draft'), 'no going back to draft');
+  assert.ok(!CAMPAIGN_TRANSITIONS.active.includes('archived'), 'active campaigns end, they are not archived directly');
+  assert.ok(!CAMPAIGN_TRANSITIONS.active.includes('draft'), 'no going back to draft');
   assert.equal(CAMPAIGN_TRANSITIONS.archived.length, 0, 'archived is terminal');
 });
 

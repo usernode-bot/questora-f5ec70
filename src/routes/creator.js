@@ -56,6 +56,56 @@ function userId(req) {
   return req.user ? req.user.db_id : null;
 }
 
+// Scoped leaderboards: metric picks the ledger table, period bounds the
+// window. All three scopes are a plain filtered sum, so a project board can
+// never include another project's rows.
+const METRICS = { xp: 'xp_events', points: 'points_events' };
+const SCOPE_COLUMNS = { project: 'project_id', campaign: 'campaign_id', quest: 'quest_id' };
+
+function periodBounds(period, campaign) {
+  if (period === 'weekly') return { since: new Date(Date.now() - 7 * 864e5) };
+  if (period === 'monthly') return { since: new Date(Date.now() - 30 * 864e5) };
+  if (period === 'campaign' && campaign) {
+    return { since: campaign.starts_at || null, until: campaign.ends_at || null };
+  }
+  return {};
+}
+
+async function scopedLeaderboard(scope, scopeId, opts) {
+  const metric = METRICS[opts.metric] ? opts.metric : 'xp';
+  const table = METRICS[metric];
+  const col = SCOPE_COLUMNS[scope];
+  const bounds = periodBounds(opts.period, opts.campaign);
+  const params = [scopeId];
+  let where = `e.${col} = $1`;
+  if (bounds.since) { params.push(bounds.since); where += ` AND e.created_at >= $${params.length}`; }
+  if (bounds.until) { params.push(bounds.until); where += ` AND e.created_at <= $${params.length}`; }
+  params.push(opts.limit || 50);
+  const { rows } = await pool.query(
+    `SELECT u.username, u.display_name, u.avatar_url, SUM(e.amount) AS score
+     FROM ${table} e JOIN users u ON u.id = e.user_id
+     WHERE ${where}
+     GROUP BY u.id ORDER BY score DESC LIMIT $${params.length}`,
+    params);
+  return rows.map(r => ({ ...r, score: Number(r.score) }));
+}
+
+// Quest type is a display taxonomy, derived from its tasks when not set.
+async function questTypeLabel(questId, explicit) {
+  if (explicit) return explicit;
+  const { rows } = await pool.query(
+    'SELECT DISTINCT type FROM quest_tasks WHERE quest_id = $1', [questId]);
+  return questTypeLabelFromTasks(rows.map(r => ({ type: r.type })));
+}
+
+// Pure helper: one task type -> its label, several -> Mixed.
+function questTypeLabelFromTasks(tasks) {
+  const types = [...new Set((tasks || []).map(t => t.type))];
+  if (types.length > 1) return 'Mixed';
+  const map = { social: 'Social', quiz: 'Quiz', wallet_connect: 'Wallet', url_proof: 'Submission', manual: 'Submission', on_chain: 'Submission' };
+  return map[types[0]] || 'Submission';
+}
+
 // ---- projects ----
 router.post('/projects', async (req, res) => {
   const { name, description, logo_url, website, social_links } = req.body || {};
@@ -97,7 +147,27 @@ router.post('/projects', async (req, res) => {
 router.get('/projects', async (req, res) => {
   const { rows } = await pool.query(
     `SELECT p.*, (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) AS members
-     FROM projects p WHERE p.owner_user_id = $1 ORDER BY p.created_at DESC`, [userId(req)]);
+     FROM projects p
+     WHERE p.owner_user_id = $1
+        OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $1)
+     ORDER BY p.created_at DESC`, [userId(req)]);
+  res.json({ projects: rows });
+});
+
+// Public project directory: every active project, with the counts the
+// /projects page shows. Readable without a project role.
+router.get('/projects/directory', async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT p.id, p.slug, p.name, p.description, p.logo_url, p.website, p.status,
+            (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = p.id AND c.status = 'active') AS campaign_count,
+            (SELECT COUNT(*)::int FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+              WHERE c.project_id = p.id AND q.status = 'active') AS quest_count,
+            (SELECT COUNT(DISTINCT qc.user_id)::int FROM quest_completions qc
+              JOIN quests q ON q.id = qc.quest_id JOIN campaigns c ON c.id = q.campaign_id
+              WHERE c.project_id = p.id) AS participants,
+            (SELECT COALESCE(SUM(x.amount), 0)::int FROM xp_events x WHERE x.project_id = p.id) AS total_xp
+     FROM projects p WHERE p.status = 'active'
+     ORDER BY total_xp DESC, p.created_at DESC LIMIT 100`);
   res.json({ projects: rows });
 });
 
@@ -110,13 +180,100 @@ async function loadProject(idOrSlug) {
   return rows[0] || null;
 }
 
+// Project overview payload: the project, its campaigns (each with the quests
+// a viewer may see) and whether this viewer can manage it. Readable without a
+// project role; the management surface is the dashboard, which is gated.
 router.get('/projects/:id', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
+  const uid = userId(req);
+  const canManage = rbac.isAdmin(req) || (await rbac.can(p.id, uid, 'manage'));
   const campaigns = await pool.query(
-    `SELECT c.*, (SELECT COUNT(*) FROM quests q WHERE q.campaign_id = c.id) AS quest_count
-     FROM campaigns c WHERE c.project_id = $1 ORDER BY c.created_at DESC`, [p.id]);
-  res.json({ project: p, campaigns: campaigns.rows });
+    `SELECT c.*,
+            (SELECT COUNT(*)::int FROM quests q WHERE q.campaign_id = c.id) AS quest_count,
+            (SELECT COUNT(DISTINCT qc.user_id)::int FROM quest_completions qc
+              JOIN quests q ON q.id = qc.quest_id WHERE q.campaign_id = c.id) AS participants
+     FROM campaigns c
+     WHERE c.project_id = $1 AND (c.status <> 'draft' OR $2 = TRUE)
+     ORDER BY c.created_at DESC`, [p.id, canManage]);
+  const quests = await pool.query(
+    `SELECT q.id, q.campaign_id, q.slug, q.title, q.quest_type, q.xp_reward, q.points_reward,
+            q.status, q.sort_order, q.starts_at, q.ends_at, q.is_required,
+            (SELECT COUNT(DISTINCT qc.user_id)::int FROM quest_completions qc WHERE qc.quest_id = q.id) AS participants
+     FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+     WHERE c.project_id = $1 AND (q.status = 'active' OR $2 = TRUE)
+     ORDER BY q.sort_order`, [p.id, canManage]);
+  const byCampaign = {};
+  for (const q of quests.rows) (byCampaign[q.campaign_id] = byCampaign[q.campaign_id] || []).push(q);
+  res.json({
+    project: p,
+    can_manage: canManage,
+    campaigns: campaigns.rows.map(c => ({ ...c, quests: byCampaign[c.id] || [] })),
+  });
+});
+
+// Project management members. Only a project manager (or platform admin) can
+// read or change the roster; a project owner holds the manage role.
+router.get('/projects/:id/members', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
+  const { rows } = await pool.query(
+    `SELECT pm.user_id, pm.role, u.username, u.display_name, u.avatar_url
+     FROM project_members pm JOIN users u ON u.id = pm.user_id
+     WHERE pm.project_id = $1 ORDER BY pm.role, u.username`, [p.id]);
+  res.json({ members: rows });
+});
+
+// Add a member by username. The handle is resolved against the local users
+// table (a member has to have opened Questora at least once); an unknown
+// handle is refused rather than fabricated.
+router.post('/projects/:id/members', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
+  const username = String((req.body || {}).username || '').trim();
+  const role = String((req.body || {}).role || 'editor');
+  if (!username) return res.status(400).json({ error: 'A username is required' });
+  if (!rbac.PROJECT_ROLES.includes(role)) return res.status(400).json({ error: 'Unknown role' });
+  const u = await pool.query('SELECT id, username FROM users WHERE lower(username) = lower($1)', [username]);
+  if (!u.rows.length) return res.status(404).json({ error: 'No Questora account with that username yet' });
+  await pool.query(
+    `INSERT INTO project_members (project_id, user_id, role) VALUES ($1, $2, $3)
+     ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+    [p.id, u.rows[0].id, role]);
+  await audit(userId(req), 'project.member.add', 'project', p.id, null, { username, role }, null);
+  res.json({ ok: true });
+});
+
+router.patch('/projects/:id/members/:userId', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
+  const role = String((req.body || {}).role || '');
+  if (!rbac.PROJECT_ROLES.includes(role)) return res.status(400).json({ error: 'Unknown role' });
+  const before = await pool.query('SELECT * FROM project_members WHERE project_id = $1 AND user_id = $2', [p.id, req.params.userId]);
+  if (!before.rows.length) return res.status(404).json({ error: 'That user is not a member of this project' });
+  if (before.rows[0].role === 'owner' && role !== 'owner') {
+    return res.status(400).json({ error: 'The project owner keeps their role.' });
+  }
+  await pool.query('UPDATE project_members SET role = $3 WHERE project_id = $1 AND user_id = $2', [p.id, req.params.userId, role]);
+  await audit(userId(req), 'project.member.update', 'project', p.id, before.rows[0], { role }, null);
+  res.json({ ok: true });
+});
+
+router.delete('/projects/:id/members/:userId', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'manage'))) return;
+  const row = await pool.query('SELECT * FROM project_members WHERE project_id = $1 AND user_id = $2', [p.id, req.params.userId]);
+  if (!row.rows.length) return res.status(404).json({ error: 'That user is not a member of this project' });
+  if (row.rows[0].role === 'owner' || Number(req.params.userId) === p.owner_user_id) {
+    return res.status(400).json({ error: 'The project owner cannot be removed.' });
+  }
+  await pool.query('DELETE FROM project_members WHERE project_id = $1 AND user_id = $2', [p.id, req.params.userId]);
+  await audit(userId(req), 'project.member.remove', 'project', p.id, row.rows[0], null, null);
+  res.json({ ok: true });
 });
 
 // Owner/project-admin updates: status + role edits are audited.
@@ -146,16 +303,27 @@ router.patch('/projects/:id', async (req, res) => {
 });
 
 // ---- campaigns ----
-const CAMPAIGN_STATUSES = ['draft', 'scheduled', 'live', 'paused', 'ended', 'archived'];
+const CAMPAIGN_STATUSES = ['draft', 'scheduled', 'active', 'paused', 'ended', 'archived'];
 
 // Status transitions are the server's decision, not the client's. A
 // campaign moves forward through this map; platform admins may pause or
 // archive from anywhere (the admin panel's Pause/Archive buttons).
 const CAMPAIGN_TRANSITIONS = {
-  draft: ['scheduled', 'live', 'archived'],
-  scheduled: ['live', 'draft', 'archived'],
-  live: ['paused', 'ended'],
-  paused: ['live', 'ended'],
+  draft: ['scheduled', 'active', 'archived'],
+  scheduled: ['active', 'draft', 'archived'],
+  active: ['paused', 'ended'],
+  paused: ['active', 'ended'],
+  ended: ['archived'],
+  archived: [],
+};
+
+const QUEST_STATUSES = ['draft', 'scheduled', 'active', 'paused', 'ended', 'archived'];
+// A quest follows the same forward-only lifecycle as its campaign.
+const QUEST_TRANSITIONS = {
+  draft: ['scheduled', 'active', 'archived'],
+  scheduled: ['active', 'draft', 'archived'],
+  active: ['paused', 'ended', 'archived'],
+  paused: ['active', 'ended', 'archived'],
   ended: ['archived'],
   archived: [],
 };
@@ -163,23 +331,25 @@ const CAMPAIGN_TRANSITIONS = {
 router.post('/projects/:id/campaigns', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.can(p.id, userId(req), 'edit'))) {
-    return res.status(403).json({ error: 'You do not have permission to create campaigns here' });
-  }
-  const { name, description, banner_url, category, chains, starts_at, ends_at, status, featured } = req.body || {};
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'edit'))) return;
+  const { name, description, banner_url, category, chains, starts_at, ends_at, status, featured,
+    visibility, rules, leaderboard_config } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'A campaign name is required' });
   // A new campaign starts its life as a draft, a scheduled one, or goes
   // straight live on publish. Everything else is a transition (PATCH).
-  const st = ['draft', 'scheduled', 'live'].includes(status) ? status : 'draft';
+  const st = ['draft', 'scheduled', 'active'].includes(status) ? status : 'draft';
   let slug = slugify(name) || randomId(8);
   const dup = await pool.query('SELECT 1 FROM campaigns WHERE project_id = $1 AND slug = $2', [p.id, slug]);
   if (dup.rows.length) slug = slug + '-' + randomId(4);
   const { rows } = await pool.query(
-    `INSERT INTO campaigns (project_id, slug, name, description, banner_url, category, chains, starts_at, ends_at, status, featured)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+    `INSERT INTO campaigns (project_id, slug, name, description, banner_url, category, chains, starts_at,
+                            ends_at, status, featured, visibility, rules, leaderboard_config)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
     [p.id, slug, String(name).trim(), description || null, banner_url || null, category || null,
       Array.isArray(chains) ? chains : [],
-      starts_at || null, ends_at || null, st, !!featured]
+      starts_at || null, ends_at || null, st, !!featured,
+      visibility === 'unlisted' ? 'unlisted' : 'public', rules || null,
+      leaderboard_config && typeof leaderboard_config === 'object' ? leaderboard_config : {}]
   );
   res.json({ campaign: rows[0] });
 });
@@ -192,12 +362,14 @@ router.patch('/campaigns/:id', async (req, res) => {
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = c.rows[0];
   // Project RBAC, or a platform admin acting through the admin panel.
-  if (!(await rbac.can(campaign.project_id, userId(req), 'edit')) && !rbac.isAdmin(req)) {
-    return res.status(403).json({ error: 'You do not have permission to edit this campaign' });
-  }
+  if (!(await rbac.requireProjectAction(req, res, campaign.project_id, 'edit'))) return;
   const allowed = {};
-  for (const k of ['name', 'description', 'banner_url', 'category', 'starts_at', 'ends_at', 'featured']) {
+  for (const k of ['name', 'description', 'banner_url', 'category', 'starts_at', 'ends_at', 'featured', 'rules']) {
     if (req.body[k] !== undefined) allowed[k] = req.body[k];
+  }
+  if (req.body.visibility !== undefined) allowed.visibility = req.body.visibility === 'unlisted' ? 'unlisted' : 'public';
+  if (req.body.leaderboard_config !== undefined && typeof req.body.leaderboard_config === 'object') {
+    allowed.leaderboard_config = req.body.leaderboard_config;
   }
   if (req.body.chains !== undefined) allowed.chains = Array.isArray(req.body.chains) ? req.body.chains : [];
   if (req.body.status !== undefined) {
@@ -226,6 +398,82 @@ router.patch('/campaigns/:id', async (req, res) => {
   res.json({ campaign: rows[0] });
 });
 
+// Duplicate a campaign and its quests as a fresh draft. The copy keeps the
+// same project, so it can never land in another project's list.
+router.post('/campaigns/:id/duplicate', async (req, res) => {
+  const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
+  if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
+  const campaign = c.rows[0];
+  if (!(await rbac.requireProjectAction(req, res, campaign.project_id, 'edit'))) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let slug = slugify(campaign.name + ' copy') || randomId(8);
+    const dup = await client.query('SELECT 1 FROM campaigns WHERE project_id = $1 AND slug = $2', [campaign.project_id, slug]);
+    if (dup.rows.length) slug = slug + '-' + randomId(4);
+    const cp = await client.query(
+      `INSERT INTO campaigns (project_id, slug, name, description, banner_url, category, chains, starts_at,
+                              ends_at, status, featured, visibility, rules, leaderboard_config)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'draft', FALSE, $10, $11, $12) RETURNING *`,
+      [campaign.project_id, slug, campaign.name + ' (copy)', campaign.description, campaign.banner_url,
+        campaign.category, campaign.chains, campaign.starts_at, campaign.ends_at,
+        campaign.visibility, campaign.rules, campaign.leaderboard_config]);
+    const newId = cp.rows[0].id;
+    const quests = await client.query('SELECT * FROM quests WHERE campaign_id = $1 ORDER BY sort_order', [campaign.id]);
+    for (const q of quests.rows) {
+      let qslug = q.slug ? q.slug + '-copy' : (slugify(q.title) || 'quest') + '-copy';
+      const clash = await client.query('SELECT 1 FROM quests WHERE campaign_id = $1 AND slug = $2', [newId, qslug]);
+      if (clash.rows.length) qslug = qslug + '-' + randomId(4);
+      const nq = await client.query(
+        `INSERT INTO quests (campaign_id, slug, title, description, instructions, image_url, quest_type,
+                             sort_order, is_required, xp_reward, points_reward, starts_at, ends_at, status,
+                             visibility, max_participants, completion_limit, max_completions)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'draft', $14, $15, $16, $17)
+         RETURNING id`,
+        [newId, qslug, q.title, q.description, q.instructions, q.image_url, q.quest_type,
+          q.sort_order, q.is_required, q.xp_reward, q.points_reward, q.starts_at, q.ends_at,
+          q.visibility, q.max_participants, q.completion_limit, q.max_completions]);
+      const tasks = await client.query('SELECT * FROM quest_tasks WHERE quest_id = $1 ORDER BY sort_order', [q.id]);
+      for (const t of tasks.rows) {
+        await client.query(
+          `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [nq.rows[0].id, t.type, t.title, JSON.stringify(t.config || {}), t.sort_order, t.verification_type, t.proof_required]);
+      }
+    }
+    await client.query('COMMIT');
+    await audit(userId(req), 'campaign.duplicate', 'campaign', newId, null, cp.rows[0], null);
+    res.json({ campaign: cp.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Could not duplicate the campaign' });
+  } finally {
+    client.release();
+  }
+});
+
+// Delete a campaign, unless it already produced completions: those are a
+// participant's earned history, so the campaign is archived instead.
+router.delete('/campaigns/:id', async (req, res) => {
+  const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
+  if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
+  const campaign = c.rows[0];
+  if (!(await rbac.requireProjectAction(req, res, campaign.project_id, 'manage'))) return;
+  const done = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM quest_completions qc
+     JOIN quests q ON q.id = qc.quest_id WHERE q.campaign_id = $1`, [campaign.id]);
+  if (done.rows[0].n > 0) {
+    const { rows } = await pool.query(
+      `UPDATE campaigns SET status = 'archived' WHERE id = $1 RETURNING *`, [campaign.id]);
+    await audit(userId(req), 'campaign.archive', 'campaign', campaign.id, campaign, rows[0], req.body.reason || 'Had completions');
+    return res.json({ campaign: rows[0], archived: true, reason: 'This campaign has participant completions, so it was archived instead of deleted.' });
+  }
+  await pool.query('DELETE FROM campaigns WHERE id = $1', [campaign.id]);
+  await audit(userId(req), 'campaign.delete', 'campaign', campaign.id, campaign, null, req.body.reason || null);
+  res.json({ deleted: true });
+});
+
 // ---- quests + tasks (the quest builder API) ----
 router.post('/campaigns/:id/quests', async (req, res) => {
   const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
@@ -240,14 +488,28 @@ router.post('/campaigns/:id/quests', async (req, res) => {
   try {
     await client.query('BEGIN');
     const ord = await client.query('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM quests WHERE campaign_id = $1', [campaign.id]);
+    let slug = slugify(title) || randomId(8);
+    const slugClash = await client.query('SELECT 1 FROM quests WHERE campaign_id = $1 AND slug = $2', [campaign.id, slug]);
+    if (slugClash.rows.length) slug = slug + '-' + randomId(4);
+    const st = QUEST_STATUSES.includes(req.body.status) ? req.body.status : 'active';
     const q = await client.query(
-      `INSERT INTO quests (campaign_id, title, description, instructions, sort_order, is_required, xp_reward, points_reward)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [campaign.id, String(title).trim(), description || null, instructions || null,
+      `INSERT INTO quests (campaign_id, slug, title, description, instructions, image_url, quest_type,
+                           sort_order, is_required, xp_reward, points_reward, starts_at, ends_at, status,
+                           visibility, max_participants, completion_limit)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
+      [campaign.id, slug, String(title).trim(), description || null, instructions || null,
+        req.body.image_url || null, req.body.quest_type || null,
         ord.rows[0].n, is_required === undefined ? true : !!is_required,
-        Math.max(0, parseInt(xp_reward, 10) || 0), Math.max(0, parseInt(points_reward, 10) || 0)]
+        Math.max(0, parseInt(xp_reward, 10) || 0), Math.max(0, parseInt(points_reward, 10) || 0),
+        req.body.starts_at || null, req.body.ends_at || null, st,
+        req.body.visibility === 'unlisted' ? 'unlisted' : 'public',
+        req.body.max_participants ? Math.max(1, parseInt(req.body.max_participants, 10) || 1) : null,
+        Math.max(1, parseInt(req.body.completion_limit, 10) || 1)]
     );
     const questId = q.rows[0].id;
+    if (!q.rows[0].quest_type) {
+      await client.query('UPDATE quests SET quest_type = $2 WHERE id = $1', [questId, await questTypeLabelFromTasks(tasks)]);
+    }
     for (let i = 0; i < (tasks || []).length; i++) {
       const t = tasks[i];
       const cfgErr = validateTaskConfig(t.type, t.config || {});
@@ -299,17 +561,27 @@ router.patch('/quests/:id', async (req, res) => {
   const q = await pool.query(
     `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [req.params.id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
-  if (!(await rbac.can(q.rows[0].project_id, userId(req), 'edit'))) {
-    return res.status(403).json({ error: 'You do not have permission to edit this quest' });
-  }
+  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'edit'))) return;
   const allowed = {};
-  for (const k of ['title', 'description', 'instructions']) {
+  for (const k of ['title', 'description', 'instructions', 'image_url', 'quest_type', 'starts_at', 'ends_at']) {
     if (req.body[k] !== undefined) allowed[k] = req.body[k];
   }
   if (req.body.is_required !== undefined) allowed.is_required = !!req.body.is_required;
   if (req.body.xp_reward !== undefined) allowed.xp_reward = Math.max(0, parseInt(req.body.xp_reward, 10) || 0);
   if (req.body.points_reward !== undefined) allowed.points_reward = Math.max(0, parseInt(req.body.points_reward, 10) || 0);
-  if (req.body.status && ['draft', 'published', 'paused'].includes(req.body.status)) allowed.status = req.body.status;
+  if (req.body.visibility !== undefined) allowed.visibility = req.body.visibility === 'unlisted' ? 'unlisted' : 'public';
+  if (req.body.max_participants !== undefined) {
+    allowed.max_participants = req.body.max_participants ? Math.max(1, parseInt(req.body.max_participants, 10) || 1) : null;
+  }
+  if (req.body.completion_limit !== undefined) allowed.completion_limit = Math.max(1, parseInt(req.body.completion_limit, 10) || 1);
+  if (req.body.status !== undefined) {
+    if (!QUEST_STATUSES.includes(req.body.status)) return res.status(400).json({ error: 'Unknown status' });
+    const legal = QUEST_TRANSITIONS[q.rows[0].status] || [];
+    if (req.body.status !== q.rows[0].status && !legal.includes(req.body.status) && !rbac.isAdmin(req)) {
+      return res.status(400).json({ error: `A ${q.rows[0].status} quest cannot move to ${req.body.status}.` });
+    }
+    allowed.status = req.body.status;
+  }
   if (req.body.sort_order !== undefined) allowed.sort_order = parseInt(req.body.sort_order, 10) || 0;
   const sets = Object.keys(allowed);
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
@@ -319,6 +591,92 @@ router.patch('/quests/:id', async (req, res) => {
   );
   await audit(userId(req), 'quest.update', 'quest', q.rows[0].id, q.rows[0], rows[0], req.body.reason || null);
   res.json({ quest: rows[0] });
+});
+
+// Duplicate a quest as a draft at the end of its own campaign.
+router.post('/quests/:id/duplicate', async (req, res) => {
+  const q = await pool.query(
+    `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [req.params.id]);
+  if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
+  if (!(await rbac.requireProjectAction(req, res, q.rows[0].project_id, 'edit'))) return;
+  const quest = q.rows[0];
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let slug = (quest.slug ? quest.slug : (slugify(quest.title) || 'quest')) + '-copy';
+    const clash = await client.query('SELECT 1 FROM quests WHERE campaign_id = $1 AND slug = $2', [quest.campaign_id, slug]);
+    if (clash.rows.length) slug = slug + '-' + randomId(4);
+    const ord = await client.query('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM quests WHERE campaign_id = $1', [quest.campaign_id]);
+    const nq = await client.query(
+      `INSERT INTO quests (campaign_id, slug, title, description, instructions, image_url, quest_type,
+                           sort_order, is_required, xp_reward, points_reward, starts_at, ends_at, status,
+                           visibility, max_participants, completion_limit, max_completions)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'draft', $14, $15, $16, $17)
+       RETURNING *`,
+      [quest.campaign_id, slug, quest.title + ' (copy)', quest.description, quest.instructions,
+        quest.image_url, quest.quest_type, ord.rows[0].n, quest.is_required, quest.xp_reward,
+        quest.points_reward, quest.starts_at, quest.ends_at, quest.visibility, quest.max_participants,
+        quest.completion_limit, quest.max_completions]);
+    const tasks = await client.query('SELECT * FROM quest_tasks WHERE quest_id = $1 ORDER BY sort_order', [quest.id]);
+    for (const t of tasks.rows) {
+      await client.query(
+        `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [nq.rows[0].id, t.type, t.title, JSON.stringify(t.config || {}), t.sort_order, t.verification_type, t.proof_required]);
+    }
+    await client.query('COMMIT');
+    await audit(userId(req), 'quest.duplicate', 'quest', nq.rows[0].id, null, nq.rows[0], null);
+    res.json({ quest: nq.rows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error(err);
+    res.status(500).json({ error: 'Could not duplicate the quest' });
+  } finally {
+    client.release();
+  }
+});
+
+// Delete a quest unless it has completions; otherwise archive it.
+router.delete('/quests/:id', async (req, res) => {
+  const q = await pool.query(
+    `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [req.params.id]);
+  if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
+  const quest = q.rows[0];
+  if (!(await rbac.requireProjectAction(req, res, quest.project_id, 'manage'))) return;
+  const done = await pool.query('SELECT COUNT(*)::int AS n FROM quest_completions WHERE quest_id = $1', [quest.id]);
+  if (done.rows[0].n > 0) {
+    const { rows } = await pool.query(`UPDATE quests SET status = 'archived' WHERE id = $1 RETURNING *`, [quest.id]);
+    await audit(userId(req), 'quest.archive', 'quest', quest.id, quest, rows[0], req.body.reason || 'Had completions');
+    return res.json({ quest: rows[0], archived: true, reason: 'This quest has participant completions, so it was archived instead of deleted.' });
+  }
+  await pool.query('DELETE FROM quests WHERE id = $1', [quest.id]);
+  await audit(userId(req), 'quest.delete', 'quest', quest.id, quest, null, req.body.reason || null);
+  res.json({ deleted: true });
+});
+
+// Reorder a campaign's quests: the body is the full ordered id list.
+router.post('/campaigns/:id/quests/reorder', async (req, res) => {
+  const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
+  if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
+  if (!(await rbac.requireProjectAction(req, res, c.rows[0].project_id, 'edit'))) return;
+  const order = Array.isArray(req.body.order) ? req.body.order.map(Number).filter(Number.isFinite) : [];
+  if (!order.length) return res.status(400).json({ error: 'An ordered list of quest ids is required' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (let i = 0; i < order.length; i++) {
+      await client.query(
+        'UPDATE quests SET sort_order = $2 WHERE id = $1 AND campaign_id = $3',
+        [order[i], i, c.rows[0].id]);
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // ---- review queue ----
@@ -385,25 +743,79 @@ router.post('/submissions/:id/review', async (req, res) => {
   res.json({ submission: rows[0] });
 });
 
-// ---- project analytics (creator view) ----
-// Project points leaderboard (Phase 2). Public within the app: the project
-// page shows it to everyone who can open the project.
+// ---- scoped leaderboards ----
+// A board is a filtered sum over one scope column. Project isolation is a
+// property of the query: rows tagged with another project can never appear.
+// Public within the app: a project page shows its board to anyone who can
+// open the project.
 router.get('/projects/:id/leaderboard', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  const sys = await pool.query(
-    'SELECT id, name FROM points_systems WHERE project_id = $1 ORDER BY id LIMIT 1', [p.id]);
-  if (!sys.rows.length) return res.json({ system: null, entries: [] });
-  const { rows } = await pool.query(
-    `SELECT u.username, u.display_name, u.avatar_url, SUM(pe.amount) AS score
-     FROM points_events pe JOIN users u ON u.id = pe.user_id
-     WHERE pe.system_id = $1
-     GROUP BY u.id ORDER BY score DESC LIMIT 50`, [sys.rows[0].id]);
-  res.json({
-    system: { name: sys.rows[0].name },
-    entries: rows.map(r => ({ ...r, score: Number(r.score) })),
-  });
+  const metric = req.query.metric === 'points' ? 'points' : 'xp';
+  const period = ['all', 'weekly', 'monthly'].includes(req.query.period) ? req.query.period : 'all';
+  const campaignId = Number(req.query.campaign) || null;
+  let scopeId = p.id;
+  let campaign = null;
+  if (campaignId) {
+    // A narrowing filter must belong to THIS project, or it would leak
+    // another project's ranking through this project's board.
+    const c = await pool.query('SELECT * FROM campaigns WHERE id = $1 AND project_id = $2', [campaignId, p.id]);
+    if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found in this project' });
+    scopeId = c.rows[0].id;
+  }
+  const entries = await scopedLeaderboard(campaignId ? 'campaign' : 'project', scopeId, { metric, period, campaign });
+  res.json({ metric, period, scope: campaignId ? 'campaign' : 'project', entries });
 });
+
+router.get('/campaigns/:id/leaderboard', async (req, res) => {
+  const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
+  if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
+  const metric = req.query.metric === 'points' ? 'points' : 'xp';
+  const period = ['all', 'weekly', 'monthly', 'campaign'].includes(req.query.period) ? req.query.period : 'all';
+  const entries = await scopedLeaderboard('campaign', c.rows[0].id, { metric, period, campaign: c.rows[0] });
+  res.json({ metric, period, scope: 'campaign', entries });
+});
+
+router.get('/quests/:id/leaderboard', async (req, res) => {
+  const q = await pool.query('SELECT id FROM quests WHERE id = $1', [req.params.id]);
+  if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
+  const metric = req.query.metric === 'points' ? 'points' : 'xp';
+  const period = ['all', 'weekly', 'monthly'].includes(req.query.period) ? req.query.period : 'all';
+  const entries = await scopedLeaderboard('quest', q.rows[0].id, { metric, period });
+  res.json({ metric, period, scope: 'quest', entries });
+});
+
+// ---- dashboard overview ----
+router.get('/projects/:id/overview', async (req, res) => {
+  const p = await loadProject(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found' });
+  if (!(await rbac.requireProjectAction(req, res, p.id, 'view_analytics'))) return;
+  const stats = await pool.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = $1 AND c.status = 'active') AS active_campaigns,
+       (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = $1) AS campaigns,
+       (SELECT COUNT(*)::int FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS quests,
+       (SELECT COUNT(*)::int FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1 AND q.status = 'active') AS active_quests,
+       (SELECT COUNT(DISTINCT qc.user_id)::int FROM quest_completions qc
+          JOIN quests q ON q.id = qc.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS participants,
+       (SELECT COUNT(*)::int FROM quest_completions qc
+          JOIN quests q ON q.id = qc.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS completions,
+       (SELECT COALESCE(SUM(x.amount), 0)::int FROM xp_events x WHERE x.project_id = $1) AS xp_distributed,
+       (SELECT COUNT(*)::int FROM task_submissions s
+          JOIN quests q ON q.id = s.quest_id JOIN campaigns c ON c.id = q.campaign_id
+          WHERE c.project_id = $1 AND s.status = 'pending') AS pending_review`,
+    [p.id]);
+  const activity = await pool.query(
+    `SELECT qc.completed_at, u.username, q.title, c.name AS campaign_name
+     FROM quest_completions qc
+     JOIN users u ON u.id = qc.user_id
+     JOIN quests q ON q.id = qc.quest_id
+     JOIN campaigns c ON c.id = q.campaign_id
+     WHERE c.project_id = $1
+     ORDER BY qc.completed_at DESC LIMIT 8`, [p.id]);
+  res.json({ project: p, stats: stats.rows[0], recent_activity: activity.rows });
+});
+
 
 router.get('/projects/:id/analytics', async (req, res) => {
   const p = await loadProject(req.params.id);

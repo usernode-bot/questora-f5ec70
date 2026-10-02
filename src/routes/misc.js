@@ -20,13 +20,13 @@ router.get('/discover', async (req, res) => {
            (SELECT COALESCE(SUM(q.xp_reward), 0) FROM quests q WHERE q.campaign_id = c.id) AS total_xp,
            (SELECT COUNT(DISTINCT qc.user_id) FROM quest_completions qc JOIN quests q ON q.id = qc.quest_id WHERE q.campaign_id = c.id) AS participants
     FROM campaigns c JOIN projects p ON p.id = c.project_id
-    WHERE c.status = 'live' AND p.status = 'active'`;
+    WHERE c.status = 'active' AND p.status = 'active'`;
   const [featured, trending, fresh, ending, cats] = await Promise.all([
     pool.query(base + ' AND c.featured = TRUE ORDER BY c.created_at DESC LIMIT 6'),
     pool.query(base + ' ORDER BY participants DESC, c.created_at DESC LIMIT 6'),
     pool.query(base + ' ORDER BY c.created_at DESC LIMIT 6'),
     pool.query(base + ' AND c.ends_at IS NOT NULL ORDER BY c.ends_at ASC LIMIT 6'),
-    pool.query(`SELECT DISTINCT category FROM campaigns WHERE status = 'live' AND category IS NOT NULL ORDER BY category`),
+    pool.query(`SELECT DISTINCT category FROM campaigns WHERE status = 'active' AND category IS NOT NULL ORDER BY category`),
   ]);
   const card = r => ({
     id: r.id, slug: r.slug, name: r.name, description: r.description,
@@ -60,12 +60,12 @@ router.get('/search', async (req, res) => {
       `SELECT c.slug, c.name, c.category, p.name AS project_name, p.slug AS project_slug,
               (SELECT COALESCE(SUM(q.xp_reward), 0) FROM quests q WHERE q.campaign_id = c.id) AS total_xp
        FROM campaigns c JOIN projects p ON p.id = c.project_id
-       WHERE c.status = 'live' AND p.status = 'active' AND (c.name ILIKE $1 OR c.description ILIKE $1)
+       WHERE c.status = 'active' AND p.status = 'active' AND (c.name ILIKE $1 OR c.description ILIKE $1)
        ORDER BY c.name LIMIT 8`, [like]),
     pool.query(
       `SELECT q.id, q.title, q.xp_reward, c.slug AS campaign_slug, c.name AS campaign_name
        FROM quests q JOIN campaigns c ON c.id = q.campaign_id JOIN projects p ON p.id = c.project_id
-       WHERE q.status = 'published' AND c.status = 'live' AND p.status = 'active'
+       WHERE q.status = 'active' AND c.status = 'active' AND p.status = 'active'
          AND (q.title ILIKE $1 OR q.description ILIKE $1)
        ORDER BY q.title LIMIT 8`, [like]),
   ]);
@@ -85,8 +85,7 @@ router.get('/users/me', async (req, res) => {
   const me = u.rows[0];
   const lvl = await levels.userLevel(me.id);
   const pts = await pool.query(
-    `SELECT COALESCE(SUM(amount), 0) AS p FROM points_events pe
-     JOIN points_systems ps ON ps.id = pe.system_id WHERE pe.user_id = $1 AND ps.key = 'global'`, [me.id]);
+    `SELECT COALESCE(SUM(amount), 0) AS p FROM points_events WHERE user_id = $1`, [me.id]);
   const settings = await pool.query('SELECT * FROM user_settings WHERE user_id = $1', [me.id]);
   res.json({
     user: { ...me, xp: lvl.xp, level: lvl.level, next: lvl.next, points: Number(pts.rows[0].p) },
@@ -120,8 +119,8 @@ router.get('/users/:username', async (req, res) => {
   if (!u.rows.length) return res.status(404).json({ error: 'User not found' });
   const user = u.rows[0];
   const lvl = await levels.userLevel(user.id);
-  const [pts, badges, completed, activity, credentials, rank, rep, achv] = await Promise.all([
-    pool.query(`SELECT COALESCE(SUM(pe.amount), 0) AS p FROM points_events pe JOIN points_systems ps ON ps.id = pe.system_id WHERE pe.user_id = $1 AND ps.key = 'global'`, [user.id]),
+  const [pts, badges, completed, activity, credentials, rank, rep, achv, projects] = await Promise.all([
+    pool.query(`SELECT COALESCE(SUM(amount), 0) AS p FROM points_events WHERE user_id = $1`, [user.id]),
     pool.query(`SELECT b.id, b.name, b.icon, b.rarity, b.description, ub.awarded_at FROM user_badges ub JOIN badges b ON b.id = ub.badge_id WHERE ub.user_id = $1 ORDER BY ub.awarded_at DESC`, [user.id]),
     pool.query(`SELECT COUNT(*)::int AS n FROM quest_completions WHERE user_id = $1`, [user.id]),
     pool.query(`SELECT qc.completed_at, q.id AS quest_id, q.title, q.xp_reward, c.name AS campaign_name, c.slug AS campaign_slug
@@ -135,6 +134,19 @@ router.get('/users/:username', async (req, res) => {
     ) SELECT COUNT(*)::int + 1 AS r FROM totals WHERE xp > $1`, [lvl.xp]),
     reputation.breakdown(user.id),
     achievements.forUser(user.id),
+    // Per-project participation (multi-project restructure): rank is computed
+    // inside each project, so rankings are never blended across projects.
+    pool.query(
+      `WITH totals AS (
+         SELECT project_id, user_id, SUM(amount) AS xp FROM xp_events
+         WHERE project_id IS NOT NULL GROUP BY project_id, user_id
+       ), ranked AS (
+         SELECT project_id, user_id, xp, RANK() OVER (PARTITION BY project_id ORDER BY xp DESC) AS rank
+         FROM totals
+       )
+       SELECT r.project_id, r.xp::int AS xp, r.rank::int AS rank, p.name, p.slug
+       FROM ranked r JOIN projects p ON p.id = r.project_id
+       WHERE r.user_id = $1 ORDER BY r.xp DESC`, [user.id]),
   ]);
   res.json({
     user: {
@@ -149,6 +161,7 @@ router.get('/users/:username', async (req, res) => {
     leaderboard_rank: rank.rows[0].r,
     reputation: rep,
     achievements: achv,
+    projects: projects.rows,
   });
 });
 
@@ -165,11 +178,8 @@ router.get('/leaderboard', async (req, res) => {
   const offset = (page - 1) * limit;
   if (by === 'points') {
     const { rows } = await pool.query(
-      `SELECT u.username, u.display_name, u.avatar_url,
-              SUM(pe.amount) AS score
+      `SELECT u.username, u.display_name, u.avatar_url, SUM(pe.amount) AS score
        FROM points_events pe JOIN users u ON u.id = pe.user_id
-       JOIN points_systems ps ON ps.id = pe.system_id
-       WHERE ps.key = 'global'
        GROUP BY u.id ORDER BY score DESC LIMIT $1 OFFSET $2`, [limit, offset]);
     return res.json({ by, entries: rows.map(r => ({ ...r, score: Number(r.score) })) });
   }
@@ -225,8 +235,8 @@ router.patch('/notifications/prefs', async (req, res) => {
 // Campaign directory: a public list per status for the /campaigns screen.
 // The status filter is whitelist-only so the URL cannot probe drafts.
 router.get('/campaigns', async (req, res) => {
-  const status = ['live', 'scheduled', 'ended'].includes(req.query.status)
-    ? req.query.status : 'live';
+  const status = ['active', 'scheduled', 'ended', 'paused', 'draft', 'archived'].includes(req.query.status)
+    ? req.query.status : 'active';
   const { rows } = await pool.query(
     `SELECT c.id, c.slug, c.name, c.description, c.category, c.status, c.ends_at,
             p.name AS project_name, p.slug AS project_slug, p.logo_url AS project_logo,
@@ -235,7 +245,7 @@ router.get('/campaigns', async (req, res) => {
             (SELECT COUNT(DISTINCT qc.user_id) FROM quest_completions qc
               JOIN quests q2 ON q2.id = qc.quest_id WHERE q2.campaign_id = c.id)::int AS participants
      FROM campaigns c JOIN projects p ON p.id = c.project_id
-     LEFT JOIN quests q ON q.campaign_id = c.id AND q.status = 'published'
+     LEFT JOIN quests q ON q.campaign_id = c.id AND q.status = 'active'
      WHERE c.status = $1
      GROUP BY c.id, p.name, p.slug, p.logo_url
      ORDER BY c.created_at DESC`, [status]);
@@ -253,7 +263,7 @@ router.get('/campaigns/:id', async (req, res) => {
   const campaign = rows[0];
   const uid = req.user ? req.user.db_id : null;
   const [quests, totals] = await Promise.all([
-    pool.query(`SELECT id, title, description, sort_order, is_required, xp_reward, points_reward FROM quests WHERE campaign_id = $1 AND status = 'published' ORDER BY sort_order`, [campaign.id]),
+    pool.query(`SELECT id, title, slug, description, instructions, image_url, quest_type, sort_order, is_required, xp_reward, points_reward, starts_at, ends_at, status FROM quests WHERE campaign_id = $1 AND status = 'active' ORDER BY sort_order`, [campaign.id]),
     pool.query(`SELECT COALESCE(SUM(xp_reward),0) AS xp, COALESCE(SUM(points_reward),0) AS points FROM quests WHERE campaign_id = $1`, [campaign.id]),
   ]);
   // Per-viewer checklist state, all of it server-computed: completion comes
@@ -284,13 +294,17 @@ router.get('/campaigns/:id', async (req, res) => {
   });
 });
 
+// A quest is addressed by numeric id (the task flow) or by its slug (the
+// hierarchical URL). Slug is project-scoped, so a clash across projects
+// resolves to the oldest match, deterministically.
 router.get('/quests/:id', async (req, res) => {
+  const isNum = !isNaN(Number(req.params.id));
   const q = await pool.query(
     `SELECT q.*, c.name AS campaign_name, c.slug AS campaign_slug, c.id AS campaign_id,
             c.status AS campaign_status, c.ends_at AS campaign_ends_at,
             p.name AS project_name, p.slug AS project_slug, p.logo_url AS project_logo
      FROM quests q JOIN campaigns c ON c.id = q.campaign_id JOIN projects p ON p.id = c.project_id
-     WHERE q.id = $1`, [req.params.id]);
+     WHERE ${isNum ? 'q.id = $1' : 'q.slug = $1'} LIMIT 1`, [req.params.id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
   const quest = q.rows[0];
   const lock = await conditions.lockState(quest.id, req.user ? req.user.db_id : null);
