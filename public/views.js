@@ -172,7 +172,20 @@ const TASK_LABEL = {
   url_proof: 'Submit proof',
   quiz: 'Quiz',
   manual: 'Manual review',
+  on_chain: 'On-chain check',
 };
+
+// Plain-language requirement line for an on-chain task, from the allow-listed
+// public config. Chain-neutral: it names an amount and a comparison, not an
+// EVM concept.
+const OPERATOR_WORD = { gte: 'at least', gt: 'more than', lte: 'at most', lt: 'less than', eq: 'exactly' };
+function requirementLine(t) {
+  const c = t.config || {};
+  const req = c.requirement;
+  if (!req || req.amount === undefined || req.amount === '') return null;
+  const word = OPERATOR_WORD[req.operator] || 'at least';
+  return `Hold ${word} ${req.amount}`;
+}
 
 async function viewQuest(id) {
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-8 w-2/3 rounded bg-zinc-900"></div><div class="h-24 rounded-xl bg-zinc-900"></div></div>');
@@ -243,6 +256,14 @@ async function viewQuest(id) {
     const rejectLine = row.querySelector('.reject-line');
     const stateDot = row.querySelector('.task-state');
 
+    if (t.type === 'on_chain' && t.verification_status) {
+      statusLine.innerHTML = statePill(t.verification_status);
+      if (t.verification_reason && t.verification_status !== 'VERIFIED') {
+        rejectLine.innerHTML = `<p class="text-xs text-zinc-400">${escapeHtml(t.verification_reason)}</p>`;
+      }
+      if (t.verification_status === 'VERIFIED') stateDot.textContent = '✓';
+      if (t.verification_status === 'VERIFIED') { return row; }
+    }
     if (status === 'verified') { stateDot.textContent = '✓'; statusLine.innerHTML = statePill('verified'); }
     else if (status === 'pending') { statusLine.innerHTML = statePill('pending'); }
     else if (status === 'rejected') {
@@ -274,6 +295,45 @@ async function viewQuest(id) {
 
   function actionFor(t, holder) {
     holder.replaceChildren();
+    if (t.type === 'on_chain') {
+      const cfg = t.config || {};
+      const needsHash = cfg.method === 'transaction';
+      const reqLine = requirementLine(t);
+      if (reqLine) holder.appendChild(el(`<p class="text-xs text-zinc-500 mb-2">${escapeHtml(reqLine)}</p>`));
+      const hashInput = needsHash
+        ? '<input type="text" class="tx-hash w-full md:w-96 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Paste your transaction hash (0x...)">'
+        : '';
+      let el2 = el(`<div class="space-y-2">${hashInput}
+        <button class="verify-onchain w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Verify</button>
+        <div class="verify-result text-sm"></div></div>`);
+      const btn = el2.querySelector('.verify-onchain');
+      const resultEl = el2.querySelector('.verify-result');
+      btn.addEventListener('click', async () => {
+        const body = {};
+        if (needsHash) {
+          body.transaction_hash = (el2.querySelector('.tx-hash').value || '').trim();
+          if (!body.transaction_hash) return toast('Paste the transaction hash first', true);
+        }
+        btn.disabled = true; btn.textContent = 'Checking the chain…';
+        resultEl.replaceChildren();
+        try {
+          const r = await window.QuestoraAPI.api.post(`/api/v1/tasks/${t.id}/verify`, body);
+          renderVerifyResult(resultEl, r);
+          if (r.verified) { window.QuestoraAPI.api.invalidate(); toast('Verified on chain'); refreshStates(); return; }
+          // A WAITING_CONFIRMATIONS result is worth a short poll: confirmations
+          // advance on their own.
+          if (r.status === 'WAITING_CONFIRMATIONS') pollStatus(t, resultEl);
+        } catch (err) {
+          resultEl.appendChild(el(`<p class="text-sm text-amber-300">${escapeHtml(err.message)}</p>`));
+        } finally {
+          if (document.body.contains(btn)) { btn.disabled = false; btn.textContent = 'Verify'; }
+        }
+      });
+      holder.appendChild(el2);
+      // If the task already has a state, show it above the button.
+      if (t.verification_status) renderVerifyResult(resultEl, { status: t.verification_status, reason: t.verification_reason });
+      return;
+    }
     if (t.type === 'wallet_connect') {
       const b = el('<button class="connect w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Connect wallet</button>');
       b.addEventListener('click', async () => {
@@ -355,6 +415,33 @@ async function viewQuest(id) {
       } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = 'Submit for review'; }
     });
     holder.appendChild(form);
+  }
+
+  // A one-line, honest result for a Verify run. Amber for anything
+  // infrastructure-shaped, red only for a true failure, green for verified.
+  function renderVerifyResult(holder, r) {
+    holder.replaceChildren();
+    const tone = r.verified ? 'text-emerald-300' : (r.status === 'FAILED' || r.status === 'EXPIRED') ? 'text-red-300'
+      : r.status === 'INDEXING_DELAY' ? 'text-sky-300' : 'text-amber-300';
+    const bits = [];
+    if (r.confirmations !== null && r.confirmations !== undefined) bits.push(`${r.confirmations} confirmation${r.confirmations === 1 ? '' : 's'}`);
+    if (r.chain_position) bits.push(r.chain_position);
+    holder.appendChild(el(`<p class="${tone}"><span class="font-medium">${escapeHtml(r.label || r.status)}.</span> ${escapeHtml(r.reason || '')}</p>`));
+    if (bits.length) holder.appendChild(el(`<p class="text-xs text-zinc-500 mt-1">${escapeHtml(bits.join(' · '))}</p>`));
+  }
+
+  // Poll the caller's task status a few times while confirmations catch up.
+  function pollStatus(t, holder) {
+    let tries = 0;
+    const timer = setInterval(async () => {
+      tries += 1;
+      try {
+        const st = await window.QuestoraAPI.api.get(`/api/v1/tasks/${t.id}/status`);
+        renderVerifyResult(holder, st);
+        if (st.verified || st.status === 'FAILED' || st.status === 'EXPIRED') { clearInterval(timer); if (st.verified) refreshStates(); return; }
+      } catch { /* keep the last shown result */ }
+      if (tries >= 4) clearInterval(timer);
+    }, 6000);
   }
 
   for (const t of data.tasks) list.appendChild(taskRow(t));
@@ -1311,6 +1398,8 @@ async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
   for (const t of data.tasks) {
     const st = stateByTask[t.id];
     const status = st ? st.status : null;
+    const verStatus = t.type === 'on_chain' && st ? st.verification_status : null;
+    const reqLine = t.type === 'on_chain' ? requirementLine(t) : null;
     const stateCls = status === 'verified' ? 'border-emerald-400 bg-emerald-400/10'
       : status === 'pending' ? 'border-amber-400 bg-amber-400/10'
       : status === 'rejected' ? 'border-red-400 bg-red-400/10' : 'border-zinc-700';
@@ -1320,15 +1409,18 @@ async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
           <span class="task-state w-6 h-6 rounded-full border-2 ${stateCls} shrink-0 mt-0.5 flex items-center justify-center text-xs">${status === 'verified' ? '\u2713' : status === 'rejected' ? '\u2715' : ''}</span>
           <div class="min-w-0 flex-1">
             <p class="font-medium">${escapeHtml(t.title)}</p>
-            <p class="text-xs text-zinc-500">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.proof_required ? ' \u00b7 proof required' : ''}</p>
-            <div class="status-line mt-1">${status ? statePill(status) : ''}</div>
+            <p class="text-xs text-zinc-500">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.proof_required ? ' \u00b7 proof required' : ''}${reqLine ? ' \u00b7 ' + escapeHtml(reqLine) : ''}</p>
+            <div class="status-line mt-1">${verStatus ? statePill(verStatus) : (status ? statePill(status) : '')}</div>
+            ${verStatus && verStatus !== 'VERIFIED' && st.verification_reason ? `<p class="text-xs text-zinc-400 mt-1">${escapeHtml(st.verification_reason)}</p>` : ''}
             ${status === 'rejected' && st.review_note ? `<p class="text-sm text-red-300 mt-1">${escapeHtml(st.review_note)}</p>` : ''}
             <div class="action-area mt-3"></div>
           </div>
         </div>
       </div>`);
     const actionArea = row.querySelector('.action-area');
-    if (status === 'verified' || status === 'pending') {
+    if (verStatus === 'VERIFIED') {
+      actionArea.appendChild(el('<p class="text-sm text-emerald-300">This on-chain task is verified.</p>'));
+    } else if (status === 'verified' || status === 'pending') {
       actionArea.appendChild(el(`<p class="text-sm text-zinc-500">${status === 'verified' ? 'This task is verified.' : 'Your submission is awaiting review.'}</p>`));
     } else if (q.locked) {
       actionArea.appendChild(el(`<p class="text-sm text-zinc-500">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p>`));
@@ -1504,6 +1596,7 @@ async function viewDashboard(slug, section, params) {
   if (section === 'campaigns') return renderDashCampaigns(sectionEl, ctx);
   if (section.startsWith('campaigns/')) return renderDashCampaignQuests(sectionEl, ctx, section.slice('campaigns/'.length));
   if (section === 'quests') return renderDashQuests(sectionEl, ctx);
+  if (section.startsWith('tasks/')) return renderDashTaskEditor(sectionEl, ctx, decodeURIComponent(section.slice('tasks/'.length)));
   if (section === 'participants' || section === 'leaderboard') return renderDashLeaderboard(sectionEl, ctx, section);
   if (section === 'rewards') return renderDashRewards(sectionEl, ctx);
   if (section === 'analytics') return renderDashAnalytics(sectionEl, ctx);
@@ -1820,6 +1913,7 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
       const actions = [];
       actions.push({ label: 'View', run: async () => { try { const d = await window.QuestoraAPI.api.get('/api/v1/quests/' + q.id); window.history.pushState({}, '', `/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(campaign.slug)}/quests/${encodeURIComponent(d.quest.slug || q.id)}`); window.dispatchEvent(new PopStateEvent('popstate')); } catch (e) { toast(e.message, true); } } });
       actions.push({ label: 'Edit', run: () => promptEditQuest(row, q, async (body) => { await window.QuestoraAPI.api.patch(`/api/v1/quests/${q.id}`, body); toast('Quest updated'); ctx.reload(); }) });
+      actions.push({ label: 'Configure tasks', run: () => { window.history.pushState({}, '', `${ctx.base}/tasks/${q.id}`); window.dispatchEvent(new PopStateEvent('popstate')); } });
       actions.push({ label: 'Duplicate', run: async () => { try { await window.QuestoraAPI.api.post(`/api/v1/quests/${q.id}/duplicate`, {}); toast('Duplicated as a draft'); ctx.reload(); } catch (e) { toast(e.message, true); } } });
       actions.push({ label: 'Reorder', run: () => toast('Drag a row handle, or use the up and down arrows, to reorder quests.') });
       if (q.status !== 'active') actions.push({ label: 'Publish', run: () => patchQuest(q.id, { status: 'active' }) });
@@ -1885,6 +1979,263 @@ function renderDashQuests(sectionEl, ctx) {
       </a>`));
   }
   sectionEl.appendChild(list);
+}
+
+// Simple Mode task editor: create/configure an on-chain task for a quest,
+// with a network form, an RPC list and a Test connection button. Reachable at
+// /dashboard/projects/<slug>/tasks/<questId> so it can be screenshotted.
+async function renderDashTaskEditor(sectionEl, ctx, questId) {
+  const { p } = ctx;
+  const api = window.QuestoraAPI.api;
+  let questData, netData, tokData;
+  try {
+    questData = await api.get(`/api/v1/quests/${encodeURIComponent(questId)}/tasks`);
+    netData = await api.get(`/api/v1/projects/${p.id}/networks`);
+    tokData = await api.get(`/api/v1/projects/${p.id}/tokens`);
+  } catch (err) { sectionEl.appendChild(el(`<div class="rounded-xl border border-red-900/60 bg-red-950/20 p-4 text-sm text-red-300">${escapeHtml(err.message)}</div>`)); return; }
+  const quest = questData.quest;
+  const tasks = questData.tasks || [];
+  const networks = netData.networks || [];
+  const tokens = tokData.tokens || [];
+  const editing = { taskId: null };
+
+  sectionEl.appendChild(el(`
+    <div class="mb-4">
+      ${breadcrumb([{ label: 'Campaigns', href: ctx.base + '/campaigns' }, { label: 'Tasks' }])}
+      <h2 class="text-lg font-bold">Configure tasks</h2>
+      <p class="text-sm text-zinc-500">${escapeHtml(quest.title)} · ${tasks.length} task${tasks.length === 1 ? '' : 's'}</p>
+    </div>`));
+
+  const netPanel = el(`
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 mb-4">
+      <div class="flex items-center justify-between">
+        <h3 class="font-semibold">Networks</h3>
+        <span class="text-xs text-zinc-500">${networks.length} configured</span>
+      </div>
+      <div class="net-list space-y-2 mt-2"></div>
+      <details class="mt-3">
+        <summary class="cursor-pointer text-sm text-violet-300">Add a network</summary>
+        <div class="grid sm:grid-cols-2 gap-2 mt-3">
+          <input class="n-name rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Network name (e.g. Sepolia)">
+          <select class="n-family rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm">
+            <option value="eip155">EVM</option>
+            <option value="solana">Solana</option>
+            <option value="sui">Sui</option>
+            <option value="aptos">Aptos</option>
+            <option value="octra">Octra</option>
+          </select>
+          <input class="n-chainid rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Chain id (EVM only)">
+          <input class="n-symbol rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Native symbol (ETH)">
+          <input class="n-decimals rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" placeholder="Native decimals (18)">
+          <input class="n-rpc rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Primary RPC URL">
+          <input class="n-tx rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Explorer tx URL template (…/{tx})">
+          <label class="flex items-center gap-2 text-sm text-zinc-400"><input type="checkbox" class="n-testnet accent-violet-500" checked> Testnet</label>
+        </div>
+        <button class="n-add mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Add network</button>
+      </details>
+    </div>`);
+  sectionEl.appendChild(netPanel);
+  const netList = netPanel.querySelector('.net-list');
+  netPanel.querySelector('.n-add').addEventListener('click', async () => {
+    const b = {
+      name: netPanel.querySelector('.n-name').value.trim(),
+      chain_namespace: netPanel.querySelector('.n-family').value,
+      chain_id: netPanel.querySelector('.n-chainid').value.trim() || null,
+      native_symbol: netPanel.querySelector('.n-symbol').value.trim() || null,
+      native_decimals: netPanel.querySelector('.n-decimals').value.trim() || null,
+      explorer_tx_url: netPanel.querySelector('.n-tx').value.trim() || null,
+      is_testnet: netPanel.querySelector('.n-testnet').checked,
+    };
+    if (!b.name) return toast('A network name is required', true);
+    try {
+      const r = await api.post(`/api/v1/projects/${p.id}/networks`, b);
+      const rpcUrl = netPanel.querySelector('.n-rpc').value.trim();
+      if (rpcUrl) await api.post(`/api/v1/networks/${r.network.id}/rpcs`, { url: rpcUrl, is_primary: true });
+      toast('Network added'); ctx.reload();
+    } catch (err) { toast(err.message, true); }
+  });
+
+  function renderNetworks() {
+    netList.replaceChildren();
+    if (!networks.length) { netList.appendChild(el('<p class="text-sm text-zinc-600">No networks yet. Add one below.</p>')); return; }
+    for (const n of networks) {
+      const row = el(`
+        <div class="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2.5">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="font-medium">${escapeHtml(n.name)}</span>
+            <span class="text-xs text-zinc-500">${escapeHtml(n.chain_namespace)}${n.chain_id !== null ? ' · chain ' + n.chain_id : ''}${n.native_symbol ? ' · ' + escapeHtml(n.native_symbol) : ''}</span>
+            <span class="ml-auto flex items-center gap-2">
+              <button class="test-conn text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Test connection</button>
+            </span>
+          </div>
+          <div class="rpc-add flex gap-2 mt-2">
+            <input class="rpc-url flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm" placeholder="Add backup RPC URL">
+            <button class="rpc-save text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Add</button>
+          </div>
+          <div class="rpc-list mt-2 space-y-1"></div>
+          <div class="test-result text-xs mt-2"></div>
+        </div>`);
+      const rpcList = row.querySelector('.rpc-list');
+      for (const r of n.rpcs) {
+        rpcList.appendChild(el(`<p class="text-xs text-zinc-500">${r.is_primary ? 'Primary' : 'Backup'} · ${escapeHtml(r.host)} · ${escapeHtml(r.health_state)}</p>`));
+      }
+      row.querySelector('.rpc-save').addEventListener('click', async () => {
+        const url = row.querySelector('.rpc-url').value.trim();
+        if (!url) return toast('Paste an RPC URL', true);
+        try { await api.post(`/api/v1/networks/${n.id}/rpcs`, { url }); toast('Endpoint added'); ctx.reload(); }
+        catch (err) { toast(err.message, true); }
+      });
+      row.querySelector('.test-conn').addEventListener('click', async () => {
+        const out = row.querySelector('.test-result');
+        out.textContent = 'Testing…';
+        try { const r = await api.post(`/api/v1/networks/${n.id}/test`, {}); out.className = 'test-result text-xs mt-2 ' + (r.ok ? 'text-emerald-300' : 'text-amber-300'); out.textContent = r.message; }
+        catch (err) { out.className = 'test-result text-xs mt-2 text-amber-300'; out.textContent = err.message; }
+      });
+      netList.appendChild(row);
+    }
+  }
+  renderNetworks();
+
+  const tokPanel = el(`
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 mb-4">
+      <h3 class="font-semibold">Tokens</h3>
+      <p class="text-xs text-zinc-500">Used by token balance tasks. Metadata is read from the contract when possible; type it in if the read fails.</p>
+      <div class="tok-list space-y-1 mt-2"></div>
+      <details class="mt-2">
+        <summary class="cursor-pointer text-sm text-violet-300">Add a token</summary>
+        <div class="grid sm:grid-cols-2 gap-2 mt-3">
+          <select class="t-network rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm"></select>
+          <input class="t-addr rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Contract address">
+          <input class="t-symbol rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Symbol (USDX)">
+          <input class="t-decimals rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" placeholder="Decimals (18)">
+        </div>
+        <button class="t-add mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Add token</button>
+      </details>
+    </div>`);
+  sectionEl.appendChild(tokPanel);
+  const tNet = tokPanel.querySelector('.t-network');
+  for (const n of networks) tNet.appendChild(el(`<option value="${n.id}">${escapeHtml(n.name)}</option>`));
+  const tokList = tokPanel.querySelector('.tok-list');
+  if (!tokens.length) tokList.appendChild(el('<p class="text-sm text-zinc-600">No tokens yet.</p>'));
+  for (const tk of tokens) tokList.appendChild(el(`<p class="text-xs text-zinc-500">${escapeHtml(tk.symbol || tk.address || tk.contract_address)} · ${escapeHtml(String(tk.contract_address))} · ${tk.decimals === null ? 'no decimals' : tk.decimals + ' decimals'}</p>`));
+  tokPanel.querySelector('.t-add').addEventListener('click', async () => {
+    const b = {
+      network_id: Number(tNet.value), contract_address: tokPanel.querySelector('.t-addr').value.trim(),
+      symbol: tokPanel.querySelector('.t-symbol').value.trim() || null,
+      decimals: tokPanel.querySelector('.t-decimals').value.trim() || null,
+    };
+    if (!b.network_id) return toast('Add a network first', true);
+    if (!b.contract_address) return toast('A contract address is required', true);
+    try { await api.post(`/api/v1/projects/${p.id}/tokens`, b); toast('Token added'); ctx.reload(); }
+    catch (err) { toast(err.message, true); }
+  });
+
+  // The task form.
+  const form = el(`
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+      <h3 class="font-semibold task-form-title">Add an on-chain task</h3>
+      <div class="grid sm:grid-cols-2 gap-2 mt-3">
+        <input class="f-title rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Task title" value="On-chain task">
+        <select class="f-method rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm">
+          <option value="native_balance">Hold native balance</option>
+          <option value="erc20_balance">Hold token balance</option>
+          <option value="transaction">Make a transaction</option>
+        </select>
+        <select class="f-network rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm"></select>
+        <select class="f-token rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm"></select>
+        <select class="f-operator rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm">
+          <option value="gte">At least</option><option value="gt">More than</option>
+          <option value="lte">At most</option><option value="lt">Less than</option><option value="eq">Exactly</option>
+        </select>
+        <input class="f-amount rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Amount (100)">
+        <input class="f-confirmations rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Confirmations (transaction only)" value="1">
+        <input class="f-xp rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Task XP" value="0">
+        <select class="f-completion rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm">
+          <option value="one_time">One time</option><option value="daily">Daily</option>
+          <option value="weekly">Weekly</option><option value="monthly">Monthly</option>
+        </select>
+        <input class="f-attempts rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Attempt limit (optional)">
+        <input class="f-cooldown rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Cooldown seconds (0)">
+      </div>
+      <div class="flex flex-wrap gap-2 mt-3">
+        <button class="f-save font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Save task</button>
+        <button class="f-reset text-sm px-4 py-2.5 min-h-[44px] rounded-lg bg-zinc-800 text-zinc-300">Clear</button>
+      </div>
+      <div class="f-result text-sm mt-2"></div>
+    </div>`);
+  sectionEl.appendChild(form);
+  const fNet = form.querySelector('.f-network');
+  for (const n of networks) fNet.appendChild(el(`<option value="${n.id}">${escapeHtml(n.name)}</option>`));
+  const fTok = form.querySelector('.f-token');
+  function renderTokenOptions() {
+    fTok.replaceChildren();
+    fTok.appendChild(el('<option value="">No token</option>'));
+    for (const tk of tokens) fTok.appendChild(el(`<option value="${tk.id}">${escapeHtml(tk.symbol || String(tk.contract_address))}</option>`));
+  }
+  renderTokenOptions();
+  form.querySelector('.f-reset').addEventListener('click', () => { editing.taskId = null; form.querySelector('.task-form-title').textContent = 'Add an on-chain task'; form.querySelector('.f-amount').value = ''; form.querySelector('.f-result').replaceChildren(); });
+
+  form.querySelector('.f-save').addEventListener('click', async () => {
+    const method = form.querySelector('.f-method').value;
+    const config = {
+      method,
+      network_id: Number(fNet.value) || null,
+      requirement: form.querySelector('.f-amount').value.trim() ? {
+        amount: form.querySelector('.f-amount').value.trim(),
+        operator: form.querySelector('.f-operator').value,
+      } : null,
+    };
+    if (method !== 'native_balance') {
+      const tokenId = Number(fTok.value);
+      if (tokenId) config.token_id = tokenId;
+    }
+    if (method === 'transaction') config.confirmations = parseInt(form.querySelector('.f-confirmations').value, 10) || 1;
+    const body = {
+      type: 'on_chain', config,
+      title: form.querySelector('.f-title').value.trim() || 'On-chain task',
+      xp_reward: parseInt(form.querySelector('.f-xp').value, 10) || 0,
+      completion_mode: form.querySelector('.f-completion').value,
+      attempt_limit: form.querySelector('.f-attempts').value.trim() || null,
+      cooldown_seconds: parseInt(form.querySelector('.f-cooldown').value, 10) || 0,
+    };
+    const out = form.querySelector('.f-result');
+    out.className = 'f-result text-sm mt-2 text-zinc-400';
+    out.textContent = 'Saving…';
+    try {
+      if (editing.taskId) {
+        await api.patch(`/api/v1/tasks/${editing.taskId}`, {
+          title: body.title, xp_reward: body.xp_reward, completion_mode: body.completion_mode,
+          attempt_limit: body.attempt_limit, cooldown_seconds: body.cooldown_seconds, config: body.config,
+        });
+        toast('Task updated'); ctx.reload();
+      } else {
+        await api.post(`/api/v1/quests/${questId}/tasks`, body);
+        toast('Task added'); ctx.reload();
+      }
+    } catch (err) { out.className = 'f-result text-sm mt-2 text-amber-300'; out.textContent = err.message; }
+  });
+
+  // Existing tasks with a publish button.
+  const list = el('<div class="space-y-2 mt-4"></div>');
+  sectionEl.appendChild(el('<h3 class="text-sm font-medium text-zinc-500 mb-2 mt-4">Tasks on this quest</h3>'));
+  sectionEl.appendChild(list);
+  if (!tasks.length) list.appendChild(el('<p class="text-sm text-zinc-600">No tasks yet.</p>'));
+  for (const t of tasks) {
+    const row = el(`
+      <div class="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5">
+        <span class="min-w-0 flex-1">
+          <span class="block font-medium truncate">${escapeHtml(t.title)}</span>
+          <span class="block text-xs text-zinc-600">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.type === 'on_chain' && t.config.method ? ' · ' + escapeHtml(t.config.method) : ''} · ${t.xp_reward} XP</span>
+        </span>
+        ${statePill(t.verification_type === 'automatic' ? 'active' : 'draft')}
+        <button class="pub text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Publish task</button>
+      </div>`);
+    row.querySelector('.pub').addEventListener('click', async () => {
+      try { await api.post(`/api/v1/tasks/${t.id}/publish`, {}); toast('Task published'); ctx.reload(); }
+      catch (err) { toast(err.message, true); }
+    });
+    list.appendChild(row);
+  }
 }
 
 async function renderDashLeaderboard(sectionEl, ctx, which) {

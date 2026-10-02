@@ -12,6 +12,9 @@ const PRIVATE_TABLES = [
   'reward_claims',
   'audit_logs',
   'risk_signals',
+  'task_rpcs',
+  'verification_attempts',
+  'verification_logs',
 ];
 
 const SCHEMA = `
@@ -144,6 +147,14 @@ CREATE TABLE IF NOT EXISTS quest_tasks (
   sort_order INTEGER NOT NULL DEFAULT 0,
   verification_type VARCHAR(30),
   proof_required BOOLEAN NOT NULL DEFAULT FALSE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+  campaign_id INTEGER REFERENCES campaigns(id) ON DELETE CASCADE,
+  xp_reward INTEGER NOT NULL DEFAULT 0,
+  completion_mode VARCHAR(20) NOT NULL DEFAULT 'one_time',
+  max_completions INTEGER NOT NULL DEFAULT 1,
+  attempt_limit INTEGER,
+  cooldown_seconds INTEGER NOT NULL DEFAULT 0,
+  current_version_id INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS quest_tasks_quest_idx ON quest_tasks (quest_id, sort_order);
@@ -178,6 +189,9 @@ CREATE TABLE IF NOT EXISTS task_submissions (
   proof_url TEXT,
   proof_data JSONB,
   status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  verification_status VARCHAR(30),
+  task_version_id INTEGER,
+  idempotency_key VARCHAR(200),
   reviewer_id INTEGER REFERENCES users(id),
   review_note TEXT,
   reviewed_at TIMESTAMPTZ,
@@ -201,6 +215,7 @@ CREATE TABLE IF NOT EXISTS xp_events (
   amount INTEGER NOT NULL,
   source_type VARCHAR(40) NOT NULL,
   source_id INTEGER,
+  idempotency_key VARCHAR(200),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (source_type, source_id, user_id)
 );
@@ -407,6 +422,125 @@ CREATE TABLE IF NOT EXISTS team_members (
   joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (team_id, user_id)
 );
+
+-- Universal on-chain task model. These tables are chain-neutral: a version
+-- holds the builder's config, a network is one project-scoped chain identity
+-- (chain_namespace is authoritative, chain_id optional), and tokens are
+-- generic assets. No EVM-only column is mandatory.
+CREATE TABLE IF NOT EXISTS task_versions (
+  id SERIAL PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES quest_tasks(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL DEFAULT 1,
+  config JSONB NOT NULL DEFAULT '{}',
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (task_id, version)
+);
+CREATE INDEX IF NOT EXISTS task_versions_task_idx ON task_versions (task_id, version DESC);
+
+CREATE TABLE IF NOT EXISTS task_networks (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chain_namespace VARCHAR(32) NOT NULL DEFAULT 'eip155',
+  chain_id BIGINT,
+  name VARCHAR(255) NOT NULL,
+  native_symbol VARCHAR(20),
+  native_decimals INTEGER,
+  explorer_url TEXT,
+  explorer_tx_url TEXT,
+  explorer_address_url TEXT,
+  is_testnet BOOLEAN NOT NULL DEFAULT FALSE,
+  finality_model VARCHAR(40),
+  address_format VARCHAR(60),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (project_id, chain_id)
+);
+CREATE INDEX IF NOT EXISTS task_networks_project_idx ON task_networks (project_id);
+
+-- Private: an RPC URL can embed an API key.
+CREATE TABLE IF NOT EXISTS task_rpcs (
+  id SERIAL PRIMARY KEY,
+  network_id INTEGER NOT NULL REFERENCES task_networks(id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  kind VARCHAR(10) NOT NULL DEFAULT 'https',
+  priority INTEGER NOT NULL DEFAULT 0,
+  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+  credential_ref VARCHAR(60),
+  timeout_ms INTEGER NOT NULL DEFAULT 8000,
+  max_retries INTEGER NOT NULL DEFAULT 2,
+  health_state VARCHAR(20) NOT NULL DEFAULT 'unknown',
+  last_checked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS task_rpcs_network_idx ON task_rpcs (network_id, priority);
+
+CREATE TABLE IF NOT EXISTS task_tokens (
+  id SERIAL PRIMARY KEY,
+  network_id INTEGER NOT NULL REFERENCES task_networks(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  contract_address VARCHAR(128) NOT NULL,
+  token_type VARCHAR(12) NOT NULL DEFAULT 'erc20',
+  symbol VARCHAR(40),
+  name VARCHAR(255),
+  decimals INTEGER,
+  metadata_source VARCHAR(12),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (network_id, contract_address)
+);
+CREATE INDEX IF NOT EXISTS task_tokens_project_idx ON task_tokens (project_id);
+
+-- The program's completion record. Public: it is completion history and no
+-- row references the private task_rpcs table. UNIQUE(idempotency_key) is the
+-- anti-double-pay fence.
+CREATE TABLE IF NOT EXISTS task_completions (
+  id SERIAL PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES quest_tasks(id) ON DELETE CASCADE,
+  task_version_id INTEGER,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
+  quest_id INTEGER REFERENCES quests(id) ON DELETE SET NULL,
+  wallet_address VARCHAR(128),
+  chain_id BIGINT,
+  method VARCHAR(30),
+  evidence JSONB,
+  completion_period VARCHAR(20),
+  idempotency_key VARCHAR(200) NOT NULL,
+  xp_awarded INTEGER NOT NULL DEFAULT 0,
+  status VARCHAR(20) NOT NULL DEFAULT 'completed',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS task_completions_task_user_idx ON task_completions (task_id, user_id);
+
+-- Private: one row per engine run, append-only.
+CREATE TABLE IF NOT EXISTS verification_attempts (
+  id SERIAL PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES quest_tasks(id) ON DELETE CASCADE,
+  task_version_id INTEGER,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  wallet_address VARCHAR(128),
+  chain_id BIGINT,
+  method VARCHAR(30),
+  input JSONB,
+  status VARCHAR(30) NOT NULL,
+  reason TEXT,
+  evidence JSONB,
+  rpc_url_used TEXT,
+  latency_ms INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS verification_attempts_task_user_idx ON verification_attempts (task_id, user_id);
+
+-- Private: the raw RPC steps for the future debugger, never returned.
+CREATE TABLE IF NOT EXISTS verification_logs (
+  id SERIAL PRIMARY KEY,
+  attempt_id INTEGER NOT NULL REFERENCES verification_attempts(id) ON DELETE CASCADE,
+  step VARCHAR(40),
+  detail JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS verification_logs_attempt_idx ON verification_logs (attempt_id);
 `;
 
 async function migrate() {
@@ -549,6 +683,43 @@ async function migrate() {
     await client.query('CREATE UNIQUE INDEX IF NOT EXISTS quests_campaign_slug_key ON quests (campaign_id, slug)');
     // Fresh schemas lack gen_random_uuid (pgcrypto) on older servers.
     await client.query('CREATE EXTENSION IF NOT EXISTS pgcrypto').catch(() => {});
+    // On-chain task foundation (Slice 1). Columns are added idempotently so a
+    // pre-existing database converges on the same schema as a fresh one.
+    await client.query('ALTER TABLE quest_tasks ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE');
+    await client.query('ALTER TABLE quest_tasks ADD COLUMN IF NOT EXISTS campaign_id INTEGER REFERENCES campaigns(id) ON DELETE CASCADE');
+    await client.query('ALTER TABLE quest_tasks ADD COLUMN IF NOT EXISTS xp_reward INTEGER NOT NULL DEFAULT 0');
+    await client.query("ALTER TABLE quest_tasks ADD COLUMN IF NOT EXISTS completion_mode VARCHAR(20) NOT NULL DEFAULT 'one_time'");
+    await client.query('ALTER TABLE quest_tasks ADD COLUMN IF NOT EXISTS max_completions INTEGER NOT NULL DEFAULT 1');
+    await client.query('ALTER TABLE quest_tasks ADD COLUMN IF NOT EXISTS attempt_limit INTEGER');
+    await client.query('ALTER TABLE quest_tasks ADD COLUMN IF NOT EXISTS cooldown_seconds INTEGER NOT NULL DEFAULT 0');
+    await client.query('ALTER TABLE quest_tasks ADD COLUMN IF NOT EXISTS current_version_id INTEGER');
+    await client.query('ALTER TABLE task_networks ADD COLUMN IF NOT EXISTS finality_model VARCHAR(40)');
+    await client.query('ALTER TABLE task_networks ADD COLUMN IF NOT EXISTS address_format VARCHAR(60)');
+    await client.query('ALTER TABLE task_submissions ADD COLUMN IF NOT EXISTS verification_status VARCHAR(30)');
+    await client.query('ALTER TABLE task_submissions ADD COLUMN IF NOT EXISTS task_version_id INTEGER');
+    await client.query('ALTER TABLE task_submissions ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(200)');
+    await client.query('ALTER TABLE xp_events ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(200)');
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS xp_events_idempotency_key ON xp_events (idempotency_key)
+       WHERE idempotency_key IS NOT NULL`);
+    // Scope every task to its quest's project and campaign (idempotent).
+    await client.query(`
+      UPDATE quest_tasks t SET
+        quest_id = t.quest_id,
+        campaign_id = q.campaign_id,
+        project_id = c.project_id
+      FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+      WHERE t.quest_id = q.id AND (t.project_id IS NULL OR t.campaign_id IS NULL)`);
+    // Every task gets a v1 version so the engine always has an active version
+    // to read, even for tasks created before versioning existed.
+    await client.query(`
+      INSERT INTO task_versions (task_id, version, config)
+      SELECT t.id, 1, COALESCE(t.config, '{}'::jsonb) FROM quest_tasks t
+      WHERE NOT EXISTS (SELECT 1 FROM task_versions v WHERE v.task_id = t.id)
+      ON CONFLICT (task_id, version) DO NOTHING`);
+    await client.query(`
+      UPDATE quest_tasks t SET current_version_id = v.id
+      FROM task_versions v
+      WHERE v.task_id = t.id AND v.version = 1 AND t.current_version_id IS NULL`);
     for (const t of PRIVATE_TABLES) {
       await client.query(`COMMENT ON TABLE ${t} IS 'staging:private'`);
     }

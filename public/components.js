@@ -93,6 +93,18 @@ const statePill = (status) => {
     archived: 'bg-zinc-700/50 text-zinc-400',
     draft: 'bg-zinc-800 text-zinc-400',
     paused: 'bg-amber-500/15 text-amber-300',
+    // Verification enum (on-chain tasks). Amber for waiting and
+    // infrastructure, red only for a genuine failure, sky for indexing, grey
+    // for expired or not set up.
+    VERIFIED: 'bg-emerald-500/15 text-emerald-300',
+    FAILED: 'bg-red-500/15 text-red-300',
+    EXPIRED: 'bg-zinc-700/50 text-zinc-400',
+    PENDING: 'bg-amber-500/15 text-amber-300',
+    WAITING_CONFIRMATIONS: 'bg-amber-500/15 text-amber-300',
+    INDEXING_DELAY: 'bg-sky-500/15 text-sky-300',
+    RPC_UNAVAILABLE: 'bg-amber-500/15 text-amber-300',
+    MANUAL_REVIEW: 'bg-amber-500/15 text-amber-300',
+    INVALID_CONFIGURATION: 'bg-zinc-700/50 text-zinc-400',
     // Phase 3 states: seasons and the risk engine.
     active: 'bg-emerald-500/15 text-emerald-300',
     upcoming: 'bg-sky-500/15 text-sky-300',
@@ -101,8 +113,20 @@ const statePill = (status) => {
     suspicious: 'bg-red-500/15 text-red-300',
     blocked: 'bg-red-500/15 text-red-300',
   };
+  const labels = {
+    pending: 'Pending review',
+    VERIFIED: 'Verified',
+    FAILED: 'Not met',
+    EXPIRED: 'Expired',
+    PENDING: 'Pending',
+    WAITING_CONFIRMATIONS: 'Waiting for confirmations',
+    INDEXING_DELAY: 'Indexing delay',
+    RPC_UNAVAILABLE: 'Temporarily unavailable',
+    MANUAL_REVIEW: 'Manual review',
+    INVALID_CONFIGURATION: 'Not set up',
+  };
   const cls = map[status] || 'bg-zinc-800 text-zinc-400';
-  const label = status === 'pending' ? 'Pending review' : status.charAt(0).toUpperCase() + status.slice(1);
+  const label = labels[status] || (status ? status.charAt(0).toUpperCase() + status.slice(1) : '');
   return `<span class="inline-block text-xs font-medium px-2.5 py-1 rounded-full ${cls}">${label}</span>`;
 };
 

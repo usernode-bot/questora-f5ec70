@@ -80,15 +80,24 @@ async function upsertQuest(campaignId, title, extra, tasks) {
       extra.status || 'active', extra.quest_type || null, extra.starts_at || null, extra.ends_at || null]
   );
   const questId = rows[0].id;
+  const campScope = await pool.query('SELECT project_id FROM campaigns WHERE id = $1', [campaignId]);
+  const projectId = campScope.rows[0] ? campScope.rows[0].project_id : null;
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
-    await pool.query(
-      `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    const ins = await pool.query(
+      `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required,
+                                project_id, campaign_id, xp_reward, completion_mode, max_completions)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
       [questId, t.type, t.title, JSON.stringify(t.config || {}), i,
-        ['quiz', 'wallet_connect'].includes(t.type) ? 'automatic' : 'manual',
-        ['url_proof', 'manual', 'social'].includes(t.type)]
+        ['quiz', 'wallet_connect', 'on_chain'].includes(t.type) ? 'automatic' : 'manual',
+        ['url_proof', 'manual', 'social'].includes(t.type), projectId, campaignId,
+        Math.max(0, parseInt(t.xp_reward, 10) || 0), t.completion_mode || 'one_time',
+        Math.max(1, parseInt(t.max_completions, 10) || 1)]
     );
+    const ver = await pool.query(
+      `INSERT INTO task_versions (task_id, version, config) VALUES ($1, 1, $2) RETURNING id`,
+      [ins.rows[0].id, JSON.stringify(t.config || {})]);
+    await pool.query('UPDATE quest_tasks SET current_version_id = $2 WHERE id = $1', [ins.rows[0].id, ver.rows[0].id]);
   }
   await pool.query(`INSERT INTO quest_conditions (quest_id, operator, config) VALUES ($1, 'all', '{}')`, [questId]);
   if (extra.badge_key) {
@@ -517,6 +526,92 @@ async function seed() {
        VALUES ($1, $2, $3, NOW(), $4)
        ON CONFLICT (address, chain_namespace) DO NOTHING`,
       [userIds[uname], address, chain, primary]);
+  }
+
+
+  // ---- On-chain Simple Mode seed (Slice 1) ----
+  // A project-scoped EVM testnet with a public, credential-free primary RPC
+  // and one backup, plus an obviously fake ERC-20. The demo tasks are left to
+  // fail honestly when a visitor runs them (a real zero balance, or an RPC that
+  // answers but has never seen the submitted hash). History rows are seeded
+  // only against a fake demo identity, never the visitor.
+  const defiProject = projectIds['Staging demo Open DeFi'];
+  const netRes = await pool.query(
+    `INSERT INTO task_networks (project_id, chain_namespace, chain_id, name, native_symbol, native_decimals,
+       explorer_url, explorer_tx_url, explorer_address_url, is_testnet, finality_model, address_format)
+     VALUES ($1, 'eip155', 11155111, 'Staging demo Sepolia', 'ETH', 18,
+       'https://sepolia.etherscan.io', 'https://sepolia.etherscan.io/tx/{tx}',
+       'https://sepolia.etherscan.io/address/{address}', TRUE, 'n_confirmations', '0x-40-hex')
+     ON CONFLICT (project_id, chain_id) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`, [defiProject]);
+  const networkId = netRes.rows[0].id;
+  await pool.query(
+    `INSERT INTO task_rpcs (network_id, url, kind, priority, is_primary, timeout_ms, max_retries)
+     SELECT $1, 'https://ethereum-sepolia-rpc.publicnode.com', 'https', 0, TRUE, 8000, 1
+     WHERE NOT EXISTS (SELECT 1 FROM task_rpcs WHERE network_id = $1 AND is_primary)`, [networkId]);
+  await pool.query(
+    `INSERT INTO task_rpcs (network_id, url, kind, priority, is_primary, timeout_ms, max_retries)
+     SELECT $1, 'https://rpc.sepolia.org', 'https', 1, FALSE, 8000, 1
+     WHERE NOT EXISTS (SELECT 1 FROM task_rpcs WHERE network_id = $1 AND priority = 1)`, [networkId]);
+  const tokRes = await pool.query(
+    `INSERT INTO task_tokens (network_id, project_id, contract_address, token_type, symbol, name, decimals, metadata_source)
+     VALUES ($1, $2, '0x0000000000000000000000000000000000d3m0', 'erc20', 'USDX', 'Staging demo USDX', 18, 'manual')
+     ON CONFLICT (network_id, contract_address) DO UPDATE SET symbol = EXCLUDED.symbol
+     RETURNING id`, [networkId, defiProject]);
+  const tokenId = tokRes.rows[0].id;
+
+  const campOnchain = await upsertCampaign(defiProject, 'Staging demo On-Chain Basics', {
+    description: 'Staging demo campaign: Simple Mode on-chain checks (native balance and a transaction).',
+    category: 'DeFi', status: 'active', featured: false, chains: ['eip155'],
+    starts_at: new Date(Date.now() - 2 * 864e5), ends_at: new Date(Date.now() + 28 * 864e5),
+  });
+  const qNative = await upsertQuest(campOnchain, 'Staging demo Hold Sepolia ETH', {
+    description: 'Staging demo quest: verify you hold at least 0.05 Sepolia ETH automatically.',
+    xp: 60, points: 30, sort_order: 0, quest_type: 'Submission',
+  }, [
+    { type: 'on_chain', title: 'Hold at least 0.05 ETH', xp_reward: 60, config: {
+      method: 'native_balance', network_id: networkId,
+      requirement: { amount: '0.05', operator: 'gte' } } },
+  ]);
+  const qTx = await upsertQuest(campOnchain, 'Staging demo Make a Transaction', {
+    description: 'Staging demo quest: submit a Sepolia transaction hash to have it verified automatically.',
+    xp: 80, points: 40, sort_order: 1, quest_type: 'Submission',
+  }, [
+    { type: 'on_chain', title: 'Submit a confirmed transaction', xp_reward: 80, config: {
+      method: 'transaction', network_id: networkId, confirmations: 1 } },
+  ]);
+  // A public task list row for the demo token balance, for the builder demo.
+  await upsertQuest(campOnchain, 'Staging demo Hold USDX', {
+    description: 'Staging demo quest: verify a token balance automatically.',
+    xp: 50, points: 25, sort_order: 2, quest_type: 'Submission',
+  }, [
+    { type: 'on_chain', title: 'Hold at least 100 USDX', xp_reward: 50, config: {
+      method: 'erc20_balance', network_id: networkId, token_id: tokenId,
+      requirement: { amount: '100', operator: 'gte' } } },
+  ]);
+
+  // One history row against a fake identity so the dashboard has on-chain rows
+  // without fabricating the answer a visitor's own Verify will compute.
+  const netTask = (await pool.query(
+    `SELECT id, current_version_id FROM quest_tasks WHERE quest_id = $1 ORDER BY sort_order LIMIT 1`, [qNative])).rows[0];
+  if (netTask) {
+    await pool.query(
+      `INSERT INTO verification_attempts (task_id, task_version_id, user_id, wallet_address, chain_id, method,
+         input, status, reason, evidence, latency_ms)
+       VALUES ($1, $2, $3, '0x000000000000000000000000000000000000dEaD', 11155111, 'native_balance',
+         '{"wallet_address":"0x000000000000000000000000000000000000dEaD"}'::jsonb, 'VERIFIED',
+         'Balance is at least 0.05 ETH', '{"evidence":{"balance_base_units":"50000000000000000","decimals":18}}'::jsonb, 120)
+       ON CONFLICT DO NOTHING`, [netTask.id, netTask.current_version_id, userIds['staging-demo-user-1']]);
+    const demoKey = `user:${userIds['staging-demo-user-1']}:task:${netTask.id}:once`;
+    await pool.query(
+      `INSERT INTO task_completions (task_id, task_version_id, user_id, project_id, campaign_id, quest_id,
+         wallet_address, chain_id, method, evidence, completion_period, idempotency_key, xp_awarded, status)
+       VALUES ($1, $2, $3, $4, $5, $6, '0x000000000000000000000000000000000000dEaD', 11155111, 'native_balance',
+         '{"balance_base_units":"50000000000000000"}'::jsonb, 'once', $7, 0, 'completed')
+       ON CONFLICT (idempotency_key) DO NOTHING`,
+      [netTask.id, netTask.current_version_id, userIds['staging-demo-user-1'], defiProject, campOnchain, qNative, demoKey]);
+    // A backup RPC URL, so the failover path has a second endpoint. Idempotent
+    // by the (network, priority) pair above; nothing else to do here.
   }
 
   console.log('[seed] staging demo data ready');

@@ -1,9 +1,12 @@
 const express = require('express');
 const { pool } = require('../db');
 const { verifyTask } = require('../verify');
+const { adapterFor } = require('../verify/chain-adapter');
 const reward = require('../reward');
 const risk = require('../risk');
 const { lockState } = require('../conditions');
+const engine = require('../verify/engine');
+const statusMod = require('../verify/status');
 
 const router = express.Router();
 function userId(req) { return req.user.db_id; }
@@ -30,7 +33,10 @@ function rateLimited(userIdVal) {
 // All my task states for one quest: which tasks are verified/pending/rejected.
 router.get('/quests/:id/my', async (req, res) => {
   const states = await pool.query(
-    `SELECT t.id AS task_id, s.status, s.review_note, s.proof_url, s.created_at, s.reviewed_at
+    `SELECT t.id AS task_id, s.status, s.verification_status, s.review_note, s.proof_url,
+            s.created_at, s.reviewed_at,
+            (SELECT reason FROM verification_attempts a
+              WHERE a.task_id = t.id AND a.user_id = $2 ORDER BY a.created_at DESC LIMIT 1) AS verification_reason
      FROM quest_tasks t
      LEFT JOIN LATERAL (
        SELECT * FROM task_submissions s
@@ -131,6 +137,84 @@ router.post('/tasks/:id/submit', async (req, res) => {
     completion = await reward.completeQuest(task.quest_id, uid);
   }
   res.json({ submission: ins.rows[0], completion });
+});
+
+// Verify Now for an on-chain task. Separate from /submit so the one-live-
+// submission and quest-completion guards never block a re-verify after a
+// WAITING_CONFIRMATIONS result. Runs the universal engine, appends an attempt,
+// updates the participant's latest state, and pays task XP on VERIFIED.
+router.post('/tasks/:id/verify', async (req, res) => {
+  const uid = userId(req);
+  if (await blocked(uid)) return res.status(403).json({ error: 'Your account is restricted. Ask an admin to review it.' });
+  const t = await pool.query(
+    `SELECT t.*, q.status AS quest_status FROM quest_tasks t JOIN quests q ON q.id = t.quest_id WHERE t.id = $1`,
+    [req.params.id]);
+  if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
+  const task = t.rows[0];
+  if (task.type !== 'on_chain') return res.status(400).json({ error: 'This task is not verified automatically' });
+  if (task.quest_status !== 'active') return res.status(400).json({ error: 'This quest is not open' });
+
+  // A verified task cannot be re-verified into a second payment.
+  const already = await pool.query(
+    `SELECT 1 FROM task_submissions WHERE task_id = $1 AND user_id = $2 AND verification_status = 'VERIFIED' LIMIT 1`,
+    [task.id, uid]);
+  if (already.rows.length) return res.status(400).json({ error: 'This task is already verified' });
+
+  // Cooldown / attempt limit. Exhausted is a soft answer, not an error.
+  const guard = await engine.attemptGuard(task, uid);
+  if (guard) {
+    return res.status(guard.exhausted ? 429 : 429).json({
+      error: guard.reason, retry_after_seconds: guard.retryAfterSeconds || null, exhausted: !!guard.exhausted,
+    });
+  }
+
+  // No wallet on this network is a participant-side prerequisite, answered
+  // before the engine runs. Only when a chain adapter can actually verify
+  // this task: a task on a chain with no adapter still returns MANUAL_REVIEW
+  // rather than demanding a wallet. Matches the existing wallet task flow.
+  const ctx = await engine.resolveChainContext(task);
+  const adapter = ctx.network ? adapterFor(ctx.network.chain_namespace) : null;
+  const method = ctx.config && ctx.config.method;
+  if (adapter && method && adapter.supportsMethod(method)) {
+    const wallet = await engine.resolveWallet(uid, ctx.network.chain_namespace);
+    if (!wallet) return res.status(400).json({ error: 'Connect a wallet on this network first' });
+  }
+
+  const run = await engine.runVerification({ task, userId: uid, transactionHash: req.body && req.body.transaction_hash });
+  const classified = statusMod.classify(run.status);
+  res.json({
+    status: run.status, verified: run.status === 'VERIFIED', reason: run.reason,
+    tone: classified.tone, label: classified.label,
+    attempt_id: run.attemptId, completion: run.completion || null,
+    chain_position: run.result ? run.result.chainPositionLabel : null,
+    confirmations: run.result ? run.result.confirmations : null,
+    finality: run.result ? run.result.finality : null,
+    transaction_id: run.result ? run.result.transactionId : null,
+  });
+});
+
+// Poll the caller's latest verification state after WAITING_CONFIRMATIONS.
+router.get('/tasks/:id/status', async (req, res) => {
+  const uid = userId(req);
+  const t = await pool.query('SELECT id, quest_id, current_version_id FROM quest_tasks WHERE id = $1', [req.params.id]);
+  if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
+  const sub = await pool.query(
+    `SELECT status, verification_status, review_note, created_at FROM task_submissions
+     WHERE task_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1`, [t.rows[0].id, uid]);
+  const attempt = await pool.query(
+    `SELECT status, reason, evidence, created_at FROM verification_attempts
+     WHERE task_id = $1 AND user_id = $2 ORDER BY created_at DESC LIMIT 1`, [t.rows[0].id, uid]);
+  const latest = attempt.rows[0] || null;
+  const verificationStatus = (sub.rows[0] && sub.rows[0].verification_status)
+    || (latest && latest.status) || null;
+  const classified = verificationStatus ? statusMod.classify(verificationStatus) : null;
+  res.json({
+    status: verificationStatus, verified: verificationStatus === 'VERIFIED',
+    reason: (latest && latest.reason) || (sub.rows[0] && sub.rows[0].review_note) || null,
+    label: classified ? classified.label : null, tone: classified ? classified.tone : null,
+    submission_status: sub.rows[0] ? sub.rows[0].status : null,
+    attempts: attempt.rows.length, checked_at: latest ? latest.created_at : null,
+  });
 });
 
 // Quiz grading endpoint (answers come in, never out).
