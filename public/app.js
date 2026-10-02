@@ -69,28 +69,32 @@
   };
 
   // ---- nav -----------------------------------------------------------------
-  // One NAV constant drives the desktop bar and the mobile drawer, so a
-  // control cannot exist in one place and not the other.
-  const NAV = [
-    { label: 'Projects', path: '/projects', match: /^\/projects/ },
-    { label: 'Campaigns', path: '/campaigns', match: /^\/campaigns/ },
-  ];
-  const CREATE_ICON = '<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>';
-  const CHEVRON = '<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>';
+  // Destinations come from QuestoraNavMenu, one source for the desktop bar,
+  // the mobile drawer and the bottom bar, so a control cannot exist in one
+  // place and not the other.
+  const NAV = window.QuestoraNavMenu.NAV;
+  const BOTTOM_NAV = window.QuestoraNavMenu.BOTTOM_NAV;
+  const UTILITY_NAV = window.QuestoraNavMenu.UTILITY_NAV;
+  const navMatch = (dest, path) => window.QuestoraNavMenu.matchRe(dest).test(path);
 
   // One floating menu system for every header dropdown. Only one is open at a
   // time; a click anywhere outside closes it.
   const MENUS = new Map();
+  function detachMenu(trigger, menu) {
+    // Detaching also drops the panel's listeners, and removing the map entry
+    // is what lets the SAME trigger open again later. Without it the next
+    // click (or the ?menu= boot hook) would only toggle the stale entry shut.
+    MENUS.delete(trigger);
+    menu.remove();
+    trigger.setAttribute('aria-expanded', 'false');
+  }
   function closeMenus() {
-    for (const [trigger, menu] of MENUS) {
-      menu.remove();
-      trigger.setAttribute('aria-expanded', 'false');
-    }
+    for (const [trigger, menu] of Array.from(MENUS)) detachMenu(trigger, menu);
   }
   function closeMenu(trigger) {
     const menu = MENUS.get(trigger);
-    if (menu) menu.remove();
-    trigger.setAttribute('aria-expanded', 'false');
+    if (menu) detachMenu(trigger, menu);
+    else trigger.setAttribute('aria-expanded', 'false');
   }
   function togglePop(trigger, panelHtml, onOpen) {
     if (MENUS.has(trigger)) { closeMenu(trigger); return null; }
@@ -112,9 +116,12 @@
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
 
-  // Menu panel chrome, anchored under the header trigger.
-  function panel(alignClass, inner) {
-    return '<div class="absolute ' + alignClass + ' top-full mt-2 w-64 rounded-xl border border-zinc-700 bg-zinc-900 shadow-lg z-50 p-1.5">' + inner + '</div>';
+  // Menu panel chrome, anchored to the header trigger by default, or above it
+  // (placement 'top') for the bottom navigation, whose trigger sits at the
+  // foot of the screen where a downward menu would fall off it.
+  function panel(alignClass, inner, widthClass, placement) {
+    const pos = placement === 'top' ? 'bottom-full mb-2' : 'top-full mt-2';
+    return '<div class="absolute ' + alignClass + ' ' + pos + ' ' + (widthClass || 'w-64') + ' rounded-xl border border-zinc-700 bg-zinc-900 shadow-lg z-50 p-1.5">' + inner + '</div>';
   }
   let navBuilt = false;
   function buildNav() {
@@ -122,7 +129,9 @@
     desk.replaceChildren();
     for (const item of NAV) {
       const a = document.createElement('a');
-      a.href = item.path; a.textContent = item.label; a.dataset.path = item.path;
+      a.href = item.path; a.dataset.path = item.path;
+      a.className = 'px-3 py-2 rounded-lg font-medium inline-flex items-center gap-1.5';
+      a.innerHTML = window.QUI.icon(item.icon) + '<span>' + window.QUI.escapeHtml(item.label) + '</span>';
       desk.appendChild(a);
     }
     const createBtn = document.createElement('button');
@@ -132,7 +141,7 @@
     createBtn.setAttribute('aria-haspopup', 'menu');
     createBtn.setAttribute('aria-expanded', 'false');
     createBtn.className = 'px-3 py-2 rounded-lg font-medium inline-flex items-center gap-1.5 text-zinc-400 hover:text-white';
-    createBtn.innerHTML = CREATE_ICON + '<span>Create</span>';
+    createBtn.innerHTML = window.QUI.icon('add') + '<span>Create</span>' + window.QUI.icon('chevron_down', { class: 'w-4 h-4' });
     createBtn.addEventListener('click', (e) => { e.stopPropagation(); openCreateMenu(createBtn); });
     const wrap = document.createElement('span');
     wrap.className = 'relative inline-flex';
@@ -143,8 +152,8 @@
   function paintNav(path) {
     for (const el of document.querySelectorAll('#desktop-nav a')) {
       const item = NAV.find((i) => i.path === el.dataset.path);
-      const active = item && item.match.test(path);
-      el.className = 'px-3 py-2 rounded-lg font-medium ' + (active ? 'text-white bg-violet-600/20' : 'text-zinc-400 hover:text-white');
+      const active = item && navMatch(item, path);
+      el.className = 'px-3 py-2 rounded-lg font-medium inline-flex items-center gap-1.5 ' + (active ? 'text-white bg-violet-600/20' : 'text-zinc-400 hover:text-white');
     }
     const createBtn = document.getElementById('create-btn');
     if (createBtn) {
@@ -155,6 +164,7 @@
   function renderNav(path) {
     if (!navBuilt) buildNav();
     paintNav(path);
+    paintBottomNav(path);
   }
 
   // ---- Create menu ---------------------------------------------------------
@@ -178,17 +188,19 @@
       .finally(() => { manageProjectsRequest = null; });
     return manageProjectsRequest;
   }
-  function openCreateMenu(trigger) {
-    const menu = togglePop(trigger, panel('left-0', '<p class="px-3 py-2 text-xs text-zinc-500">Create</p><div class="create-list"></div>'));
+  const CREATE_KEY_ICON = { project: 'folder', campaign: 'campaign', quest: 'checklist', task: 'task_alt' };
+  function openCreateMenu(trigger, placement, alignClass) {
+    const menu = togglePop(trigger, panel(alignClass || 'left-0', '<p class="px-3 py-2 text-xs text-zinc-500">Create</p><div class="create-list"></div>', 'w-72', placement));
     if (!menu) return;
     const list = menu.querySelector('.create-list');
-    const add = (label, href, hint) => {
-      const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-800"><span class="block text-sm text-zinc-200">' + window.QUI.escapeHtml(label) + '</span>' + (hint ? '<span class="block text-xs text-zinc-500">' + window.QUI.escapeHtml(hint) + '</span>' : '') + '</button>');
+    const add = (label, href, hint, iconName) => {
+      const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-800 inline-flex items-center gap-3 text-zinc-400"><span class="min-w-0"><span class="block text-sm text-zinc-200">' + window.QUI.escapeHtml(label) + '</span>' + (hint ? '<span class="block text-xs text-zinc-500">' + window.QUI.escapeHtml(hint) + '</span>' : '') + '</span></button>');
+      b.insertAdjacentHTML('afterbegin', window.QUI.icon(iconName || 'add'));
       b.addEventListener('click', () => { closeMenu(trigger); nav(href); });
       list.appendChild(b);
     };
     const model = window.QuestoraNavMenu.createMenuItems([]);
-    add(model.project.label, model.project.href, model.project.hint);
+    add(model.project.label, model.project.href, model.project.hint, 'folder');
     const loading = window.QUI.el('<p class="px-3 py-2 text-xs text-zinc-600">Loading your projects…</p>');
     list.appendChild(loading);
     loadManageProjects().then((projects) => {
@@ -197,7 +209,7 @@
       const m = window.QuestoraNavMenu.createMenuItems(projects);
       if (m.hint) { list.appendChild(window.QUI.el('<p class="px-3 pt-1 pb-2 text-xs text-zinc-600">' + window.QUI.escapeHtml(m.hint) + '</p>')); return; }
       if (!m.needsPicker) {
-        for (const it of m.items) add(it.label, it.href, it.hint);
+        for (const it of m.items) add(it.label, it.href, it.hint, CREATE_KEY_ICON[it.key]);
         return;
       }
       renderPicker(m.projects);
@@ -209,14 +221,14 @@
       list.replaceChildren();
       list.appendChild(window.QUI.el('<p class="px-3 pt-1 pb-1 text-xs text-zinc-500">Choose a project</p>'));
       for (const p of projects) {
-        const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-800"><span class="block text-sm text-zinc-200">' + window.QUI.escapeHtml(p.name) + '</span></button>');
+        const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-800 inline-flex items-center gap-3 text-zinc-400">' + window.QUI.icon('folder') + '<span class="block text-sm text-zinc-200">' + window.QUI.escapeHtml(p.name) + '</span></button>');
         b.addEventListener('click', () => {
           list.replaceChildren();
-          const back = window.QUI.el('<button type="button" class="w-full text-left text-xs px-3 py-2 rounded-lg text-violet-300 hover:bg-zinc-800">← Back</button>');
+          const back = window.QUI.el('<button type="button" class="w-full text-left text-xs px-3 py-2 rounded-lg text-violet-300 hover:bg-zinc-800 inline-flex items-center gap-2">' + window.QUI.icon('arrow_back', { class: 'w-4 h-4' }) + '<span>Back</span></button>');
           back.addEventListener('click', () => renderPicker(projects));
           list.appendChild(back);
           list.appendChild(window.QUI.el('<p class="px-3 py-2 text-xs text-zinc-500">' + window.QUI.escapeHtml(p.name) + '</p>'));
-          for (const a of window.QuestoraNavMenu.projectActions(p)) add(a.label, a.href);
+          for (const a of window.QuestoraNavMenu.projectActions(p)) add(a.label, a.href, null, CREATE_KEY_ICON[a.key]);
         });
         list.appendChild(b);
       }
@@ -227,46 +239,61 @@
   function openAccountMenu(trigger) {
     togglePop(trigger, panel('right-0', '<div class="account-list"></div>'), (menu) => {
       const list = menu.querySelector('.account-list');
-      const put = (label, run) => {
-        const b = window.QUI.el('<button type="button" class="w-full text-left text-sm px-3 py-2.5 rounded-lg text-zinc-200 hover:bg-zinc-800">' + window.QUI.escapeHtml(label) + '</button>');
+      const put = (label, run, iconName) => {
+        const b = window.QUI.el('<button type="button" class="w-full text-left text-sm px-3 py-2.5 rounded-lg hover:bg-zinc-800 inline-flex items-center gap-3 text-zinc-400">' + window.QUI.icon(iconName) + '<span class="text-zinc-200">' + window.QUI.escapeHtml(label) + '</span></button>');
         b.addEventListener('click', () => { closeMenu(trigger); run(); });
         list.appendChild(b);
       };
-      put('Profile', () => nav('/me'));
-      put('Account Settings', () => nav('/settings'));
-      put('Connected Wallets', () => nav('/me?tab=wallets'));
-      put('My Projects', () => nav('/my-projects'));
-      if (session.isAdmin()) put('Admin', () => nav('/admin'));
+      put('Profile', () => nav('/me'), 'person');
+      put('Account Settings', () => nav('/settings'), 'settings');
+      put('Connected Wallets', () => nav('/me?tab=wallets'), 'account_balance_wallet');
+      put('My Projects', () => nav('/my-projects'), 'folder');
+      if (session.isAdmin()) put('Admin', () => nav('/admin'), 'lock');
       if (window.usernode && window.usernode.isNative) {
         list.appendChild(window.QUI.el('<div class="my-1 border-t border-zinc-800"></div>'));
-        put('Log out', () => { Promise.resolve(window.usernode.logout()).catch(() => window.QUI.toast('Could not log out', true)); });
+        put('Log out', () => { Promise.resolve(window.usernode.logout()).catch(() => window.QUI.toast('Could not log out', true)); }, 'logout');
       }
     });
   }
 
   // ---- Theme menu ----------------------------------------------------------
-  const SUN_SVG = '<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path></svg>';
-  const MOON_SVG = '<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>';
   function themeIcon() {
     const mode = window.QuestoraTheme.mode();
-    if (mode === 'system') return '<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8"></path></svg>';
-    return document.documentElement.classList.contains('dark') ? SUN_SVG : MOON_SVG;
+    if (mode === 'system') return window.QUI.icon('brightness_auto');
+    return document.documentElement.classList.contains('dark') ? window.QUI.icon('light_mode') : window.QUI.icon('dark_mode');
+  }
+  function themeLabel() {
+    const mode = window.QuestoraTheme.mode();
+    if (mode === 'system') return 'Theme';
+    return document.documentElement.classList.contains('dark') ? 'Switch to light mode' : 'Switch to dark mode';
   }
   function renderThemeButtons() {
     const btn = document.getElementById('theme-btn');
-    if (btn) btn.innerHTML = themeIcon();
+    if (btn) { btn.innerHTML = themeIcon(); window.QUI.setTooltip(btn, themeLabel()); }
+    // The drawer Theme row keeps its visible label: only the icon slot is
+    // repainted, unlike the desktop button which is icon-only.
+    const drawerIcon = document.getElementById('drawer-theme-icon');
+    if (drawerIcon) { drawerIcon.innerHTML = themeIcon(); }
+    const dbtn = document.getElementById('drawer-theme-btn');
+    if (dbtn) window.QUI.setTooltip(dbtn, themeLabel());
   }
   const THEME_OPTIONS = [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']];
+  // One renderer for the Light/Dark/System rows, shared by the desktop popover
+  // and the drawer's inline expander so the two cannot drift.
+  function themeOptionButtons(onPick) {
+    const frag = document.createDocumentFragment();
+    const current = window.QuestoraTheme.mode();
+    for (const [mode, label] of THEME_OPTIONS) {
+      const on = current === mode;
+      const b = window.QUI.el('<button type="button" data-mode="' + mode + '" class="w-full text-left text-sm px-3 py-2.5 rounded-lg flex items-center justify-between ' + (on ? 'bg-violet-600/20 text-white' : 'text-zinc-200 hover:bg-zinc-800') + '"><span>' + label + '</span>' + (on ? '<span class="text-violet-300">' + window.QUI.icon('check', { class: 'w-4 h-4' }) + '</span>' : '') + '</button>');
+      b.addEventListener('click', () => onPick(mode));
+      frag.appendChild(b);
+    }
+    return frag;
+  }
   function openThemeMenu(trigger) {
     togglePop(trigger, panel('right-0', '<div class="theme-list"></div>'), (menu) => {
-      const list = menu.querySelector('.theme-list');
-      const current = window.QuestoraTheme.mode();
-      for (const [mode, label] of THEME_OPTIONS) {
-        const on = current === mode;
-        const b = window.QUI.el('<button type="button" data-mode="' + mode + '" class="w-full text-left text-sm px-3 py-2.5 rounded-lg flex items-center justify-between ' + (on ? 'bg-violet-600/20 text-white' : 'text-zinc-200 hover:bg-zinc-800') + '"><span>' + label + '</span>' + (on ? '<span class="text-violet-300">✓</span>' : '') + '</button>');
-        b.addEventListener('click', () => { closeMenu(trigger); chooseTheme(mode); });
-        list.appendChild(b);
-      }
+      menu.querySelector('.theme-list').appendChild(themeOptionButtons((mode) => { closeMenu(trigger); chooseTheme(mode); }));
     });
   }
   function chooseTheme(mode) {
@@ -299,7 +326,7 @@
   }
   function openNotifPanel(trigger) {
     pollNotifs();
-    togglePop(trigger, panel('right-0 w-80', '<div class="notif-body"></div>'), (menu) => renderNotifBody(menu.querySelector('.notif-body'), trigger));
+    togglePop(trigger, panel('right-0', '<div class="notif-body"></div>', 'w-80 max-w-[calc(100vw-1rem)]'), (menu) => renderNotifBody(menu.querySelector('.notif-body'), trigger));
   }
   async function renderNotifBody(holder, trigger) {
     holder.replaceChildren(window.QUI.el('<p class="px-3 py-4 text-sm text-zinc-500 animate-pulse">Loading notifications…</p>'));
@@ -319,7 +346,7 @@
     } else {
       const list = window.QUI.el('<div class="max-h-80 overflow-y-auto space-y-1"></div>');
       for (const n of data.notifications) {
-        const row = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg ' + (n.read_at ? 'hover:bg-zinc-800' : 'bg-violet-600/10 hover:bg-violet-600/20') + '"><span class="block text-sm font-medium text-zinc-100">' + window.QUI.escapeHtml(n.title) + '</span><span class="block text-xs text-zinc-400">' + window.QUI.escapeHtml(n.body || '') + '</span></button>');
+        const row = window.QUI.notificationRow(n);
         row.addEventListener('click', async () => {
           closeMenu(trigger);
           try { await window.QuestoraAPI.api.post('/api/v1/notifications/' + n.id + '/read', {}); } catch (e) { /* best-effort */ }
@@ -360,10 +387,17 @@
     const label = document.getElementById('wallet-label');
     const btn = document.getElementById('wallet-btn');
     if (!label || !btn) return;
+    const iconSlot = document.getElementById('wallet-icon');
+    if (iconSlot && !iconSlot.firstChild) iconSlot.innerHTML = window.QUI.icon('account_balance_wallet');
+    // Its visible label is the accessible name (it changes with state), so bind
+    // the tooltip without forcing a fixed aria-label.
+    window.QUI.tooltip(btn);
     const { connected } = walletState();
-    if (!connected.length) { label.textContent = 'Connect wallet'; return; }
+    if (!connected.length) { label.textContent = 'Connect wallet'; window.QUI.setTooltip(btn, 'Connect wallet'); return; }
     const first = connected[0];
     label.textContent = walletShort(first.address) + (first.network ? ' · ' + first.network : '');
+    // The visible label is shortened; the tooltip carries the full address.
+    window.QUI.setTooltip(btn, first.address);
   }
   function openWalletMenu(trigger) {
     const { connected } = walletState();
@@ -371,7 +405,7 @@
       if (window.QuestoraWallets && window.QuestoraWallets.openModal) window.QuestoraWallets.openModal();
       return;
     }
-    togglePop(trigger, panel('right-0 w-72', '<div class="wallet-list"></div>'), (menu) => {
+    togglePop(trigger, panel('right-0', '<div class="wallet-list"></div>', 'w-72'), (menu) => {
       const list = menu.querySelector('.wallet-list');
       list.appendChild(window.QUI.el('<p class="px-3 py-2 text-xs text-zinc-500">Connected</p>'));
       connected.forEach((c, i) => {
@@ -460,14 +494,20 @@
     return V.viewNotFound(ctx);
   }
 
+  let lastMenuKey = null;
   async function router() {
     const path = window.location.pathname;
     const params = new URLSearchParams(window.location.search);
     const ctx = beginNav();
     if (window.QV) window.QV.__ctx = ctx;
     renderNav(path);
+    // The ?menu= boot hook opens a control once per URL. Without the guard, a
+    // dismissed drawer's history.back() would land on the same ?menu= URL and
+    // immediately reopen it.
     const menuName = params.get('menu');
-    if (menuName) openMenuByName(menuName);
+    const menuKey = menuName ? window.location.href : null;
+    if (menuName && lastMenuKey !== menuKey) openMenuByName(menuName);
+    lastMenuKey = menuKey;
     // Warm the session without blocking the first paint; the nav repaints
     // when it resolves.
     session.load();
@@ -493,27 +533,141 @@
   bindTrigger('avatar-btn-mobile', openAccountMenu);
   bindTrigger('wallet-btn', openWalletMenu);
 
-  // The mobile hamburger opens the same primary navigation as the keyboard /
-  // desktop bar would: Projects, Campaigns, Create.
-  function openMobileMenu(trigger) {
-    togglePop(trigger, panel('left-0', '<div class="mobile-list"></div>'), (menu) => {
-      const list = menu.querySelector('.mobile-list');
-      const path = window.location.pathname;
-      const put = (label, href, match) => {
-        const on = match.test(path);
-        const a = window.QUI.el('<a href="' + href + '" class="block text-sm px-3 py-2.5 rounded-lg ' + (on ? 'bg-violet-600/20 text-white' : 'text-zinc-200 hover:bg-zinc-800') + '">' + window.QUI.escapeHtml(label) + '</a>');
-        a.addEventListener('click', (e) => { e.preventDefault(); closeMenu(trigger); nav(href); });
-        list.appendChild(a);
-      };
-      put('Projects', '/projects', /^\/projects/);
-      put('Campaigns', '/campaigns', /^\/campaigns/);
-      put('Create', '/create', /^\/create/);
-      list.appendChild(window.QUI.el('<div class="my-1 border-t border-zinc-800"></div>'));
-      put('Settings', '/settings', /^\/settings/);
-      put('My Projects', '/my-projects', /^\/my-projects/);
-    });
+  // Every icon-only header control gets a tooltip and an accessible name. Text
+  // labels stay on the mobile drawer and bottom bar, so a tooltip is never the
+  // only explanation of an icon on touch.
+  for (const [id, text] of [['theme-btn', 'Theme'], ['notif-btn', 'Notifications'], ['notif-btn-mobile', 'Notifications'], ['avatar-btn', 'Profile'], ['avatar-btn-mobile', 'Profile'], ['menu-btn', 'Open navigation']]) {
+    const node = document.getElementById(id);
+    if (!node) continue;
+    if (!node.getAttribute('aria-label')) node.setAttribute('aria-label', text);
+    window.QUI.tooltip(node, node.getAttribute('aria-label') || text);
   }
+
+  // The mobile hamburger opens a proper M3 navigation drawer, not a squeezed
+  // dropdown. It slides in from the left over a dimmed backdrop, closes on
+  // item choice, backdrop tap, Escape and browser back, and highlights the
+  // current destination. Every item comes from the shared nav lists.
+  let drawerEl = null;
+  // Returns true when it dismissed a pushed history entry (i.e. it started a
+  // history.back()). A caller that is about to push a NEW location (nav) must
+  // wait for that back to land first, or the pending back would unwind the new
+  // entry and leave the visitor on the screen they came from.
+  function closeDrawer(opts) {
+    if (!drawerEl) return false;
+    const node = drawerEl;
+    drawerEl = null;
+    node.classList.add('opacity-0');
+    const panelEl = node.querySelector('.drawer-panel');
+    if (panelEl) panelEl.classList.add('-translate-x-full');
+    setTimeout(() => node.remove(), 200);
+    let wentBack = false;
+    if (drawerPushed) {
+      drawerPushed = false;
+      if (window.history.state && window.history.state.__drawer) { window.history.back(); wentBack = true; }
+    }
+    const menuBtn = document.getElementById('menu-btn');
+    if (menuBtn) { menuBtn.setAttribute('aria-expanded', 'false'); if (!(opts && opts.silent)) { try { menuBtn.focus(); } catch (e) { /* not focusable */ } } }
+    return wentBack;
+  }
+  let drawerPushed = false;
+  // Leave the drawer and go to `href`: on a phone the drawer covered the
+  // screen, so we dismiss it and come back BEFORE navigating.
+  function drawerGo(href) {
+    const wentBack = closeDrawer({ silent: true });
+    if (wentBack) window.addEventListener('popstate', () => nav(href), { once: true });
+    else nav(href);
+  }
+  function openDrawer() {
+    if (drawerEl) return;
+    const path = window.location.pathname;
+    const row = (dest, iconName) => {
+      const on = navMatch(dest, path);
+      const cls = 'flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm ' + (on ? 'bg-violet-600/20 text-white' : 'text-zinc-200 hover:bg-zinc-800');
+      return '<a href="' + dest.path + '" data-path="' + dest.path + '" data-match="' + dest.match + '" data-drawer-link="1" class="' + cls + '">' + window.QUI.icon(iconName || dest.icon) + '<span>' + window.QUI.escapeHtml(dest.label) + '</span></a>';
+    };
+    const canLogout = !!(window.usernode && window.usernode.isNative);
+    const node = window.QUI.el('<div class="fixed inset-0 z-50 transition-opacity duration-200" data-drawer>' +
+      '<div class="drawer-backdrop absolute inset-0 bg-black/60" data-drawer-backdrop></div>' +
+      '<div role="dialog" aria-modal="true" aria-label="Navigation" class="drawer-panel absolute left-0 top-0 h-full w-72 max-w-[85vw] -translate-x-full transition-transform duration-200 bg-zinc-950 border-r border-zinc-800 p-3 flex flex-col gap-1 overflow-y-auto" style="padding-bottom:calc(0.75rem + var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px)))">' +
+      '<div class="flex items-center justify-between px-2 py-1 mb-1"><a href="/" data-drawer-link="1" class="font-bold text-lg text-violet-400">Questora</a><button type="button" class="drawer-close ' + window.QUI.BTN_ICON + '" aria-label="Close navigation">' + window.QUI.icon('close') + '</button></div>' +
+      NAV.map((d) => row(d, d.icon)).join('') +
+      '<button type="button" data-drawer-create="1" class="flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm text-zinc-200 hover:bg-zinc-800 text-left">' + window.QUI.icon('add') + '<span>Create</span></button>' +
+      '<div class="my-2 border-t border-zinc-800"></div>' +
+      UTILITY_NAV.map((d) => row(d, d.icon)).join('') +
+      '<button type="button" id="drawer-theme-btn" data-drawer-theme="1" class="flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm text-zinc-200 hover:bg-zinc-800 text-left"><span id="drawer-theme-icon" class="inline-flex">' + window.QUI.icon('brightness_auto') + '</span><span>Theme</span></button>' +
+      '<div id="drawer-theme-options" class="pl-9 pr-1 space-y-0.5"></div>' +
+      (canLogout ? '<div class="my-2 border-t border-zinc-800"></div><button type="button" data-drawer-logout="1" class="flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm text-zinc-200 hover:bg-zinc-800 text-left">' + window.QUI.icon('logout') + '<span>Log out</span></button>' : '') +
+      '</div></div>');
+    document.body.appendChild(node);
+    drawerEl = node;
+    requestAnimationFrame(() => {
+      node.classList.remove('opacity-0');
+      const panelEl = node.querySelector('.drawer-panel');
+      if (panelEl) panelEl.classList.remove('-translate-x-full');
+    });
+    const setStatus = document.getElementById('menu-btn');
+    if (setStatus) setStatus.setAttribute('aria-expanded', 'true');
+    renderThemeButtons();
+    node.querySelector('.drawer-close').addEventListener('click', closeDrawer);
+    node.querySelector('[data-drawer-backdrop]').addEventListener('click', closeDrawer);
+    for (const a of node.querySelectorAll('a[data-drawer-link]')) {
+      a.addEventListener('click', (e) => { e.preventDefault(); drawerGo(a.getAttribute('href')); });
+    }
+    const createBtn = node.querySelector('[data-drawer-create]');
+    if (createBtn) createBtn.addEventListener('click', () => drawerGo('/create'));
+    // The drawer Theme row expands its options inline. A popover anchored to
+    // the row would open below the full-height drawer panel, off-screen.
+    const themeBtn = node.querySelector('[data-drawer-theme]');
+    const themeSlot = node.querySelector('#drawer-theme-options');
+    if (themeBtn && themeSlot) themeBtn.addEventListener('click', () => {
+      if (themeSlot.childElementCount) { themeSlot.replaceChildren(); themeBtn.setAttribute('aria-expanded', 'false'); return; }
+      themeSlot.appendChild(themeOptionButtons((mode) => { chooseTheme(mode); themeSlot.replaceChildren(); themeBtn.setAttribute('aria-expanded', 'false'); }));
+      themeBtn.setAttribute('aria-expanded', 'true');
+    });
+    const logoutBtn = node.querySelector('[data-drawer-logout]');
+    if (logoutBtn) logoutBtn.addEventListener('click', () => { closeDrawer(); Promise.resolve(window.usernode.logout()).catch(() => window.QUI.toast('Could not log out', true)); });
+    if (!drawerPushed) { drawerPushed = true; try { window.history.pushState({ __drawer: 1 }, '', window.location.href); } catch (e) { drawerPushed = false; } }
+    try { const first = node.querySelector('.drawer-close'); if (first) first.focus(); } catch (e) { /* not focusable */ }
+  }
+  // Exposed so the ?menu=mobile boot hook and the dapp.json test can reach it.
+  function openMobileMenu() { openDrawer(); }
   bindTrigger('menu-btn', openMobileMenu);
+
+  // ---- Mobile bottom navigation --------------------------------------------
+  // A fixed bar on phones with the four high-frequency destinations. Create
+  // opens the same Create menu as the desktop button; active state uses the
+  // same match rules as the desktop bar, so the three surfaces cannot drift.
+  let bottomNavBuilt = false;
+  function buildBottomNav() {
+    const bar = document.getElementById('bottom-nav');
+    if (!bar) return;
+    bar.replaceChildren();
+    for (const dest of BOTTOM_NAV) {
+      const isCreate = dest.path === '/create';
+      const tag = isCreate ? 'button' : 'a';
+      const node = document.createElement(tag);
+      if (isCreate) { node.type = 'button'; node.setAttribute('aria-haspopup', 'menu'); node.setAttribute('aria-expanded', 'false'); }
+      else node.href = dest.path;
+      node.dataset.path = dest.path;
+      node.dataset.match = dest.match;
+      node.className = 'bottomnav-item flex flex-col items-center justify-center gap-0.5 flex-1 min-h-[56px] px-1 text-[11px] ' + (isCreate ? '' : '');
+      node.innerHTML = window.QUI.icon(dest.icon) + '<span class="leading-none">' + window.QUI.escapeHtml(dest.label) + '</span>';
+      // Centred above the bar so a w-72 panel stays inside a narrow phone.
+      if (isCreate) node.addEventListener('click', (e) => { e.stopPropagation(); openCreateMenu(node, 'top', 'left-1/2 -translate-x-1/2'); });
+      bar.appendChild(node);
+    }
+    bottomNavBuilt = true;
+  }
+  function paintBottomNav(path) {
+    if (!bottomNavBuilt) buildBottomNav();
+    for (const el of document.querySelectorAll('#bottom-nav [data-path]')) {
+      const dest = BOTTOM_NAV.find((d) => d.path === el.dataset.path);
+      const active = dest && navMatch(dest, path);
+      el.classList.toggle('text-violet-400', !!active);
+      el.classList.toggle('text-zinc-400', !active);
+      if (active) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
+    }
+  }
 
   // A URL can open one header menu at boot (?menu=account|theme|create|
   // notifications|wallet|mobile). It is a pure UI state link: no writes, the
@@ -541,10 +695,14 @@
   function renderAvatar() {
     const u = session.data && session.data.user;
     const initials = u ? String(u.display_name || u.username || '?').slice(0, 2).toUpperCase() : '?';
-    for (const id of ['avatar-initials', 'avatar-btn-mobile']) {
-      const e = document.getElementById(id);
-      if (e) e.textContent = initials;
+    const avatarUrl = u && u.avatar_url ? String(u.avatar_url) : '';
+    const initialsEl = document.getElementById('avatar-initials');
+    if (initialsEl) {
+      if (avatarUrl) initialsEl.innerHTML = '<img src="' + window.QUI.escapeHtml(avatarUrl) + '" alt="" class="w-8 h-8 rounded-full object-cover">';
+      else initialsEl.textContent = initials;
     }
+    const mobileEl = document.getElementById('avatar-btn-mobile');
+    if (mobileEl) mobileEl.textContent = initials;
     renderWalletButton();
     // Adopt a synced theme once, only when this device has no local pick, so
     // paint has already happened and nothing is blocked.
@@ -567,7 +725,7 @@
     router();
   }
 
-  window.addEventListener('popstate', router);
+  window.addEventListener('popstate', () => { closeDrawer(); router(); });
   document.addEventListener('click', (e) => {
     const a = e.target.closest('a');
     if (!a) return;
@@ -576,6 +734,9 @@
     e.preventDefault();
     nav(href);
   });
+
+  // Escape closes the drawer before it closes any header menu.
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawerEl) { e.stopPropagation(); closeDrawer(); } }, true);
 
   // Views call this after a write to refresh the session-backed nav.
   window.QuestoraNav = { go: nav, refresh: router, invalidateSession: () => session.invalidate(), themeChanged: renderThemeButtons };

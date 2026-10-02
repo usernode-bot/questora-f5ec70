@@ -207,6 +207,94 @@ function dangerZone() {
   </div>`);
 }
 
-return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState, dangerZone };
+
+
+// ---- buttons ---------------------------------------------------------------
+// One place for the button look, so header menus, dashboard actions and the
+// wallet UI share it. Whole class literals only: Tailwind reads these as text.
+var BTN_PRIMARY = 'inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed';
+var BTN_SECONDARY = 'inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 py-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed';
+var BTN_ICON = 'inline-flex items-center justify-center min-w-[44px] min-h-[44px] p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800';
+
+// ---- tooltip ---------------------------------------------------------------
+// One floating tooltip for icon-only controls. Shows after a short hover delay,
+// immediately on keyboard focus, hides on leave/blur/Escape, and clamps inside
+// the viewport. pointer-events: none so it never blocks the control it labels.
+var tipEl = null;
+var tipTimer = null;
+function hideTooltip() {
+  if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
+  if (tipEl) { tipEl.remove(); tipEl = null; }
+}
+function showTooltip(trigger, text, placement) {
+  hideTooltip();
+  if (!text) return;
+  var rect = trigger.getBoundingClientRect();
+  var node = document.createElement('div');
+  node.setAttribute('role', 'tooltip');
+  node.className = 'fixed z-[60] pointer-events-none px-2.5 py-1.5 rounded-lg bg-zinc-800 text-zinc-100 border border-zinc-700 text-xs font-medium shadow-lg max-w-[220px]';
+  node.textContent = text;
+  document.body.appendChild(node);
+  var w = node.offsetWidth, h = node.offsetHeight;
+  var above = placement === 'bottom' ? false : true;
+  var top = above ? rect.top - h - 8 : rect.bottom + 8;
+  var left = rect.left + rect.width / 2 - w / 2;
+  if (left < 8) left = 8;
+  if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
+  if (top < 8) { top = rect.bottom + 8; above = false; }
+  if (top + h > window.innerHeight - 8) top = rect.top - h - 8;
+  node.style.top = Math.round(top) + 'px';
+  node.style.left = Math.round(left) + 'px';
+  tipEl = node;
+}
+function tooltip(trigger, text) {
+  if (!trigger || trigger.dataset.tooltipBound) return trigger;
+  trigger.dataset.tooltipBound = '1';
+  if (text) trigger.setAttribute('aria-label', trigger.getAttribute('aria-label') || text);
+  function label() { return trigger.dataset.tooltipText || text || trigger.getAttribute('aria-label') || ''; }
+  trigger.addEventListener('pointerenter', function () {
+    tipTimer = setTimeout(function () { showTooltip(trigger, label()); }, 400);
+  });
+  trigger.addEventListener('pointerleave', hideTooltip);
+  trigger.addEventListener('focus', function () { showTooltip(trigger, label()); });
+  trigger.addEventListener('blur', hideTooltip);
+  trigger.addEventListener('click', hideTooltip);
+  return trigger;
+}
+function setTooltip(trigger, text) { if (trigger) trigger.dataset.tooltipText = text || ''; }
+
+// ---- notifications ---------------------------------------------------------
+// The notification row markup, shared by the header panel and the full
+// Notifications page so the two cannot drift.
+function notificationRow(n, opts) {
+  opts = opts || {};
+  var nrm = opts.full ? '' : 'rounded-lg hover:bg-zinc-800';
+  var cls = opts.full
+    ? 'block rounded-xl border ' + (n.read_at ? 'border-zinc-800' : 'border-violet-500/40') + ' bg-zinc-900/60 px-4 py-3'
+    : 'w-full text-left px-3 py-2.5 rounded-lg ' + (n.read_at ? 'hover:bg-zinc-800' : 'bg-violet-600/10 hover:bg-violet-600/20');
+  var tag = (opts.full && n.link) ? 'a' : (opts.full ? 'div' : 'button');
+  var attrs = tag === 'a' ? ' href="' + escapeHtml(n.link) + '"' : (tag === 'button' ? ' type="button"' : '');
+  var node = el('<' + tag + attrs + ' class="' + cls + '"><span class="block text-sm font-medium text-zinc-100">' + escapeHtml(n.title) + '</span><span class="block text-xs text-zinc-400 mt-0.5">' + escapeHtml(n.body || '') + '</span></' + tag + '>');
+  node.dataset.notifId = n.id;
+  return node;
+}
+
+// The notification kinds a user can mute. One list for the panel and Settings.
+var NOTIF_KINDS = [
+  ['quest_completed', 'Quest completed'],
+  ['badge_earned', 'Badge earned'],
+  ['level_up', 'Level up'],
+  ['submission_rejected', 'Submission rejected'],
+  ['campaign_completed', 'Campaign completed'],
+  ['credential_earned', 'Credential issued'],
+  ['referral_qualified', 'Invite qualified'],
+];
+
+// icons.js loads before this file and owns the glyphs; capture its factory
+// now, before the module's return value replaces window.QUI, so the shared
+// `icon` export is that factory rather than a call back into itself.
+var icon = (window.QUI && window.QUI.icon) ? window.QUI.icon : function () { return ''; };
+
+return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState, dangerZone, icon, tooltip, setTooltip, hideTooltip, notificationRow, NOTIF_KINDS, BTN_PRIMARY, BTN_SECONDARY, BTN_ICON };
 
 })();

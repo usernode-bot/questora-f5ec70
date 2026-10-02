@@ -6,7 +6,7 @@
 (function () {
   const QW = window.QW;
   const W = () => window.QuestoraWallets;
-  const { el, escapeHtml: esc, toast } = window.QUI;
+  const { el, escapeHtml: esc, toast, icon, BTN_SECONDARY, BTN_ICON } = window.QUI;
   const isMobile = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 
   const PILL = {
@@ -17,8 +17,9 @@
     bad: 'bg-red-500/15 text-red-300',
   };
   const pill = (text, tone) => `<span class="inline-block text-xs font-medium px-2 py-0.5 rounded-full ${PILL[tone || 'mute']}">${esc(text)}</span>`;
-  const BTN = 'px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-100 disabled:opacity-50 disabled:cursor-not-allowed';
-  const LINK_BTN = 'inline-flex items-center px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-100';
+  // Shared with the rest of the app via QUI, so the wallet UI cannot drift.
+  const BTN = BTN_SECONDARY;
+  const LINK_BTN = BTN_SECONDARY;
   const short = (a) => (a.length > 18 ? a.slice(0, 8) + '…' + a.slice(-6) : a);
   const ecoOf = (rec) => W().ECOSYSTEMS.find((e) => e.ns === rec.chain_namespace);
   const connectorOf = (id) => QW.connectors[id];
@@ -94,7 +95,7 @@
       input.addEventListener('blur', () => finish(true));
     });
     add('Copy', BTN, () => copy(rec.address));
-    const ex = el(`<a class="${LINK_BTN}" href="${esc(c.explorer(rec.address))}" target="_blank" rel="noopener">Explorer</a>`);
+    const ex = el(`<a class="${LINK_BTN}" href="${esc(c.explorer(rec.address))}" target="_blank" rel="noopener">${icon('open_in_new', { class: 'w-4 h-4' })}<span>Explorer</span></a>`);
     acts.appendChild(ex);
     add('Disconnect', BTN + ' !text-red-300', () => guard(W().disconnectRecord(rec.id), 'Address disconnected'));
     return row;
@@ -179,7 +180,7 @@
     const overlay = el(`<div class="wallet-ui fixed inset-0 z-50 bg-black/60 flex items-end md:items-center justify-center" data-wallet-modal>
       <div role="dialog" aria-modal="true" aria-labelledby="wallet-modal-title" class="w-full md:max-w-xl max-h-[90vh] overflow-y-auto rounded-t-2xl md:rounded-2xl bg-zinc-900 border border-zinc-800 p-5" style="padding-bottom:calc(1.25rem + var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px)))">
         <div class="flex items-center justify-between gap-3 mb-1"><h2 id="wallet-modal-title" class="text-lg font-semibold">Connect wallet</h2>
-          <button class="close ${BTN}" aria-label="Close">Close</button></div>
+          <button class="close ${BTN_ICON}" aria-label="Close">${icon('close')}</button></div>
         <p class="text-sm text-zinc-400 mb-4">Choose a network, then a wallet. You sign one message to prove you own the address.</p>
         <div class="body space-y-6"></div></div></div>`);
     const dialog = overlay.firstElementChild;
@@ -269,7 +270,7 @@
         const note = el(`<div class="text-sm text-zinc-400"><p>Questora has not detected ${/^[AEIOU]/i.test(e.label) ? 'an' : 'a'} ${esc(e.label)} wallet in this browser yet. Wallets can take a moment to register. You can install one, open Questora inside a wallet app, or check again.</p>
           <div class="mt-2 flex flex-wrap gap-2"><button class="retry ${BTN}">Retry detection</button></div></div>`);
         if (e.id === 'octra') {
-          const cp = el(`<button class="${BTN}">Copy link for the 0xio browser</button>`);
+          const cp = el(`<button class="${BTN}">${icon('content_copy', { class: 'w-4 h-4' })}<span>Copy link for the 0xio browser</span></button>`);
           cp.addEventListener('click', () => { const l = QW.deepLinkBase(); if (navigator.clipboard) navigator.clipboard.writeText(l).then(() => toast('Link copied. Open it in the 0xio app browser.'), () => toast('Could not copy the link', true)); });
           note.querySelector('.flex').appendChild(cp);
         }

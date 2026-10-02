@@ -109,21 +109,22 @@
       <nav class="flex items-center gap-1 text-sm" id="desktop-nav"></nav>
       <div class="ml-auto flex items-center gap-2">
         <div class="relative" id="theme-holder">
-          <button id="theme-btn" class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Theme" aria-haspopup="menu" aria-expanded="false"></button>
+          <button id="theme-btn" class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Theme" aria-haspopup="menu" aria-expanded="false"></button>
         </div>
         <div class="relative" id="notif-holder-desktop">
-          <button id="notif-btn" class="relative p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Notifications" aria-haspopup="menu" aria-expanded="false">
+          <button id="notif-btn" class="relative min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Notifications" aria-haspopup="menu" aria-expanded="false">
             <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 0 0-6 6c0 2.1-.6 3.6-1.3 4.6-.3.5 0 1.4.7 1.4h13.2c.7 0 1-.9.7-1.4C16.6 11.6 16 10.1 16 8a6 6 0 0 0-6-6ZM8 16a2 2 0 1 0 4 0H8Z"/></svg>
             <span id="notif-badge" class="hidden absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-violet-600 text-white text-[10px] font-bold flex items-center justify-center"></span>
           </button>
         </div>
         <div class="relative" id="wallet-holder">
-          <button id="wallet-btn" class="text-sm font-medium px-3 py-2 rounded-lg border border-violet-500/40 text-violet-200 hover:bg-violet-600/20" aria-haspopup="menu" aria-expanded="false">
+          <button id="wallet-btn" class="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 min-h-[44px] rounded-lg border border-violet-500/40 text-violet-200 hover:bg-violet-600/20" aria-haspopup="menu" aria-expanded="false">
+            <span id="wallet-icon" class="inline-flex"></span>
             <span id="wallet-label">Connect wallet</span>
           </button>
         </div>
         <div class="relative" id="avatar-holder-desktop">
-          <button id="avatar-btn" class="flex items-center gap-2 p-1 rounded-full hover:bg-zinc-800" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">
+          <button id="avatar-btn" class="min-w-[44px] min-h-[44px] flex items-center justify-center gap-2 p-1 rounded-full hover:bg-zinc-800" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">
             <span id="avatar-initials" class="w-8 h-8 rounded-full bg-violet-600/30 text-violet-200 text-xs font-bold flex items-center justify-center">?</span>
           </button>
         </div>
@@ -148,7 +149,7 @@
           </button>
         </div>
         <div class="relative" id="avatar-holder-mobile">
-          <button id="avatar-btn-mobile" class="w-9 h-9 rounded-full bg-violet-600/30 text-violet-200 text-xs font-bold flex items-center justify-center" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">?</button>
+          <button id="avatar-btn-mobile" class="min-w-[44px] min-h-[44px] rounded-full bg-violet-600/30 text-violet-200 text-xs font-bold flex items-center justify-center" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">?</button>
         </div>
       </div>
     </div>
@@ -156,9 +157,14 @@
 
   <main id="app" class="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-20 pb-24 md:pb-12" style="padding-bottom:calc(6rem + var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px)))"></main>
 
+  <!-- Mobile bottom navigation: four high-frequency destinations. Create
+       opens the same Create menu as the desktop button. -->
+  <nav id="bottom-nav" aria-label="Primary" class="md:hidden fixed bottom-0 inset-x-0 z-40 bg-zinc-950/95 backdrop-blur border-t border-zinc-800 flex items-stretch" style="padding-bottom:var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px))"></nav>
+
   <div id="toast-holder"></div>
 
   <script src="/api.js"></script>
+  <script src="/icons.js"></script>
   <script src="/components.js"></script>
   <script src="/wallets/registry.js"></script>
   <script src="/wallets/connectors.js"></script>

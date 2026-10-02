@@ -50,3 +50,19 @@ html.light .wallet-ui .text-amber-100, html.light .wallet-ui .text-amber-300 { c
 html.light .wallet-ui .text-red-200, html.light .wallet-ui .text-red-300 { color: #b91c1c; }
 html.light .wallet-ui .text-emerald-300 { color: #047857; }
 html.light .wallet-ui .text-sky-300 { color: #0369a1; }
+
+/* Visible keyboard focus. Inputs set focus:outline-none with only a border
+ * change, and buttons/links had no focus style at all, so a keyboard user
+ * could not see where they were. focus-visible keeps it off for mouse/tap. */
+@layer base {
+  a:focus-visible,
+  button:focus-visible,
+  summary:focus-visible,
+  [role="button"]:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid #8b5cf6;
+    outline-offset: 2px;
+  }
+}

@@ -246,6 +246,28 @@
       ]
     },
     {
+      "id": "nav.mobile-drawer",
+      "name": "Mobile navigation drawer opens from the hamburger",
+      "path": "/?menu=mobile",
+      "expectSelector": "[data-drawer] button[aria-label=\"Close navigation\"]",
+      "expectText": "Connected Wallets",
+      "visual": true,
+      "impact": [
+        "public/**"
+      ]
+    },
+    {
+      "id": "nav.bottom-bar",
+      "name": "Mobile bottom navigation shows the four destinations",
+      "path": "/",
+      "expectSelector": "#bottom-nav a[href=\"/campaigns\"]",
+      "expectText": "Campaigns",
+      "visual": true,
+      "impact": [
+        "public/**"
+      ]
+    },
+    {
       "id": "nav.create-menu",
       "name": "Create menu offers Project to a visitor with no project",
       "path": "/?menu=create",
