@@ -12,48 +12,84 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Light theme. The app is dark-first: every screen is written in zinc
- * utilities that assume a dark surface. Rather than rewriting them, the
- * light theme remaps exactly those utilities when <html class="light">.
- * The theme bootstrap in public/index.html owns the dark/light class.
- * Every selector here mirrors a class that actually appears in public/*.js,
- * so the build only emits these overrides for classes in use.
+/* ---- Semantic design tokens -------------------------------------------
+ * Every colour in the app resolves through one of these variables, so a
+ * theme is a change of values, not of markup. The app is dark-first, so
+ * `:root` holds the dark palette and `html.light` overrides it; the theme
+ * bootstrap in public/index.html owns the dark/light class on <html>.
+ *
+ * Values are declared as space-separated RGB channel triplets so Tailwind's
+ * `/opacity` modifier keeps working (the config wires each family to
+ * `rgb(var(--q-…) / <alpha-value>)`). Every token is tuned against measured
+ * WCAG ratios: normal text clears 4.5:1 on every surface tier it is used on,
+ * icons and control borders clear 3:1. tests/unit.test.js parses this block
+ * and re-checks those ratios, so an edit that dims a token fails CI.
  */
-html.light .bg-zinc-950 { background-color: #fafafa; }
-html.light .bg-zinc-950\/90 { background-color: rgba(250, 250, 250, 0.9); }
-html.light .bg-zinc-950\/95 { background-color: rgba(250, 250, 250, 0.95); }
-html.light .bg-zinc-900 { background-color: #ffffff; }
-html.light .bg-zinc-900\/60 { background-color: #ffffff; }
-html.light .bg-zinc-900\/40 { background-color: rgba(255, 255, 255, 0.7); }
-html.light .bg-zinc-900\/30 { background-color: rgba(255, 255, 255, 0.55); }
-html.light .bg-zinc-800 { background-color: #f4f4f5; }
-html.light .bg-zinc-800\/70 { background-color: #f4f4f5; }
-html.light .bg-zinc-800\/60 { background-color: #f4f4f5; }
-html.light .bg-zinc-800\/50 { background-color: #f4f4f5; }
-html.light .bg-zinc-700\/50 { background-color: #e4e4e7; }
-html.light .hover\:bg-zinc-900:hover { background-color: #f4f4f5; }
-html.light .hover\:bg-zinc-800:hover { background-color: #e4e4e7; }
-html.light .hover\:bg-zinc-700:hover { background-color: #d4d4d8; }
-html.light .border-zinc-800 { border-color: #e4e4e7; }
-html.light .border-zinc-700 { border-color: #d4d4d8; }
-html.light .text-zinc-100 { color: #18181b; }
-html.light .text-zinc-200 { color: #27272a; }
-html.light .text-zinc-300 { color: #3f3f46; }
-html.light .text-zinc-400 { color: #52525b; }
-html.light .text-zinc-500 { color: #71717a; }
-html.light .text-zinc-600 { color: #a1a1aa; }
-html.light .placeholder\:text-zinc-600::placeholder { color: #a1a1aa; }
-/* Wallet UI tints (public/wallets/ui.js). The accent text colours there are
- * written for a dark surface; on the light theme they are darkened, scoped to
- * the wallet UI so no existing screen changes. */
-html.light .wallet-ui .text-amber-100, html.light .wallet-ui .text-amber-300 { color: #92400e; }
-html.light .wallet-ui .text-red-200, html.light .wallet-ui .text-red-300 { color: #b91c1c; }
-html.light .wallet-ui .text-emerald-300 { color: #047857; }
-html.light .wallet-ui .text-sky-300 { color: #0369a1; }
+:root {
+  --q-background: 11 11 15;
+  --q-surface: 18 19 24;
+  --q-surface-container: 24 25 32;
+  --q-surface-container-high: 32 33 39;
+  --q-surface-container-highest: 41 42 49;
+  --q-text-primary: 245 245 247;
+  --q-text-secondary: 196 199 208;
+  --q-text-tertiary: 165 168 178;
+  --q-text-disabled: 126 132 148;
+  --q-border: 86 91 104;
+  --q-border-subtle: 58 60 69;
+  --q-border-strong: 110 116 132;
+  --q-icon-primary: 233 234 240;
+  --q-icon-secondary: 185 188 198;
+  --q-accent: 124 58 237;
+  --q-accent-hover: 139 92 246;
+  --q-accent-active: 109 40 217;
+  --q-accent-text: 196 181 253;
+  --q-accent-contrast: 255 255 255;
+  --q-success: 110 231 183;
+  --q-success-bg: 18 38 31;
+  --q-warning: 252 211 77;
+  --q-warning-bg: 46 36 17;
+  --q-error: 252 165 165;
+  --q-error-bg: 44 23 25;
+  --q-info: 125 211 252;
+  --q-info-bg: 15 36 49;
+}
+
+html.light {
+  --q-background: 250 250 250;
+  --q-surface: 255 255 255;
+  --q-surface-container: 244 244 245;
+  --q-surface-container-high: 233 233 236;
+  --q-surface-container-highest: 222 222 227;
+  --q-text-primary: 24 24 27;
+  --q-text-secondary: 63 63 70;
+  --q-text-tertiary: 82 82 91;
+  --q-text-disabled: 161 161 170;
+  --q-border: 199 199 204;
+  --q-border-subtle: 228 228 231;
+  --q-border-strong: 130 130 140;
+  --q-icon-primary: 39 39 42;
+  --q-icon-secondary: 82 82 91;
+  --q-accent: 124 58 237;
+  --q-accent-hover: 109 40 217;
+  --q-accent-active: 91 33 182;
+  --q-accent-text: 109 40 217;
+  --q-accent-contrast: 255 255 255;
+  --q-success: 6 95 70;
+  --q-success-bg: 231 245 239;
+  --q-warning: 146 64 14;
+  --q-warning-bg: 252 239 217;
+  --q-error: 153 27 27;
+  --q-error-bg: 252 233 233;
+  --q-info: 7 89 133;
+  --q-info-bg: 228 242 251;
+}
 
 /* Visible keyboard focus. Inputs set focus:outline-none with only a border
  * change, and buttons/links had no focus style at all, so a keyboard user
- * could not see where they were. focus-visible keeps it off for mouse/tap. */
+ * could not see where they were. focus-visible keeps it off for mouse/tap.
+ * The outline colour is the theme's accent-hover, which clears 3:1 even on
+ * the highest surface tier in both themes. */
 @layer base {
   a:focus-visible,
   button:focus-visible,
@@ -62,7 +98,7 @@ html.light .wallet-ui .text-sky-300 { color: #0369a1; }
   input:focus-visible,
   select:focus-visible,
   textarea:focus-visible {
-    outline: 2px solid #8b5cf6;
+    outline: 2px solid rgb(var(--q-accent-hover, 139 92 246));
     outline-offset: 2px;
   }
 }

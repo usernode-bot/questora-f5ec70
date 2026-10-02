@@ -20,7 +20,7 @@
 
   // Shown once while a route's data loads; replaced in place, never doubled.
   function skeleton(html) {
-    return window.QUI.el(html || '<div class="animate-pulse space-y-3"><div class="h-8 w-2/3 rounded bg-zinc-900"></div><div class="h-24 rounded-xl bg-zinc-900"></div></div>');
+    return window.QUI.el(html || '<div class="animate-pulse space-y-3"><div class="h-8 w-2/3 rounded bg-surface-container"></div><div class="h-24 rounded-xl bg-surface-container"></div></div>');
   }
   // The shared commit helper views use: mount once, and if the navigation is
   // stale or aborted, leave the DOM untouched. The active context (seq +
@@ -37,7 +37,7 @@
   }
   // Error card a view swaps in when its load fails.
   function errorCard(message) {
-    return window.QUI.el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">' + window.QUI.escapeHtml(message) + '</p></div>');
+    return window.QUI.el('<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">' + window.QUI.escapeHtml(message) + '</p></div>');
   }
 
   // ---- session store -------------------------------------------------------
@@ -121,7 +121,7 @@
   // foot of the screen where a downward menu would fall off it.
   function panel(alignClass, inner, widthClass, placement) {
     const pos = placement === 'top' ? 'bottom-full mb-2' : 'top-full mt-2';
-    return '<div class="absolute ' + alignClass + ' ' + pos + ' ' + (widthClass || 'w-64') + ' rounded-xl border border-zinc-700 bg-zinc-900 shadow-lg z-50 p-1.5">' + inner + '</div>';
+    return '<div class="absolute ' + alignClass + ' ' + pos + ' ' + (widthClass || 'w-64') + ' rounded-xl border border-line-strong bg-surface-container shadow-lg z-50 p-1.5">' + inner + '</div>';
   }
   let navBuilt = false;
   function buildNav() {
@@ -140,7 +140,7 @@
     createBtn.dataset.path = '/create';
     createBtn.setAttribute('aria-haspopup', 'menu');
     createBtn.setAttribute('aria-expanded', 'false');
-    createBtn.className = 'px-3 py-2 rounded-lg font-medium inline-flex items-center gap-1.5 text-zinc-400 hover:text-white';
+    createBtn.className = 'px-3 py-2 rounded-lg font-medium inline-flex items-center gap-1.5 text-content-secondary hover:text-content-primary';
     createBtn.innerHTML = window.QUI.icon('add') + '<span>Create</span>' + window.QUI.icon('chevron_down', { class: 'w-4 h-4' });
     createBtn.addEventListener('click', (e) => { e.stopPropagation(); openCreateMenu(createBtn); });
     const wrap = document.createElement('span');
@@ -153,12 +153,12 @@
     for (const el of document.querySelectorAll('#desktop-nav a')) {
       const item = NAV.find((i) => i.path === el.dataset.path);
       const active = item && navMatch(item, path);
-      el.className = 'px-3 py-2 rounded-lg font-medium inline-flex items-center gap-1.5 ' + (active ? 'text-white bg-violet-600/20' : 'text-zinc-400 hover:text-white');
+      el.className = 'px-3 py-2 rounded-lg font-medium inline-flex items-center gap-1.5 ' + (active ? 'text-accent-contrast bg-accent/20' : 'text-content-secondary hover:text-content-primary');
     }
     const createBtn = document.getElementById('create-btn');
     if (createBtn) {
       const active = /^\/create/.test(path) || /^\/dashboard\//.test(path);
-      createBtn.className = 'px-3 py-2 rounded-lg font-medium inline-flex items-center gap-1.5 ' + (active ? 'text-white bg-violet-600/20' : 'text-zinc-400 hover:text-white');
+      createBtn.className = 'px-3 py-2 rounded-lg font-medium inline-flex items-center gap-1.5 ' + (active ? 'text-accent-contrast bg-accent/20' : 'text-content-secondary hover:text-content-primary');
     }
   }
   function renderNav(path) {
@@ -190,24 +190,24 @@
   }
   const CREATE_KEY_ICON = { project: 'folder', campaign: 'campaign', quest: 'checklist', task: 'task_alt' };
   function openCreateMenu(trigger, placement, alignClass) {
-    const menu = togglePop(trigger, panel(alignClass || 'left-0', '<p class="px-3 py-2 text-xs text-zinc-500">Create</p><div class="create-list"></div>', 'w-72', placement));
+    const menu = togglePop(trigger, panel(alignClass || 'left-0', '<p class="px-3 py-2 text-xs text-content-secondary">Create</p><div class="create-list"></div>', 'w-72', placement));
     if (!menu) return;
     const list = menu.querySelector('.create-list');
     const add = (label, href, hint, iconName) => {
-      const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-800 inline-flex items-center gap-3 text-zinc-400"><span class="min-w-0"><span class="block text-sm text-zinc-200">' + window.QUI.escapeHtml(label) + '</span>' + (hint ? '<span class="block text-xs text-zinc-500">' + window.QUI.escapeHtml(hint) + '</span>' : '') + '</span></button>');
+      const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-surface-container-high inline-flex items-center gap-3 text-content-secondary"><span class="min-w-0"><span class="block text-sm text-content-primary">' + window.QUI.escapeHtml(label) + '</span>' + (hint ? '<span class="block text-xs text-content-secondary">' + window.QUI.escapeHtml(hint) + '</span>' : '') + '</span></button>');
       b.insertAdjacentHTML('afterbegin', window.QUI.icon(iconName || 'add'));
       b.addEventListener('click', () => { closeMenu(trigger); nav(href); });
       list.appendChild(b);
     };
     const model = window.QuestoraNavMenu.createMenuItems([]);
     add(model.project.label, model.project.href, model.project.hint, 'folder');
-    const loading = window.QUI.el('<p class="px-3 py-2 text-xs text-zinc-600">Loading your projects…</p>');
+    const loading = window.QUI.el('<p class="px-3 py-2 text-xs text-content-tertiary">Loading your projects…</p>');
     list.appendChild(loading);
     loadManageProjects().then((projects) => {
       loading.remove();
       if (!menu.isConnected) return;
       const m = window.QuestoraNavMenu.createMenuItems(projects);
-      if (m.hint) { list.appendChild(window.QUI.el('<p class="px-3 pt-1 pb-2 text-xs text-zinc-600">' + window.QUI.escapeHtml(m.hint) + '</p>')); return; }
+      if (m.hint) { list.appendChild(window.QUI.el('<p class="px-3 pt-1 pb-2 text-xs text-content-tertiary">' + window.QUI.escapeHtml(m.hint) + '</p>')); return; }
       if (!m.needsPicker) {
         for (const it of m.items) add(it.label, it.href, it.hint, CREATE_KEY_ICON[it.key]);
         return;
@@ -219,15 +219,15 @@
     // project's three create actions, with a way back.
     function renderPicker(projects) {
       list.replaceChildren();
-      list.appendChild(window.QUI.el('<p class="px-3 pt-1 pb-1 text-xs text-zinc-500">Choose a project</p>'));
+      list.appendChild(window.QUI.el('<p class="px-3 pt-1 pb-1 text-xs text-content-secondary">Choose a project</p>'));
       for (const p of projects) {
-        const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-zinc-800 inline-flex items-center gap-3 text-zinc-400">' + window.QUI.icon('folder') + '<span class="block text-sm text-zinc-200">' + window.QUI.escapeHtml(p.name) + '</span></button>');
+        const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg hover:bg-surface-container-high inline-flex items-center gap-3 text-content-secondary">' + window.QUI.icon('folder') + '<span class="block text-sm text-content-primary">' + window.QUI.escapeHtml(p.name) + '</span></button>');
         b.addEventListener('click', () => {
           list.replaceChildren();
-          const back = window.QUI.el('<button type="button" class="w-full text-left text-xs px-3 py-2 rounded-lg text-violet-300 hover:bg-zinc-800 inline-flex items-center gap-2">' + window.QUI.icon('arrow_back', { class: 'w-4 h-4' }) + '<span>Back</span></button>');
+          const back = window.QUI.el('<button type="button" class="w-full text-left text-xs px-3 py-2 rounded-lg text-accent-text hover:bg-surface-container-high inline-flex items-center gap-2">' + window.QUI.icon('arrow_back', { class: 'w-4 h-4' }) + '<span>Back</span></button>');
           back.addEventListener('click', () => renderPicker(projects));
           list.appendChild(back);
-          list.appendChild(window.QUI.el('<p class="px-3 py-2 text-xs text-zinc-500">' + window.QUI.escapeHtml(p.name) + '</p>'));
+          list.appendChild(window.QUI.el('<p class="px-3 py-2 text-xs text-content-secondary">' + window.QUI.escapeHtml(p.name) + '</p>'));
           for (const a of window.QuestoraNavMenu.projectActions(p)) add(a.label, a.href, null, CREATE_KEY_ICON[a.key]);
         });
         list.appendChild(b);
@@ -240,7 +240,7 @@
     togglePop(trigger, panel('right-0', '<div class="account-list"></div>'), (menu) => {
       const list = menu.querySelector('.account-list');
       const put = (label, run, iconName) => {
-        const b = window.QUI.el('<button type="button" class="w-full text-left text-sm px-3 py-2.5 rounded-lg hover:bg-zinc-800 inline-flex items-center gap-3 text-zinc-400">' + window.QUI.icon(iconName) + '<span class="text-zinc-200">' + window.QUI.escapeHtml(label) + '</span></button>');
+        const b = window.QUI.el('<button type="button" class="w-full text-left text-sm px-3 py-2.5 rounded-lg hover:bg-surface-container-high inline-flex items-center gap-3 text-content-secondary">' + window.QUI.icon(iconName) + '<span class="text-content-primary">' + window.QUI.escapeHtml(label) + '</span></button>');
         b.addEventListener('click', () => { closeMenu(trigger); run(); });
         list.appendChild(b);
       };
@@ -250,7 +250,7 @@
       put('My Projects', () => nav('/my-projects'), 'folder');
       if (session.isAdmin()) put('Admin', () => nav('/admin'), 'lock');
       if (window.usernode && window.usernode.isNative) {
-        list.appendChild(window.QUI.el('<div class="my-1 border-t border-zinc-800"></div>'));
+        list.appendChild(window.QUI.el('<div class="my-1 border-t border-line"></div>'));
         put('Log out', () => { Promise.resolve(window.usernode.logout()).catch(() => window.QUI.toast('Could not log out', true)); }, 'logout');
       }
     });
@@ -285,7 +285,7 @@
     const current = window.QuestoraTheme.mode();
     for (const [mode, label] of THEME_OPTIONS) {
       const on = current === mode;
-      const b = window.QUI.el('<button type="button" data-mode="' + mode + '" class="w-full text-left text-sm px-3 py-2.5 rounded-lg flex items-center justify-between ' + (on ? 'bg-violet-600/20 text-white' : 'text-zinc-200 hover:bg-zinc-800') + '"><span>' + label + '</span>' + (on ? '<span class="text-violet-300">' + window.QUI.icon('check', { class: 'w-4 h-4' }) + '</span>' : '') + '</button>');
+      const b = window.QUI.el('<button type="button" data-mode="' + mode + '" class="w-full text-left text-sm px-3 py-2.5 rounded-lg flex items-center justify-between ' + (on ? 'bg-accent/20 text-accent-contrast' : 'text-content-primary hover:bg-surface-container-high') + '"><span>' + label + '</span>' + (on ? '<span class="text-accent-text">' + window.QUI.icon('check', { class: 'w-4 h-4' }) + '</span>' : '') + '</button>');
       b.addEventListener('click', () => onPick(mode));
       frag.appendChild(b);
     }
@@ -329,20 +329,20 @@
     togglePop(trigger, panel('right-0', '<div class="notif-body"></div>', 'w-80 max-w-[calc(100vw-1rem)]'), (menu) => renderNotifBody(menu.querySelector('.notif-body'), trigger));
   }
   async function renderNotifBody(holder, trigger) {
-    holder.replaceChildren(window.QUI.el('<p class="px-3 py-4 text-sm text-zinc-500 animate-pulse">Loading notifications…</p>'));
+    holder.replaceChildren(window.QUI.el('<p class="px-3 py-4 text-sm text-content-secondary animate-pulse">Loading notifications…</p>'));
     let data;
     try {
       data = await window.QuestoraAPI.api.get('/api/v1/notifications');
       notifCache.data = data;
       markBadge(data.unread);
     } catch (err) {
-      holder.replaceChildren(window.QUI.el('<div class="px-3 py-4"><p class="text-sm text-red-400">' + window.QUI.escapeHtml(err.message) + '</p><button type="button" class="retry mt-2 text-sm text-violet-400 font-medium">Try again</button></div>'));
+      holder.replaceChildren(window.QUI.el('<div class="px-3 py-4"><p class="text-sm text-error">' + window.QUI.escapeHtml(err.message) + '</p><button type="button" class="retry mt-2 text-sm text-accent-text font-medium">Try again</button></div>'));
       holder.querySelector('.retry').addEventListener('click', () => renderNotifBody(holder, trigger));
       appendNotifFooter(holder, trigger);
       return;
     }
     if (!data.notifications.length) {
-      holder.replaceChildren(window.QUI.el('<div class="px-3 py-6 text-center"><p class="text-sm text-zinc-400">No notifications yet.</p><p class="text-xs text-zinc-600 mt-1">Complete quests and follow campaigns to hear about it here.</p></div>'));
+      holder.replaceChildren(window.QUI.el('<div class="px-3 py-6 text-center"><p class="text-sm text-content-secondary">No notifications yet.</p><p class="text-xs text-content-tertiary mt-1">Complete quests and follow campaigns to hear about it here.</p></div>'));
     } else {
       const list = window.QUI.el('<div class="max-h-80 overflow-y-auto space-y-1"></div>');
       for (const n of data.notifications) {
@@ -360,7 +360,7 @@
     appendNotifFooter(holder, trigger);
   }
   function appendNotifFooter(holder, trigger) {
-    const foot = window.QUI.el('<div class="mt-1 border-t border-zinc-800 pt-1 flex items-center justify-between gap-2"><a href="/notifications" class="text-xs text-violet-300 px-3 py-2">View all</a><button type="button" class="mark-all text-xs text-zinc-400 px-3 py-2">Mark all read</button></div>');
+    const foot = window.QUI.el('<div class="mt-1 border-t border-line pt-1 flex items-center justify-between gap-2"><a href="/notifications" class="text-xs text-accent-text px-3 py-2">View all</a><button type="button" class="mark-all text-xs text-content-secondary px-3 py-2">Mark all read</button></div>');
     foot.querySelector('a').addEventListener('click', (e) => { e.preventDefault(); closeMenu(trigger); nav('/notifications'); });
     foot.querySelector('.mark-all').addEventListener('click', async () => {
       try { await window.QuestoraAPI.api.post('/api/v1/notifications/read', {}); } catch (e) { /* best-effort */ }
@@ -407,10 +407,10 @@
     }
     togglePop(trigger, panel('right-0', '<div class="wallet-list"></div>', 'w-72'), (menu) => {
       const list = menu.querySelector('.wallet-list');
-      list.appendChild(window.QUI.el('<p class="px-3 py-2 text-xs text-zinc-500">Connected</p>'));
+      list.appendChild(window.QUI.el('<p class="px-3 py-2 text-xs text-content-secondary">Connected</p>'));
       connected.forEach((c, i) => {
         const active = i === 0;
-        const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg ' + (active ? 'bg-violet-600/20 hover:bg-violet-600/30' : 'hover:bg-zinc-800') + '"><span class="block text-xs text-zinc-500">' + window.QUI.escapeHtml(c.eco.label) + (c.network ? ' · ' + window.QUI.escapeHtml(c.network) : '') + '</span><span class="block font-mono text-sm text-zinc-200">' + window.QUI.escapeHtml(walletShort(c.address)) + '</span></button>');
+        const b = window.QUI.el('<button type="button" class="w-full text-left px-3 py-2.5 rounded-lg ' + (active ? 'bg-accent/20 hover:bg-accent/30' : 'hover:bg-surface-container-high') + '"><span class="block text-xs text-content-secondary">' + window.QUI.escapeHtml(c.eco.label) + (c.network ? ' · ' + window.QUI.escapeHtml(c.network) : '') + '</span><span class="block font-mono text-sm text-content-primary">' + window.QUI.escapeHtml(walletShort(c.address)) + '</span></button>');
         b.addEventListener('click', async () => {
           closeMenu(trigger);
           const rec = window.QuestoraWallets.findSaved(c.eco.id, c.address);
@@ -420,7 +420,7 @@
         });
         list.appendChild(b);
       });
-      const manage = window.QUI.el('<a href="/me?tab=wallets" class="block text-sm px-3 py-2.5 mt-1 border-t border-zinc-800 text-violet-300">Manage addresses</a>');
+      const manage = window.QUI.el('<a href="/me?tab=wallets" class="block text-sm px-3 py-2.5 mt-1 border-t border-line text-accent-text">Manage addresses</a>');
       manage.addEventListener('click', (e) => { e.preventDefault(); closeMenu(trigger); nav('/me?tab=wallets'); });
       list.appendChild(manage);
     });
@@ -582,21 +582,21 @@
     const path = window.location.pathname;
     const row = (dest, iconName) => {
       const on = navMatch(dest, path);
-      const cls = 'flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm ' + (on ? 'bg-violet-600/20 text-white' : 'text-zinc-200 hover:bg-zinc-800');
+      const cls = 'flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm ' + (on ? 'bg-accent/20 text-accent-contrast' : 'text-content-primary hover:bg-surface-container-high');
       return '<a href="' + dest.path + '" data-path="' + dest.path + '" data-match="' + dest.match + '" data-drawer-link="1" class="' + cls + '">' + window.QUI.icon(iconName || dest.icon) + '<span>' + window.QUI.escapeHtml(dest.label) + '</span></a>';
     };
     const canLogout = !!(window.usernode && window.usernode.isNative);
     const node = window.QUI.el('<div class="fixed inset-0 z-50 transition-opacity duration-200" data-drawer>' +
       '<div class="drawer-backdrop absolute inset-0 bg-black/60" data-drawer-backdrop></div>' +
-      '<div role="dialog" aria-modal="true" aria-label="Navigation" class="drawer-panel absolute left-0 top-0 h-full w-72 max-w-[85vw] -translate-x-full transition-transform duration-200 bg-zinc-950 border-r border-zinc-800 p-3 flex flex-col gap-1 overflow-y-auto" style="padding-bottom:calc(0.75rem + var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px)))">' +
-      '<div class="flex items-center justify-between px-2 py-1 mb-1"><a href="/" data-drawer-link="1" class="font-bold text-lg text-violet-400">Questora</a><button type="button" class="drawer-close ' + window.QUI.BTN_ICON + '" aria-label="Close navigation">' + window.QUI.icon('close') + '</button></div>' +
+      '<div role="dialog" aria-modal="true" aria-label="Navigation" class="drawer-panel absolute left-0 top-0 h-full w-72 max-w-[85vw] -translate-x-full transition-transform duration-200 bg-background border-r border-line p-3 flex flex-col gap-1 overflow-y-auto" style="padding-bottom:calc(0.75rem + var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px)))">' +
+      '<div class="flex items-center justify-between px-2 py-1 mb-1"><a href="/" data-drawer-link="1" class="font-bold text-lg text-accent-text">Questora</a><button type="button" class="drawer-close ' + window.QUI.BTN_ICON + '" aria-label="Close navigation">' + window.QUI.icon('close') + '</button></div>' +
       NAV.map((d) => row(d, d.icon)).join('') +
-      '<button type="button" data-drawer-create="1" class="flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm text-zinc-200 hover:bg-zinc-800 text-left">' + window.QUI.icon('add') + '<span>Create</span></button>' +
-      '<div class="my-2 border-t border-zinc-800"></div>' +
+      '<button type="button" data-drawer-create="1" class="flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm text-content-primary hover:bg-surface-container-high text-left">' + window.QUI.icon('add') + '<span>Create</span></button>' +
+      '<div class="my-2 border-t border-line"></div>' +
       UTILITY_NAV.map((d) => row(d, d.icon)).join('') +
-      '<button type="button" id="drawer-theme-btn" data-drawer-theme="1" class="flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm text-zinc-200 hover:bg-zinc-800 text-left"><span id="drawer-theme-icon" class="inline-flex">' + window.QUI.icon('brightness_auto') + '</span><span>Theme</span></button>' +
+      '<button type="button" id="drawer-theme-btn" data-drawer-theme="1" class="flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm text-content-primary hover:bg-surface-container-high text-left"><span id="drawer-theme-icon" class="inline-flex">' + window.QUI.icon('brightness_auto') + '</span><span>Theme</span></button>' +
       '<div id="drawer-theme-options" class="pl-9 pr-1 space-y-0.5"></div>' +
-      (canLogout ? '<div class="my-2 border-t border-zinc-800"></div><button type="button" data-drawer-logout="1" class="flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm text-zinc-200 hover:bg-zinc-800 text-left">' + window.QUI.icon('logout') + '<span>Log out</span></button>' : '') +
+      (canLogout ? '<div class="my-2 border-t border-line"></div><button type="button" data-drawer-logout="1" class="flex items-center gap-3 px-3 py-3 min-h-[48px] rounded-lg text-sm text-content-primary hover:bg-surface-container-high text-left">' + window.QUI.icon('logout') + '<span>Log out</span></button>' : '') +
       '</div></div>');
     document.body.appendChild(node);
     drawerEl = node;
@@ -663,8 +663,8 @@
     for (const el of document.querySelectorAll('#bottom-nav [data-path]')) {
       const dest = BOTTOM_NAV.find((d) => d.path === el.dataset.path);
       const active = dest && navMatch(dest, path);
-      el.classList.toggle('text-violet-400', !!active);
-      el.classList.toggle('text-zinc-400', !active);
+      el.classList.toggle('text-accent-text', !!active);
+      el.classList.toggle('text-content-secondary', !active);
       if (active) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
     }
   }

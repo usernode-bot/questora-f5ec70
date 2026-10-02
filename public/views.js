@@ -6,7 +6,7 @@ var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgeP
 var mount, errorCard, Render;
 function bindRender() {
   mount = function (n) { var R = window.QV && window.QV.Render; return R && R.mount ? R.mount(n) : app().replaceChildren(n); };
-  errorCard = function (m) { var R = window.QV && window.QV.Render; return R && R.errorCard ? R.errorCard(m) : el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">' + escapeHtml(m) + '</p></div>'); };
+  errorCard = function (m) { var R = window.QV && window.QV.Render; return R && R.errorCard ? R.errorCard(m) : el('<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">' + escapeHtml(m) + '</p></div>'); };
 }
 function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; dangerZone = q.dangerZone; icon = q.icon; tooltip = q.tooltip; notificationRow = q.notificationRow; NOTIF_KINDS = q.NOTIF_KINDS; }
 bindQUI();
@@ -27,18 +27,18 @@ async function loadMe() {
 async function viewDiscover() {
   const wrap = el('<div></div>');
   mount(wrap);
-  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">Explore</h1><p class="text-sm text-zinc-500 mb-4">Campaigns you can join right now.</p></div>'));
+  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">Explore</h1><p class="text-sm text-content-secondary mb-4">Campaigns you can join right now.</p></div>'));
   const searchForm = el(`
     <form action="/search" method="get" class="flex gap-2 mb-6 max-w-xl">
-      <input type="search" name="q" value="${escapeHtml(new URLSearchParams(window.location.search).get('q') || '')}" placeholder="Search projects, campaigns, quests, people" class="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500">
-      <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Search</button>
+      <input type="search" name="q" value="${escapeHtml(new URLSearchParams(window.location.search).get('q') || '')}" placeholder="Search projects, campaigns, quests, people" class="flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent">
+      <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Search</button>
     </form>`);
   wrap.appendChild(searchForm);
   let data;
   try {
     data = await window.QuestoraAPI.api.get('/api/v1/discover');
   } catch (err) {
-    wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 text-center"><p class="text-zinc-300 mb-2">${escapeHtml(err.message)}</p><button class="retry text-violet-400 text-sm font-medium">Try again</button></div>`));
+    wrap.replaceChildren(el(`<div class="rounded-2xl border border-line bg-surface p-6 text-center"><p class="text-content-secondary mb-2">${escapeHtml(err.message)}</p><button class="retry text-accent-text text-sm font-medium">Try again</button></div>`));
     wrap.querySelector('.retry').addEventListener('click', viewDiscover);
     return;
   }
@@ -48,10 +48,10 @@ async function viewDiscover() {
   wrap.appendChild(sectionRow('New', mk(data.fresh), 'No new campaigns yet'));
   wrap.appendChild(sectionRow('Ending soon', mk(data.ending), 'Nothing ending soon'));
   if (data.categories.length) {
-    const chips = el(`<section class="mb-8"><h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Categories</h2><div class="flex flex-wrap gap-2 px-1"></div></section>`);
+    const chips = el(`<section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Categories</h2><div class="flex flex-wrap gap-2 px-1"></div></section>`);
     const holder = chips.querySelector('div');
     for (const cat of data.categories) {
-      holder.appendChild(el(`<a href="/campaigns?category=${encodeURIComponent(cat)}" class="text-sm px-3 py-1.5 rounded-full bg-zinc-800/70 hover:bg-violet-600/20 hover:text-violet-300 text-zinc-300 transition-colors">${escapeHtml(cat)}</a>`));
+      holder.appendChild(el(`<a href="/campaigns?category=${encodeURIComponent(cat)}" class="text-sm px-3 py-1.5 rounded-full bg-surface-container hover:bg-accent/20 hover:text-accent-text text-content-secondary transition-colors">${escapeHtml(cat)}</a>`));
     }
     wrap.appendChild(chips);
   }
@@ -67,23 +67,23 @@ async function viewCampaigns(params) {
   wrap.appendChild(el(`
     <div>
       <h1 class="text-2xl font-bold mb-1">Campaigns</h1>
-      <p class="text-sm text-zinc-500 mb-4">Every campaign on Questora, filtered by state.</p>
-      <div class="flex gap-1 bg-zinc-900 rounded-full p-1 border border-zinc-800 mb-5 w-fit">
-        <a href="/campaigns" class="px-4 py-1.5 rounded-full text-sm font-medium ${status === 'active' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Active</a>
-        <a href="/campaigns?status=scheduled" class="px-4 py-1.5 rounded-full text-sm font-medium ${status === 'scheduled' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Scheduled</a>
-        <a href="/campaigns?status=ended" class="px-4 py-1.5 rounded-full text-sm font-medium ${status === 'ended' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Ended</a>
+      <p class="text-sm text-content-secondary mb-4">Every campaign on Questora, filtered by state.</p>
+      <div class="flex gap-1 bg-surface-container rounded-full p-1 border border-line mb-5 w-fit">
+        <a href="/campaigns" class="px-4 py-1.5 rounded-full text-sm font-medium ${status === 'active' ? 'bg-accent text-accent-contrast' : 'text-content-secondary'}">Active</a>
+        <a href="/campaigns?status=scheduled" class="px-4 py-1.5 rounded-full text-sm font-medium ${status === 'scheduled' ? 'bg-accent text-accent-contrast' : 'text-content-secondary'}">Scheduled</a>
+        <a href="/campaigns?status=ended" class="px-4 py-1.5 rounded-full text-sm font-medium ${status === 'ended' ? 'bg-accent text-accent-contrast' : 'text-content-secondary'}">Ended</a>
       </div>
       <div class="body space-y-2"></div>
     </div>`));
   const body = wrap.querySelector('.body');
-  body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading campaigns…</p>'));
+  body.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading campaigns…</p>'));
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/campaigns?status=' + status); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   body.replaceChildren();
   const rows = data.campaigns || [];
   if (!rows.length) {
-    body.appendChild(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400 mb-1">No ${status} campaigns.</p><p class="text-sm text-zinc-600">Check the other tabs, or create one from the Create page.</p></div>`));
+    body.appendChild(el(`<div class="rounded-2xl border border-line bg-surface p-8 text-center"><p class="text-content-secondary mb-1">No ${status} campaigns.</p><p class="text-sm text-content-tertiary">Check the other tabs, or create one from the Create page.</p></div>`));
     return;
   }
   const grid = el('<div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>');
@@ -114,7 +114,7 @@ function requirementLine(t) {
 }
 
 async function viewQuest(id) {
-  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-8 w-2/3 rounded bg-zinc-900"></div><div class="h-24 rounded-xl bg-zinc-900"></div></div>');
+  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-8 w-2/3 rounded bg-surface-container"></div><div class="h-24 rounded-xl bg-surface-container"></div></div>');
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/quests/' + encodeURIComponent(id)); }
@@ -127,12 +127,12 @@ async function viewQuest(id) {
 
   const node = el(`
     <div>
-      <a href="/campaigns/${escapeHtml(q.campaign_slug)}" class="text-sm text-zinc-500 hover:text-violet-300">${escapeHtml(q.campaign_name)}</a>
+      <a href="/campaigns/${escapeHtml(q.campaign_slug)}" class="text-sm text-content-secondary hover:text-accent-text">${escapeHtml(q.campaign_name)}</a>
       <h1 class="text-2xl font-bold mt-1 mb-1">${escapeHtml(q.title)}</h1>
-      <p class="text-sm text-zinc-400 mb-4 max-w-2xl">${escapeHtml(q.description || '')}</p>
+      <p class="text-sm text-content-secondary mb-4 max-w-2xl">${escapeHtml(q.description || '')}</p>
       <div class="flex gap-2 mb-6">${badgePill('+' + q.xp_reward + ' XP')}${q.points_reward ? badgePill('+' + q.points_reward + ' points') : ''}${badgePill(data.participants + ' completed')}</div>
       <div class="lock-banner mb-6"></div>
-      <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Checklist</h2>
+      <h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Checklist</h2>
       <div class="task-list space-y-3"></div>
       <div class="result mt-6"></div>
     </div>`);
@@ -140,8 +140,8 @@ async function viewQuest(id) {
   // A locked quest explains itself and offers no actions.
   if (q.locked) {
     node.querySelector('.lock-banner').appendChild(el(`
-      <div class="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
-        <p class="text-sm text-amber-200">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p>
+      <div class="rounded-xl border border-warning/40 bg-warning-bg p-4">
+        <p class="text-sm text-warning">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p>
       </div>`));
   }
   const list = node.querySelector('.task-list');
@@ -160,17 +160,17 @@ async function viewQuest(id) {
   function taskRow(t) {
     const st = stateByTask[t.id];
     const status = st ? st.status : null;
-    const stateCls = status === 'verified' ? 'border-emerald-400 bg-emerald-400/10'
-      : status === 'pending' ? 'border-amber-400 bg-amber-400/10'
-      : status === 'rejected' ? 'border-red-400 bg-red-400/10'
-      : 'border-zinc-700';
+    const stateCls = status === 'verified' ? 'border-success/40 bg-success-bg'
+      : status === 'pending' ? 'border-warning/40 bg-warning-bg'
+      : status === 'rejected' ? 'border-error/40 bg-error-bg'
+      : 'border-line-strong';
     const row = el(`
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+      <div class="rounded-xl border border-line bg-surface p-4">
         <div class="flex items-start gap-3">
           <span class="task-state w-6 h-6 rounded-full border-2 ${stateCls} shrink-0 mt-0.5 flex items-center justify-center text-xs"></span>
           <div class="min-w-0 flex-1">
             <p class="font-medium">${escapeHtml(t.title)}</p>
-            <p class="text-xs text-zinc-500">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.proof_required ? ' · proof required' : ''}</p>
+            <p class="text-xs text-content-secondary">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.proof_required ? ' · proof required' : ''}</p>
             <div class="status-line mt-1"></div>
             <div class="action-area mt-3"></div>
             <div class="reject-line mt-2"></div>
@@ -185,7 +185,7 @@ async function viewQuest(id) {
     if (t.type === 'on_chain' && t.verification_status) {
       statusLine.innerHTML = statePill(t.verification_status);
       if (t.verification_reason && t.verification_status !== 'VERIFIED') {
-        rejectLine.innerHTML = `<p class="text-xs text-zinc-400">${escapeHtml(t.verification_reason)}</p>`;
+        rejectLine.innerHTML = `<p class="text-xs text-content-secondary">${escapeHtml(t.verification_reason)}</p>`;
       }
       if (t.verification_status === 'VERIFIED') stateDot.innerHTML = icon('check', { class: 'w-3.5 h-3.5' });
       if (t.verification_status === 'VERIFIED') { return row; }
@@ -194,13 +194,13 @@ async function viewQuest(id) {
     else if (status === 'pending') { statusLine.innerHTML = statePill('pending'); }
     else if (status === 'rejected') {
       stateDot.innerHTML = icon('close', { class: 'w-3.5 h-3.5' }); statusLine.innerHTML = statePill('rejected');
-      rejectLine.innerHTML = `<p class="text-sm text-red-300">${escapeHtml(st.review_note || 'Rejected')}</p>`;
-      const again = el('<button class="resubmit mt-2 text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Resubmit</button>');
+      rejectLine.innerHTML = `<p class="text-sm text-error">${escapeHtml(st.review_note || 'Rejected')}</p>`;
+      const again = el('<button class="resubmit mt-2 text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast">Resubmit</button>');
       again.addEventListener('click', () => actionFor(t, actionArea));
       rejectLine.appendChild(again);
     } else {
       if (q.locked) {
-        holder.appendChild(el(`<p class="text-sm text-zinc-500">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p>`));
+        holder.appendChild(el(`<p class="text-sm text-content-secondary">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p>`));
       } else {
         actionFor(t, actionArea);
       }
@@ -225,12 +225,12 @@ async function viewQuest(id) {
       const cfg = t.config || {};
       const needsHash = cfg.method === 'transaction';
       const reqLine = requirementLine(t);
-      if (reqLine) holder.appendChild(el(`<p class="text-xs text-zinc-500 mb-2">${escapeHtml(reqLine)}</p>`));
+      if (reqLine) holder.appendChild(el(`<p class="text-xs text-content-secondary mb-2">${escapeHtml(reqLine)}</p>`));
       const hashInput = needsHash
-        ? '<input type="text" class="tx-hash w-full md:w-96 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Paste your transaction hash (0x...)">'
+        ? '<input type="text" class="tx-hash w-full md:w-96 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="Paste your transaction hash (0x...)">'
         : '';
       let el2 = el(`<div class="space-y-2">${hashInput}
-        <button class="verify-onchain w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Verify</button>
+        <button class="verify-onchain w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast">Verify</button>
         <div class="verify-result text-sm"></div></div>`);
       const btn = el2.querySelector('.verify-onchain');
       const resultEl = el2.querySelector('.verify-result');
@@ -250,7 +250,7 @@ async function viewQuest(id) {
           // advance on their own.
           if (r.status === 'WAITING_CONFIRMATIONS') pollStatus(t, resultEl);
         } catch (err) {
-          resultEl.appendChild(el(`<p class="text-sm text-amber-300">${escapeHtml(err.message)}</p>`));
+          resultEl.appendChild(el(`<p class="text-sm text-warning">${escapeHtml(err.message)}</p>`));
         } finally {
           if (document.body.contains(btn)) { btn.disabled = false; btn.textContent = 'Verify'; }
         }
@@ -261,7 +261,7 @@ async function viewQuest(id) {
       return;
     }
     if (t.type === 'wallet_connect') {
-      const b = el('<button class="connect w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Connect wallet</button>');
+      const b = el('<button class="connect w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast">Connect wallet</button>');
       b.addEventListener('click', async () => {
         b.disabled = true; b.textContent = 'Waiting for wallet…';
         try {
@@ -278,9 +278,9 @@ async function viewQuest(id) {
     }
     if (t.type === 'social') {
       const cfg = t.config || {};
-      const b = el('<button class="visit w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Visit and confirm</button>');
+      const b = el('<button class="visit w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast">Visit and confirm</button>');
       const link = cfg.url
-        ? el(`<a href="${escapeHtml(cfg.url)}" target="_blank" rel="noopener" class="block mt-2 text-sm text-violet-300 hover:underline">Open link in a new tab</a>`)
+        ? el(`<a href="${escapeHtml(cfg.url)}" target="_blank" rel="noopener" class="block mt-2 text-sm text-accent-text hover:underline">Open link in a new tab</a>`)
         : null;
       b.addEventListener('click', async () => {
         b.disabled = true; b.textContent = 'Sending…';
@@ -303,13 +303,13 @@ async function viewQuest(id) {
         const opts = qEl.querySelector('.opts');
         question.options.forEach((opt, oi) => {
           const id = `q${t.id}_${qi}_${oi}`;
-          const optEl = el(`<label class="flex items-center gap-2.5 rounded-lg border border-zinc-800 px-3 py-2.5 min-h-[44px] cursor-pointer hover:border-violet-500/40 peer-checked:border-violet-500 peer-checked:bg-violet-600/10"><input type="radio" name="${id}" class="peer accent-violet-500" data-qi="${qi}" data-oi="${oi}"><span class="text-sm">${escapeHtml(opt)}</span></label>`);
+          const optEl = el(`<label class="flex items-center gap-2.5 rounded-lg border border-line px-3 py-2.5 min-h-[44px] cursor-pointer hover:border-accent/40 peer-checked:border-accent peer-checked:bg-accent/10"><input type="radio" name="${id}" class="peer accent-[var(--q-accent)]" data-qi="${qi}" data-oi="${oi}"><span class="text-sm">${escapeHtml(opt)}</span></label>`);
           optEl.querySelector('input').addEventListener('change', () => { answers[qi] = oi; });
           opts.appendChild(optEl);
         });
         form.appendChild(qEl);
       });
-      const submit = el('<button class="w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Check answers</button>');
+      const submit = el('<button class="w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast">Check answers</button>');
       submit.addEventListener('click', async () => {
         if (answers.some(a => a === null)) return toast('Answer every question first', true);
         submit.disabled = true; submit.textContent = 'Checking…';
@@ -327,9 +327,9 @@ async function viewQuest(id) {
     const isUrl = t.type === 'url_proof';
     const form = el(`
       <div class="space-y-2">
-        ${isUrl ? '<input type="url" class="proof-url w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="https://your proof link">' : ''}
-        ${isUrl ? '' : '<textarea class="proof-text w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" rows="3" placeholder="Describe what you did, or paste a link"></textarea>'}
-        <button class="send w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Submit for review</button>
+        ${isUrl ? '<input type="url" class="proof-url w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="https://your proof link">' : ''}
+        ${isUrl ? '' : '<textarea class="proof-text w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" rows="3" placeholder="Describe what you did, or paste a link"></textarea>'}
+        <button class="send w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast">Submit for review</button>
       </div>`);
     form.querySelector('.send').addEventListener('click', async () => {
       const btn = form.querySelector('.send');
@@ -349,13 +349,13 @@ async function viewQuest(id) {
   // infrastructure-shaped, red only for a true failure, green for verified.
   function renderVerifyResult(holder, r) {
     holder.replaceChildren();
-    const tone = r.verified ? 'text-emerald-300' : (r.status === 'FAILED' || r.status === 'EXPIRED') ? 'text-red-300'
-      : r.status === 'INDEXING_DELAY' ? 'text-sky-300' : 'text-amber-300';
+    const tone = r.verified ? 'text-success' : (r.status === 'FAILED' || r.status === 'EXPIRED') ? 'text-error'
+      : r.status === 'INDEXING_DELAY' ? 'text-info' : 'text-warning';
     const bits = [];
     if (r.confirmations !== null && r.confirmations !== undefined) bits.push(`${r.confirmations} confirmation${r.confirmations === 1 ? '' : 's'}`);
     if (r.chain_position) bits.push(r.chain_position);
     holder.appendChild(el(`<p class="${tone}"><span class="font-medium">${escapeHtml(r.label || r.status)}.</span> ${escapeHtml(r.reason || '')}</p>`));
-    if (bits.length) holder.appendChild(el(`<p class="text-xs text-zinc-500 mt-1">${escapeHtml(bits.join(' · '))}</p>`));
+    if (bits.length) holder.appendChild(el(`<p class="text-xs text-content-secondary mt-1">${escapeHtml(bits.join(' · '))}</p>`));
   }
 
   // Poll the caller's task status a few times while confirmations catch up.
@@ -378,7 +378,7 @@ async function viewQuest(id) {
 // ---------- profile ----------
 async function viewProfile(username, params) {
   params = params || new URLSearchParams();
-  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-zinc-900"></div></div>');
+  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-surface-container"></div></div>');
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/users/' + encodeURIComponent(username)); }
@@ -390,16 +390,16 @@ async function viewProfile(username, params) {
     : 100;
   const node = el(`
     <div>
-      <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 mb-6 flex items-center gap-5">
+      <div class="rounded-2xl border border-line bg-surface p-6 mb-6 flex items-center gap-5">
         <div class="level-ring-slot"></div>
         <div class="min-w-0">
           <h1 class="text-xl font-bold">${escapeHtml(u.display_name || u.username)}</h1>
-          <p class="text-sm text-zinc-500">@${escapeHtml(u.username)}</p>
+          <p class="text-sm text-content-secondary">@${escapeHtml(u.username)}</p>
           <div class="flex flex-wrap gap-2 mt-2">
             ${badgePill(u.xp + ' XP')}${badgePill(u.points + ' points')}${badgePill('Rank #' + data.leaderboard_rank)}
             ${data.reputation ? badgePill('Reputation ' + (data.reputation.total > 0 ? '+' : '') + data.reputation.total) : ''}
           </div>
-          ${u.next ? `<p class="text-xs text-zinc-600 mt-2">${u.next.min_xp - u.xp} XP to level ${u.next.level}</p>` : ''}
+          ${u.next ? `<p class="text-xs text-content-tertiary mt-2">${u.next.min_xp - u.xp} XP to level ${u.next.level}</p>` : ''}
         </div>
       </div>
       <div class="tabs flex gap-2 mb-4">
@@ -432,14 +432,14 @@ async function viewProfile(username, params) {
     const list = el('<div class="space-y-2"></div>');
     const wallets = data.wallets || [];
     if (!wallets.length) {
-      list.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400">No wallets linked yet. Link one to prove you own it and complete wallet quests.</p></div>'));
+      list.appendChild(el('<div class="rounded-2xl border border-line bg-surface p-8 text-center"><p class="text-content-secondary">No wallets linked yet. Link one to prove you own it and complete wallet quests.</p></div>'));
       return list;
     }
     for (const w of wallets) {
       list.appendChild(el(`
-        <div class="flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+        <div class="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface px-4 py-3">
           <span class="min-w-0">
-            <span class="block text-xs text-zinc-500 mb-0.5">${escapeHtml(chainLabel(w.chain_namespace))}${w.is_primary ? ' \u00b7 primary' : ''}</span>
+            <span class="block text-xs text-content-secondary mb-0.5">${escapeHtml(chainLabel(w.chain_namespace))}${w.is_primary ? ' \u00b7 primary' : ''}</span>
             <span class="block font-mono text-sm truncate">${escapeHtml(w.address)}</span>
           </span>
           <span class="shrink-0">${statePill('verified')}</span>
@@ -459,33 +459,33 @@ async function viewProfile(username, params) {
     lastTab = tab;
     node.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === tab;
-      b.className = 'tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium ' + (on ? 'bg-violet-600 text-white' : 'bg-zinc-800/70 text-zinc-400');
+      b.className = 'tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium ' + (on ? 'bg-accent text-accent-contrast' : 'bg-surface-container text-content-secondary');
     });
     body.replaceChildren();
     if (tab === 'projects') {
       // Per-project participation: each project ranks on its own board, so
       // XP and rank are listed project by project, never blended.
       const rows = data.projects || [];
-      if (!rows.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No project participation yet. Complete a quest to appear on a project board.</p>')); return; }
+      if (!rows.length) { body.appendChild(el('<p class="text-sm text-content-tertiary px-1">No project participation yet. Complete a quest to appear on a project board.</p>')); return; }
       const list = el('<div class="space-y-2"></div>');
       for (const pr of rows) {
         list.appendChild(el(`
-          <a href="/projects/${encodeURIComponent(pr.slug)}/leaderboard" class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
+          <a href="/projects/${encodeURIComponent(pr.slug)}/leaderboard" class="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40 transition-colors">
             <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(pr.name)}</span>
-            <span class="block text-xs text-zinc-600">Rank #${pr.rank} in this project</span></span>
-            <span class="font-mono text-violet-300">${Number(pr.xp).toLocaleString()} XP</span>
+            <span class="block text-xs text-content-tertiary">Rank #${pr.rank} in this project</span></span>
+            <span class="font-mono text-accent-text">${Number(pr.xp).toLocaleString()} XP</span>
           </a>`));
       }
       body.appendChild(list);
       return;
     }
     if (tab === 'credentials') {
-      if (!data.credentials.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No credentials yet. Finish a quest that issues one.</p>')); return; }
+      if (!data.credentials.length) { body.appendChild(el('<p class="text-sm text-content-tertiary px-1">No credentials yet. Finish a quest that issues one.</p>')); return; }
       const list = el('<div class="space-y-2"></div>');
       for (const c of data.credentials) {
         list.appendChild(el(`
-          <a href="/credentials/${escapeHtml(c.id)}" class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
-            <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(c.title)}</span><span class="block text-xs text-zinc-600">${escapeHtml(c.issuer_name || 'Questora')} · ${new Date(c.issued_at).toLocaleDateString()}</span></span>
+          <a href="/credentials/${escapeHtml(c.id)}" class="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40 transition-colors">
+            <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(c.title)}</span><span class="block text-xs text-content-tertiary">${escapeHtml(c.issuer_name || 'Questora')} · ${new Date(c.issued_at).toLocaleDateString()}</span></span>
             ${c.revoked_at ? statePill('rejected') : badgePill('Verified')}
           </a>`));
       }
@@ -500,22 +500,22 @@ async function viewProfile(username, params) {
         wallet_verified: 'Wallet verified',
         referral_qualified: 'Invite qualified',
       };
-      const head = `<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 mb-3 flex items-center justify-between">
+      const head = `<div class="rounded-2xl border border-line bg-surface p-5 mb-3 flex items-center justify-between">
         <div><h2 class="font-semibold">Reputation score</h2>
-        <p class="text-xs text-zinc-600 mt-0.5">A transparent sum of every signal on this account.</p></div>
-        <span class="font-mono text-2xl font-bold ${rep.total >= 0 ? 'text-emerald-300' : 'text-red-300'}">${rep.total > 0 ? '+' : ''}${rep.total}</span>
+        <p class="text-xs text-content-tertiary mt-0.5">A transparent sum of every signal on this account.</p></div>
+        <span class="font-mono text-2xl font-bold ${rep.total >= 0 ? 'text-success' : 'text-error'}">${rep.total > 0 ? '+' : ''}${rep.total}</span>
       </div>`;
       if (!rep.breakdown.length) {
-        body.appendChild(el(head + '<p class="text-sm text-zinc-600 px-1">No reputation signals yet. Complete quests to build a score.</p>'));
+        body.appendChild(el(head + '<p class="text-sm text-content-tertiary px-1">No reputation signals yet. Complete quests to build a score.</p>'));
         return;
       }
       const rows = el('<div class="space-y-2"></div>');
       for (const r of rep.breakdown) {
         rows.appendChild(el(`
-          <div class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+          <div class="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3">
             <span class="min-w-0"><span class="block font-medium">${escapeHtml(labels[r.category] || r.category)}</span>
-            <span class="block text-xs text-zinc-600">${r.events} event${r.events === 1 ? '' : 's'}</span></span>
-            <span class="font-mono ${r.sum >= 0 ? 'text-emerald-300' : 'text-red-300'}">${r.sum > 0 ? '+' : ''}${r.sum}</span>
+            <span class="block text-xs text-content-tertiary">${r.events} event${r.events === 1 ? '' : 's'}</span></span>
+            <span class="font-mono ${r.sum >= 0 ? 'text-success' : 'text-error'}">${r.sum > 0 ? '+' : ''}${r.sum}</span>
           </div>`));
       }
       body.appendChild(el(head));
@@ -524,17 +524,17 @@ async function viewProfile(username, params) {
     }
     if (tab === 'achievements') {
       if (!data.achievements || !data.achievements.length) {
-        body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No achievements configured yet.</p>'));
+        body.appendChild(el('<p class="text-sm text-content-tertiary px-1">No achievements configured yet.</p>'));
         return;
       }
       const list = el('<div class="space-y-2"></div>');
       for (const a of data.achievements) {
         const locked = !a.unlocked_at;
         list.appendChild(el(`
-          <div class="flex items-center justify-between gap-3 rounded-xl border border-zinc-800 ${locked ? 'bg-zinc-900/30 opacity-60' : 'bg-zinc-900/60'} px-4 py-3">
+          <div class="flex items-center justify-between gap-3 rounded-xl border border-line ${locked ? 'bg-surface-container' : 'bg-surface'} px-4 py-3">
             <span class="min-w-0"><span class="block font-medium">${escapeHtml(a.name)}</span>
-            <span class="block text-xs text-zinc-600">${escapeHtml(a.description || '')}</span></span>
-            ${locked ? '<span class="shrink-0 text-xs text-zinc-600">Locked</span>' : statePill('verified')}
+            <span class="block text-xs text-content-tertiary">${escapeHtml(a.description || '')}</span></span>
+            ${locked ? '<span class="shrink-0 text-xs text-content-tertiary">Locked</span>' : statePill('verified')}
           </div>`));
       }
       body.appendChild(list);
@@ -542,17 +542,17 @@ async function viewProfile(username, params) {
     }
     if (tab === 'wallets') { renderWallets(); return; }
     if (tab === 'badges') {
-      if (!data.badges.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No badges yet. Complete quests to earn them.</p>')); return; }
+      if (!data.badges.length) { body.appendChild(el('<p class="text-sm text-content-tertiary px-1">No badges yet. Complete quests to earn them.</p>')); return; }
       const grid = el('<div class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>');
       for (const b of data.badges) {
-        grid.appendChild(el(`<div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 text-center"><div class="text-2xl mb-1">🏅</div><p class="text-sm font-medium">${escapeHtml(b.name)}</p><p class="text-xs text-zinc-500">${escapeHtml(b.rarity)}</p></div>`));
+        grid.appendChild(el(`<div class="rounded-xl border border-line bg-surface p-4 text-center"><div class="text-2xl mb-1">🏅</div><p class="text-sm font-medium">${escapeHtml(b.name)}</p><p class="text-xs text-content-secondary">${escapeHtml(b.rarity)}</p></div>`));
       }
       body.appendChild(grid);
     } else {
-      if (!data.activity.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No completed quests yet.</p>')); return; }
+      if (!data.activity.length) { body.appendChild(el('<p class="text-sm text-content-tertiary px-1">No completed quests yet.</p>')); return; }
       const list = el('<div class="space-y-2"></div>');
       for (const a of data.activity) {
-        list.appendChild(el(`<a href="/quest/${a.quest_id}" class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3"><span class="text-sm">${escapeHtml(a.title)} <span class="text-zinc-600">in ${escapeHtml(a.campaign_name)}</span></span><span class="text-sm text-violet-300">+${a.xp_reward} XP</span></a>`));
+        list.appendChild(el(`<a href="/quest/${a.quest_id}" class="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3"><span class="text-sm">${escapeHtml(a.title)} <span class="text-content-tertiary">in ${escapeHtml(a.campaign_name)}</span></span><span class="text-sm text-accent-text">+${a.xp_reward} XP</span></a>`));
       }
       body.appendChild(list);
     }
@@ -571,14 +571,14 @@ async function viewProfile(username, params) {
     if (inv && inv.code) {
       const joinLink = window.location.origin + '/join?ref=' + encodeURIComponent(inv.code);
       const card = el(`
-        <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+        <div class="rounded-2xl border border-line bg-surface p-5">
           <h2 class="font-semibold mb-1">Invite friends</h2>
-          <p class="text-sm text-zinc-500 mb-3">Share your link. When someone you invite finishes ${inv.qualification_quests} quests, you get +${inv.xp_reward} XP.</p>
+          <p class="text-sm text-content-secondary mb-3">Share your link. When someone you invite finishes ${inv.qualification_quests} quests, you get +${inv.xp_reward} XP.</p>
           <div class="flex flex-col sm:flex-row gap-2">
-            <input readonly value="${escapeHtml(joinLink)}" class="invite-link flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-300 focus:outline-none">
-            <button class="copy shrink-0 font-medium px-4 py-2.5 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">${icon('content_copy', { class: 'w-4 h-4' })}<span>Copy link</span></button>
+            <input readonly value="${escapeHtml(joinLink)}" class="invite-link flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm text-content-secondary focus:outline-none">
+            <button class="copy shrink-0 font-medium px-4 py-2.5 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">${icon('content_copy', { class: 'w-4 h-4' })}<span>Copy link</span></button>
           </div>
-          ${inv.referrals.length ? `<p class="text-xs text-zinc-600 mt-3">${inv.referrals.length} invited · ${inv.referrals.filter(r => r.status === 'qualified').length} qualified</p>` : ''}
+          ${inv.referrals.length ? `<p class="text-xs text-content-tertiary mt-3">${inv.referrals.length} invited · ${inv.referrals.filter(r => r.status === 'qualified').length} qualified</p>` : ''}
         </div>`);
       card.querySelector('.copy').addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(joinLink); toast('Invite link copied'); }
@@ -595,39 +595,39 @@ const CATEGORY_LIST = ['DeFi', 'Gaming', 'AI', 'Infrastructure', 'Developer', 'N
 async function viewCreate() {
   const wrap = el('<div></div>');
   mount(wrap);
-  wrap.appendChild(el('<h1 class="text-2xl font-bold mb-1">Create</h1><p class="text-sm text-zinc-500 mb-6">Start a project, add a campaign, then build its quests.</p>'));
+  wrap.appendChild(el('<h1 class="text-2xl font-bold mb-1">Create</h1><p class="text-sm text-content-secondary mb-6">Start a project, add a campaign, then build its quests.</p>'));
   const meData = await loadMe();
   const form = el(`
     <div class="max-w-xl space-y-8">
-      <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+      <section class="rounded-2xl border border-line bg-surface p-5">
         <h2 class="font-semibold mb-1">1. Project</h2>
-        <p class="text-sm text-zinc-500 mb-4">Your project is your home on Questora.</p>
+        <p class="text-sm text-content-secondary mb-4">Your project is your home on Questora.</p>
         <div class="space-y-3">
-          <input class="pj-name w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Project name">
-          <textarea class="pj-desc w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" rows="2" placeholder="What does your project do?"></textarea>
-          <input class="pj-web w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Website (optional)">
+          <input class="pj-name w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="Project name">
+          <textarea class="pj-desc w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" rows="2" placeholder="What does your project do?"></textarea>
+          <input class="pj-web w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="Website (optional)">
         </div>
       </section>
-      <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+      <section class="rounded-2xl border border-line bg-surface p-5">
         <h2 class="font-semibold mb-1">2. Campaign</h2>
-        <p class="text-sm text-zinc-500 mb-4">Campaigns group quests and go live on publish.</p>
+        <p class="text-sm text-content-secondary mb-4">Campaigns group quests and go live on publish.</p>
         <div class="space-y-3">
-          <input class="cp-name w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Campaign name">
-          <textarea class="cp-desc w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" rows="2" placeholder="Describe the campaign"></textarea>
-          <select class="cp-cat w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-violet-500">
+          <input class="cp-name w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="Campaign name">
+          <textarea class="cp-desc w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" rows="2" placeholder="Describe the campaign"></textarea>
+          <select class="cp-cat w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent">
             ${CATEGORY_LIST.map(c => `<option>${c}</option>`).join('')}
           </select>
         </div>
       </section>
-      <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+      <section class="rounded-2xl border border-line bg-surface p-5">
         <h2 class="font-semibold mb-1">3. Quest</h2>
-        <p class="text-sm text-zinc-500 mb-4">A quest is a checklist of tasks. You can add more later.</p>
+        <p class="text-sm text-content-secondary mb-4">A quest is a checklist of tasks. You can add more later.</p>
         <div class="space-y-3">
-          <input class="q-title w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Quest title">
-          <input class="q-xp w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" type="number" min="0" placeholder="XP reward (e.g. 100)">
-          <div class="task-config rounded-xl border border-zinc-800 p-4">
-            <label class="block text-xs text-zinc-500 mb-2">Task type</label>
-            <select class="task-type w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-violet-500">
+          <input class="q-title w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="Quest title">
+          <input class="q-xp w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" type="number" min="0" placeholder="XP reward (e.g. 100)">
+          <div class="task-config rounded-xl border border-line p-4">
+            <label class="block text-xs text-content-secondary mb-2">Task type</label>
+            <select class="task-type w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent">
               <option value="social">Social link (visit and confirm)</option>
               <option value="url_proof">Submit proof (URL)</option>
               <option value="quiz">Quiz</option>
@@ -636,11 +636,11 @@ async function viewCreate() {
             </select>
             <div class="task-extra mt-3"></div>
           </div>
-          <input class="q-cred w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Credential title (optional, e.g. Basics Certified)">
+          <input class="q-cred w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="Credential title (optional, e.g. Basics Certified)">
         </div>
       </section>
-      <button class="publish w-full font-semibold px-5 py-3 min-h-[48px] rounded-xl bg-violet-600 hover:bg-violet-500 text-white">Publish campaign</button>
-      <p class="hint text-sm text-zinc-500"></p>
+      <button class="publish w-full font-semibold px-5 py-3 min-h-[48px] rounded-xl bg-accent hover:bg-accent-hover text-accent-contrast">Publish campaign</button>
+      <p class="hint text-sm text-content-secondary"></p>
     </div>`);
   wrap.appendChild(form);
   const extra = form.querySelector('.task-extra');
@@ -649,32 +649,32 @@ async function viewCreate() {
     extra.replaceChildren();
     const t = typeSel.value;
     if (t === 'social') {
-      extra.appendChild(el('<input class="t-url w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Link to visit (https://...)">'));
+      extra.appendChild(el('<input class="t-url w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="Link to visit (https://...)">'));
     } else if (t === 'url_proof') {
-      extra.appendChild(el('<p class="text-sm text-zinc-500">Users submit a URL. You review it in your project queue.</p>'));
+      extra.appendChild(el('<p class="text-sm text-content-secondary">Users submit a URL. You review it in your project queue.</p>'));
     } else if (t === 'quiz') {
       extra.appendChild(el(`
         <div class="quiz-builder space-y-2">
-          <input class="qq-text w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Question text">
-          <p class="text-xs text-zinc-500">Options. Mark the correct one.</p>
+          <input class="qq-text w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="Question text">
+          <p class="text-xs text-content-secondary">Options. Mark the correct one.</p>
           <div class="qq-opts space-y-2"></div>
-          <button type="button" class="qq-add text-sm font-medium text-violet-400">Add option</button>
-          <p class="text-sm text-zinc-500">Users must score at least 80% to pass.</p>
+          <button type="button" class="qq-add text-sm font-medium text-accent-text">Add option</button>
+          <p class="text-sm text-content-secondary">Users must score at least 80% to pass.</p>
         </div>`));
       const opts = extra.querySelector('.qq-opts');
       const addOpt = () => {
         opts.appendChild(el(`
           <div class="flex items-center gap-2 qq-row">
-            <input type="radio" name="qq-correct" class="w-4 h-4 accent-violet-500 shrink-0" aria-label="Mark this option as the correct answer">
-            <input class="qq-opt flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Option ${opts.children.length + 1}">
+            <input type="radio" name="qq-correct" class="w-4 h-4 accent-[var(--q-accent)] shrink-0" aria-label="Mark this option as the correct answer">
+            <input class="qq-opt flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent" placeholder="Option ${opts.children.length + 1}">
           </div>`));
       };
       addOpt(); addOpt();
       extra.querySelector('.qq-add').addEventListener('click', addOpt);
     } else if (t === 'wallet_connect') {
-      extra.appendChild(el('<p class="text-sm text-zinc-500">Users sign a message with their browser wallet. Verified automatically.</p>'));
+      extra.appendChild(el('<p class="text-sm text-content-secondary">Users sign a message with their browser wallet. Verified automatically.</p>'));
     } else {
-      extra.appendChild(el('<p class="text-sm text-zinc-500">Users write a short proof. You approve or reject it.</p>'));
+      extra.appendChild(el('<p class="text-sm text-content-secondary">Users write a short proof. You approve or reject it.</p>'));
     }
   }
   typeSel.addEventListener('change', renderExtra);
@@ -720,7 +720,7 @@ async function viewCreate() {
       window.dispatchEvent(new PopStateEvent('popstate'));
     } catch (err) {
       hint.textContent = err.message;
-      hint.className = 'hint text-sm text-red-400';
+      hint.className = 'hint text-sm text-error';
       btn.disabled = false; btn.textContent = 'Publish campaign';
     }
   });
@@ -731,13 +731,13 @@ async function viewCreate() {
 async function viewProjects() {
   const wrap = el('<div></div>');
   mount(wrap);
-  wrap.appendChild(el('<h1 class="text-2xl font-bold mb-1">Projects</h1><p class="text-sm text-zinc-500 mb-5">Every project on Questora, with its campaigns and quests.</p>'));
+  wrap.appendChild(el('<h1 class="text-2xl font-bold mb-1">Projects</h1><p class="text-sm text-content-secondary mb-5">Every project on Questora, with its campaigns and quests.</p>'));
   const body = el('<div class="space-y-2"></div>');
   wrap.appendChild(body);
-  body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading projects\u2026</p>'));
+  body.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading projects\u2026</p>'));
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/projects/directory'); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   body.replaceChildren();
   const rows = data.projects || [];
   if (!rows.length) {
@@ -746,14 +746,14 @@ async function viewProjects() {
   }
   for (const p of rows) {
     body.appendChild(el(`
-      <a href="/projects/${encodeURIComponent(p.slug)}" class="block rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
+      <a href="/projects/${encodeURIComponent(p.slug)}" class="block rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40 transition-colors">
         <div class="flex items-center gap-3">
           <span class="min-w-0 flex-1">
             <span class="block font-medium truncate">${escapeHtml(p.name)}</span>
-            <span class="block text-xs text-zinc-600 truncate">${escapeHtml(p.description || '')}</span>
+            <span class="block text-xs text-content-tertiary truncate">${escapeHtml(p.description || '')}</span>
           </span>
-          <span class="shrink-0 text-xs text-zinc-500">${p.campaign_count} campaigns \u00b7 ${p.quest_count} quests</span>
-          <span class="shrink-0 text-sm text-violet-300 font-medium">${Number(p.total_xp).toLocaleString()} XP</span>
+          <span class="shrink-0 text-xs text-content-secondary">${p.campaign_count} campaigns \u00b7 ${p.quest_count} quests</span>
+          <span class="shrink-0 text-sm text-accent-text font-medium">${Number(p.total_xp).toLocaleString()} XP</span>
         </div>
       </a>`));
   }
@@ -771,7 +771,7 @@ function projectCrumb(p) { return { label: p.name, href: '/projects/' + encodeUR
 
 async function viewProjectOverview(slug, params, legacyTab) {
   params = params || new URLSearchParams();
-  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-24 rounded-2xl bg-zinc-900"></div></div>');
+  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-24 rounded-2xl bg-surface-container"></div></div>');
   mount(wrap);
   let data;
   try { data = await loadProjectView(slug); }
@@ -783,11 +783,11 @@ async function viewProjectOverview(slug, params, legacyTab) {
   const node = el(`
     <div>
       ${breadcrumb([{ label: 'Projects', href: '/projects' }, { label: p.name }])}
-      <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 mb-4">
+      <div class="rounded-2xl border border-line bg-surface p-6 mb-4">
         <div class="flex items-start justify-between gap-4 flex-wrap">
           <div class="min-w-0">
             <h1 class="text-2xl font-bold mb-1">${escapeHtml(p.name)}</h1>
-            <p class="text-sm text-zinc-400 max-w-2xl">${escapeHtml(p.description || '')}</p>
+            <p class="text-sm text-content-secondary max-w-2xl">${escapeHtml(p.description || '')}</p>
             <div class="flex flex-wrap gap-2 mt-3">
               ${badgePill(data.campaigns.length + ' campaigns')}
               ${badgePill(data.campaigns.reduce((n, c) => n + (c.quests ? c.quests.length : 0), 0) + ' quests')}
@@ -795,8 +795,8 @@ async function viewProjectOverview(slug, params, legacyTab) {
           </div>
           <div class="shrink-0">
             ${data.can_manage
-              ? `<a href="/dashboard/projects/${encodeURIComponent(p.slug)}" class="inline-block font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Manage</a>`
-              : `<button type="button" data-jump="campaigns" class="inline-block font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Explore campaigns</button>`}
+              ? `<a href="/dashboard/projects/${encodeURIComponent(p.slug)}" class="inline-block font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Manage</a>`
+              : `<button type="button" data-jump="campaigns" class="inline-block font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Explore campaigns</button>`}
           </div>
         </div>
       </div>
@@ -814,7 +814,7 @@ async function viewProjectOverview(slug, params, legacyTab) {
   function showTab(name) {
     node.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === name;
-      b.className = 'tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium ' + (on ? 'bg-violet-600 text-white' : 'bg-zinc-800/70 text-zinc-400');
+      b.className = 'tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium ' + (on ? 'bg-accent text-accent-contrast' : 'bg-surface-container text-content-secondary');
     });
     body.replaceChildren();
     if (name === 'leaderboard') return renderProjectBoard(body, p);
@@ -832,13 +832,13 @@ function renderProjectSummary(body, p, data) {
     body.appendChild(el(emptyState("This project doesn't have any campaigns yet.", data.can_manage ? 'Create campaign' : 'Explore projects', data.can_manage ? '/dashboard/projects/' + encodeURIComponent(p.slug) + '/campaigns' : '/projects')));
     return;
   }
-  body.appendChild(el(`<p class="text-sm text-zinc-500 mb-3">${active.length} active ${active.length === 1 ? 'campaign' : 'campaigns'} of ${data.campaigns.length}.</p>`));
+  body.appendChild(el(`<p class="text-sm text-content-secondary mb-3">${active.length} active ${active.length === 1 ? 'campaign' : 'campaigns'} of ${data.campaigns.length}.</p>`));
   const list = el('<div class="space-y-2"></div>');
   for (const c of data.campaigns.slice(0, 6)) {
     list.appendChild(el(`
-      <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}" class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
+      <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}" class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40 transition-colors">
         <span class="min-w-0 flex-1"><span class="block font-medium truncate">${escapeHtml(c.name)}</span>
-        <span class="block text-xs text-zinc-600">${(c.quests || []).length} quests \u00b7 ${c.participants || 0} participants</span></span>
+        <span class="block text-xs text-content-tertiary">${(c.quests || []).length} quests \u00b7 ${c.participants || 0} participants</span></span>
         ${statePill(c.status)}
       </a>`));
   }
@@ -854,26 +854,26 @@ function renderProjectCampaigns(body, p, data) {
   for (const c of data.campaigns) {
     const quests = c.quests || [];
     const card = el(`
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+      <div class="rounded-xl border border-line bg-surface p-4">
         <div class="flex items-center gap-3">
           <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}" class="min-w-0 flex-1">
             <span class="block font-medium truncate">${escapeHtml(c.name)}</span>
-            <span class="block text-xs text-zinc-600">${quests.length} quests \u00b7 ${c.participants || 0} participants</span>
+            <span class="block text-xs text-content-tertiary">${quests.length} quests \u00b7 ${c.participants || 0} participants</span>
           </a>
           ${statePill(c.status)}
-          <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}/leaderboard" class="shrink-0 text-xs text-violet-300">Leaderboard</a>
+          <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}/leaderboard" class="shrink-0 text-xs text-accent-text">Leaderboard</a>
         </div>
         <div class="quest-rows mt-3 space-y-1"></div>
       </div>`);
     const holder = card.querySelector('.quest-rows');
-    if (!quests.length) holder.appendChild(el('<p class="text-xs text-zinc-600">This campaign doesn\'t have any quests yet.</p>'));
+    if (!quests.length) holder.appendChild(el('<p class="text-xs text-content-tertiary">This campaign doesn\'t have any quests yet.</p>'));
     for (const q of quests) {
       const qid = q.slug || q.id;
       holder.appendChild(el(`
-        <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}/quests/${encodeURIComponent(qid)}" class="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-zinc-800/60">
-          <span class="min-w-0 flex-1 truncate text-sm text-zinc-300">${escapeHtml(q.title)}</span>
-          <span class="text-xs text-zinc-600">${escapeHtml(q.quest_type || '')}</span>
-          <span class="text-xs text-violet-300">+${q.xp_reward} XP</span>
+        <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}/quests/${encodeURIComponent(qid)}" class="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-surface-container-high">
+          <span class="min-w-0 flex-1 truncate text-sm text-content-secondary">${escapeHtml(q.title)}</span>
+          <span class="text-xs text-content-tertiary">${escapeHtml(q.quest_type || '')}</span>
+          <span class="text-xs text-accent-text">+${q.xp_reward} XP</span>
         </a>`));
     }
     list.appendChild(card);
@@ -882,12 +882,12 @@ function renderProjectCampaigns(body, p, data) {
 }
 
 async function renderProjectBoard(body, p) {
-  body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading leaderboard\u2026</p>'));
+  body.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading leaderboard\u2026</p>'));
   let data;
   try { data = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/leaderboard?metric=points`); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   body.replaceChildren();
-  body.appendChild(el(`<a href="/projects/${encodeURIComponent(p.slug)}/leaderboard" class="text-sm text-violet-300">Open the full project leaderboard</a>`));
+  body.appendChild(el(`<a href="/projects/${encodeURIComponent(p.slug)}/leaderboard" class="text-sm text-accent-text">Open the full project leaderboard</a>`));
   if (!data.entries.length) {
     body.appendChild(el(emptyState('No participants have earned points yet.')));
     return;
@@ -899,11 +899,11 @@ async function renderProjectBoard(body, p) {
 
 function leaderboardRow(e, i) {
   return el(`
-    <a href="/u/${encodeURIComponent(e.username)}" class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
-      <span class="w-8 text-center font-bold ${i === 0 ? 'text-violet-300' : 'text-zinc-500'}">${i + 1}</span>
-      <span class="w-8 h-8 rounded-full bg-violet-600/30 flex items-center justify-center text-xs font-bold text-violet-200">${escapeHtml((e.display_name || e.username).slice(0, 2).toUpperCase())}</span>
-      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(e.display_name || e.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(e.username)}</span></span>
-      <span class="ml-auto font-mono text-violet-300">${Number(e.score).toLocaleString()}</span>
+    <a href="/u/${encodeURIComponent(e.username)}" class="flex items-center gap-4 rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40 transition-colors">
+      <span class="w-8 text-center font-bold ${i === 0 ? 'text-accent-text' : 'text-content-secondary'}">${i + 1}</span>
+      <span class="w-8 h-8 rounded-full bg-accent/30 flex items-center justify-center text-xs font-bold text-accent-text">${escapeHtml((e.display_name || e.username).slice(0, 2).toUpperCase())}</span>
+      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(e.display_name || e.username)}</span><span class="block text-xs text-content-tertiary">@${escapeHtml(e.username)}</span></span>
+      <span class="ml-auto font-mono text-accent-text">${Number(e.score).toLocaleString()}</span>
     </a>`);
 }
 
@@ -914,7 +914,7 @@ async function viewProjectCampaigns(slug, params) {
 
 async function viewProjectQuests(slug, params) {
   params = params || new URLSearchParams();
-  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-zinc-900"></div></div>');
+  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-surface-container"></div></div>');
   mount(wrap);
   let data;
   try { data = await loadProjectView(slug); }
@@ -934,11 +934,11 @@ async function viewProjectQuests(slug, params) {
       any = true;
       const qid = q.slug || q.id;
       holder.appendChild(el(`
-        <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}/quests/${encodeURIComponent(qid)}" class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40">
+        <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}/quests/${encodeURIComponent(qid)}" class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40">
           <span class="min-w-0 flex-1"><span class="block font-medium truncate">${escapeHtml(q.title)}</span>
-          <span class="block text-xs text-zinc-600">${escapeHtml(c.name)}</span></span>
+          <span class="block text-xs text-content-tertiary">${escapeHtml(c.name)}</span></span>
           ${statePill(q.status)}
-          <span class="shrink-0 text-sm text-violet-300">+${q.xp_reward} XP</span>
+          <span class="shrink-0 text-sm text-accent-text">+${q.xp_reward} XP</span>
         </a>`));
     }
   }
@@ -947,7 +947,7 @@ async function viewProjectQuests(slug, params) {
 
 // ---------- campaign detail (hierarchical) ----------
 async function viewCampaignDetail(projectSlug, campaignSlug) {
-  const wrap = el('<div class="animate-pulse space-y-4"><div class="h-32 rounded-2xl bg-zinc-900"></div></div>');
+  const wrap = el('<div class="animate-pulse space-y-4"><div class="h-32 rounded-2xl bg-surface-container"></div></div>');
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/campaigns/' + encodeURIComponent(campaignSlug)); }
@@ -960,32 +960,32 @@ async function viewCampaignDetail(projectSlug, campaignSlug) {
   const node = el(`
     <div>
       ${breadcrumb([{ label: 'Projects', href: '/projects' }].concat(pSlug ? [{ label: c.project_name, href: '/projects/' + encodeURIComponent(pSlug) }] : []).concat([{ label: c.name }]))}
-      <div class="rounded-2xl border border-zinc-800 bg-gradient-to-b from-violet-600/20 to-transparent p-6 mb-4">
-        <div class="flex items-center gap-2 mb-2 text-sm text-zinc-400">
+      <div class="rounded-2xl border border-line bg-gradient-to-b from-accent/20 to-transparent p-6 mb-4">
+        <div class="flex items-center gap-2 mb-2 text-sm text-content-secondary">
           ${statePill(c.status)}
-          ${c.ends_at ? `<span class="inline-block text-xs px-2.5 py-1 rounded-full bg-zinc-800 text-zinc-400">${timeLeft(c.ends_at)}</span>` : ''}
+          ${c.ends_at ? `<span class="inline-block text-xs px-2.5 py-1 rounded-full bg-surface-container-high text-content-secondary">${timeLeft(c.ends_at)}</span>` : ''}
         </div>
         <h1 class="text-2xl font-bold mb-2">${escapeHtml(c.name)}</h1>
-        <p class="text-sm text-zinc-300 mb-4 max-w-2xl">${escapeHtml(c.description || '')}</p>
+        <p class="text-sm text-content-secondary mb-4 max-w-2xl">${escapeHtml(c.description || '')}</p>
         <div class="flex flex-wrap gap-2 text-xs">
           ${badgePill('+' + data.total_xp + ' XP')}
           ${data.total_points ? badgePill('+' + data.total_points + ' points') : ''}
           ${badgePill(data.participants + ' participants')}
         </div>
-        ${totalQuests ? `<div class="mt-4"><div class="h-2 rounded-full bg-zinc-800 overflow-hidden"><div class="h-2 bg-violet-500" style="width:${pct}%"></div></div>
-          <p class="text-xs text-zinc-500 mt-1">${completedCount}/${totalQuests} quests done</p></div>` : ''}
+        ${totalQuests ? `<div class="mt-4"><div class="h-2 rounded-full bg-surface-container-high overflow-hidden"><div class="h-2 bg-accent" style="width:${pct}%"></div></div>
+          <p class="text-xs text-content-secondary mt-1">${completedCount}/${totalQuests} quests done</p></div>` : ''}
         <div class="flex flex-wrap gap-2 mt-4">
           <div class="join-slot"></div>
-          <a href="/projects/${encodeURIComponent(pSlug)}/campaigns/${encodeURIComponent(c.slug)}/leaderboard" class="inline-block text-xs px-3 py-2.5 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Campaign leaderboard</a>
+          <a href="/projects/${encodeURIComponent(pSlug)}/campaigns/${encodeURIComponent(c.slug)}/leaderboard" class="inline-block text-xs px-3 py-2.5 min-h-[44px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">Campaign leaderboard</a>
         </div>
       </div>
-      <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Quests</h2>
+      <h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Quests</h2>
       <div class="quest-list space-y-3"></div>
     </div>`);
   mount(node);
 
   if (data.joined === false && c.status === 'active') {
-    const joinBtn = el('<button class="join font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Join campaign</button>');
+    const joinBtn = el('<button class="join font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Join campaign</button>');
     joinBtn.addEventListener('click', async () => {
       joinBtn.disabled = true; joinBtn.textContent = 'Joining\u2026';
       try { await window.QuestoraAPI.api.post(`/api/v1/campaigns/${c.id}/join`, {}); toast('You joined the campaign'); viewCampaignDetail(pSlug, campaignSlug); }
@@ -993,27 +993,27 @@ async function viewCampaignDetail(projectSlug, campaignSlug) {
     });
     node.querySelector('.join-slot').appendChild(joinBtn);
   } else if (data.joined === true) {
-    node.querySelector('.join-slot').appendChild(el('<span class="inline-block text-xs px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300">Joined</span>'));
+    node.querySelector('.join-slot').appendChild(el('<span class="inline-block text-xs px-2.5 py-1 rounded-full bg-success-bg text-success">Joined</span>'));
   }
 
   const list = node.querySelector('.quest-list');
   if (!totalQuests) list.appendChild(el(emptyState("This campaign doesn't have any quests yet.")));
   for (const q of data.quests) {
     const circle = q.completed
-      ? '<span class="task-circle w-6 h-6 rounded-full border-2 border-emerald-400 bg-emerald-400/10 text-emerald-300 shrink-0 flex items-center justify-center text-xs">\u2713</span>'
+      ? '<span class="task-circle w-6 h-6 rounded-full border-2 border-success/40 bg-success-bg text-success shrink-0 flex items-center justify-center text-xs">\u2713</span>'
       : q.locked
-        ? '<span class="task-circle w-6 h-6 rounded-full border-2 border-zinc-700 bg-zinc-800/50 text-zinc-500 shrink-0 flex items-center justify-center text-xs">\ud83d\udd12</span>'
-        : '<span class="task-circle w-6 h-6 rounded-full border-2 border-zinc-700 shrink-0 flex items-center justify-center"></span>';
+        ? '<span class="task-circle w-6 h-6 rounded-full border-2 border-line-strong bg-surface-container-high text-content-secondary shrink-0 flex items-center justify-center text-xs">\ud83d\udd12</span>'
+        : '<span class="task-circle w-6 h-6 rounded-full border-2 border-line-strong shrink-0 flex items-center justify-center"></span>';
     const qhref = '/projects/' + encodeURIComponent(pSlug) + '/campaigns/' + encodeURIComponent(c.slug) + '/quests/' + encodeURIComponent(q.slug || q.id);
     list.appendChild(el(`
-      <a href="${qhref}" class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 hover:border-violet-500/40 transition-colors p-4 ${q.locked && !q.completed ? 'opacity-60' : ''}">
+      <a href="${qhref}" class="flex items-center gap-4 rounded-xl border border-line hover:border-accent/40 transition-colors p-4 ${q.locked && !q.completed ? 'bg-surface-container' : 'bg-surface'}">
         ${circle}
         <span class="min-w-0">
-          <span class="block font-medium ${q.is_required ? 'text-zinc-100' : 'text-zinc-400'}">${escapeHtml(q.title)}${q.is_required ? '' : ' <span class="text-xs text-zinc-600">(optional)</span>'}</span>
-          <span class="block text-sm text-zinc-500 truncate">${escapeHtml(q.description || '')}</span>
-          ${q.locked && !q.completed ? `<span class="lock-reason block text-xs text-amber-300 mt-1">${escapeHtml(q.locked_reason || 'Locked')}</span>` : ''}
+          <span class="block font-medium ${q.is_required ? 'text-content-primary' : 'text-content-secondary'}">${escapeHtml(q.title)}${q.is_required ? '' : ' <span class="text-xs text-content-tertiary">(optional)</span>'}</span>
+          <span class="block text-sm text-content-secondary truncate">${escapeHtml(q.description || '')}</span>
+          ${q.locked && !q.completed ? `<span class="lock-reason block text-xs text-warning mt-1">${escapeHtml(q.locked_reason || 'Locked')}</span>` : ''}
         </span>
-        <span class="ml-auto text-sm text-violet-300 font-medium shrink-0">+${q.xp_reward} XP</span>
+        <span class="ml-auto text-sm text-accent-text font-medium shrink-0">+${q.xp_reward} XP</span>
       </a>`));
   }
 }
@@ -1028,7 +1028,7 @@ async function resolveCampaignPath(slug) {
 
 // ---------- quest detail (hierarchical) ----------
 async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
-  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-8 w-2/3 rounded bg-zinc-900"></div></div>');
+  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-8 w-2/3 rounded bg-surface-container"></div></div>');
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/quests/' + encodeURIComponent(questSlug)); }
@@ -1044,19 +1044,19 @@ async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
     <div>
       ${breadcrumb([{ label: 'Projects', href: '/projects' }, { label: q.project_name, href: '/projects/' + encodeURIComponent(pSlug) }, { label: q.campaign_name, href: '/projects/' + encodeURIComponent(pSlug) + '/campaigns/' + encodeURIComponent(campaignSlug || q.campaign_slug) }, { label: q.title }])}
       <h1 class="text-2xl font-bold mt-1 mb-1">${escapeHtml(q.title)}</h1>
-      <p class="text-sm text-zinc-400 mb-4 max-w-2xl">${escapeHtml(q.description || '')}</p>
+      <p class="text-sm text-content-secondary mb-4 max-w-2xl">${escapeHtml(q.description || '')}</p>
       <div class="flex flex-wrap gap-2 mb-4">${badgePill('+' + q.xp_reward + ' XP')}${q.points_reward ? badgePill('+' + q.points_reward + ' points') : ''}${badgePill(data.participants + ' participants')}${statePill(q.status)}</div>
       <div class="flex flex-wrap gap-2 mb-6">
-        <a href="/projects/${encodeURIComponent(pSlug)}/campaigns/${encodeURIComponent(campaignSlug || q.campaign_slug)}/quests/${encodeURIComponent(q.slug || q.id)}/leaderboard" class="text-xs px-3 py-2.5 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Quest leaderboard</a>
+        <a href="/projects/${encodeURIComponent(pSlug)}/campaigns/${encodeURIComponent(campaignSlug || q.campaign_slug)}/quests/${encodeURIComponent(q.slug || q.id)}/leaderboard" class="text-xs px-3 py-2.5 min-h-[44px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">Quest leaderboard</a>
       </div>
-      ${q.instructions ? `<div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 mb-6"><p class="text-sm text-zinc-300 whitespace-pre-line">${escapeHtml(q.instructions)}</p></div>` : ''}
+      ${q.instructions ? `<div class="rounded-xl border border-line bg-surface p-4 mb-6"><p class="text-sm text-content-secondary whitespace-pre-line">${escapeHtml(q.instructions)}</p></div>` : ''}
       <div class="lock-banner mb-6"></div>
-      <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Tasks</h2>
+      <h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Tasks</h2>
       <div class="task-list space-y-3"></div>
     </div>`);
   mount(node);
   if (q.locked) {
-    node.querySelector('.lock-banner').appendChild(el(`<div class="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4"><p class="text-sm text-amber-200">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p></div>`));
+    node.querySelector('.lock-banner').appendChild(el(`<div class="rounded-xl border border-warning/40 bg-warning-bg p-4"><p class="text-sm text-warning">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p></div>`));
   }
   const list = node.querySelector('.task-list');
   for (const t of data.tasks) {
@@ -1064,32 +1064,32 @@ async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
     const status = st ? st.status : null;
     const verStatus = t.type === 'on_chain' && st ? st.verification_status : null;
     const reqLine = t.type === 'on_chain' ? requirementLine(t) : null;
-    const stateCls = status === 'verified' ? 'border-emerald-400 bg-emerald-400/10'
-      : status === 'pending' ? 'border-amber-400 bg-amber-400/10'
-      : status === 'rejected' ? 'border-red-400 bg-red-400/10' : 'border-zinc-700';
+    const stateCls = status === 'verified' ? 'border-success/40 bg-success-bg'
+      : status === 'pending' ? 'border-warning/40 bg-warning-bg'
+      : status === 'rejected' ? 'border-error/40 bg-error-bg' : 'border-line-strong';
     const row = el(`
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+      <div class="rounded-xl border border-line bg-surface p-4">
         <div class="flex items-start gap-3">
           <span class="task-state w-6 h-6 rounded-full border-2 ${stateCls} shrink-0 mt-0.5 flex items-center justify-center text-xs">${status === 'verified' ? icon('check', { class: 'w-3.5 h-3.5' }) : status === 'rejected' ? icon('close', { class: 'w-3.5 h-3.5' }) : ''}</span>
           <div class="min-w-0 flex-1">
             <p class="font-medium">${escapeHtml(t.title)}</p>
-            <p class="text-xs text-zinc-500">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.proof_required ? ' \u00b7 proof required' : ''}${reqLine ? ' \u00b7 ' + escapeHtml(reqLine) : ''}</p>
+            <p class="text-xs text-content-secondary">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.proof_required ? ' \u00b7 proof required' : ''}${reqLine ? ' \u00b7 ' + escapeHtml(reqLine) : ''}</p>
             <div class="status-line mt-1">${verStatus ? statePill(verStatus) : (status ? statePill(status) : '')}</div>
-            ${verStatus && verStatus !== 'VERIFIED' && st.verification_reason ? `<p class="text-xs text-zinc-400 mt-1">${escapeHtml(st.verification_reason)}</p>` : ''}
-            ${status === 'rejected' && st.review_note ? `<p class="text-sm text-red-300 mt-1">${escapeHtml(st.review_note)}</p>` : ''}
+            ${verStatus && verStatus !== 'VERIFIED' && st.verification_reason ? `<p class="text-xs text-content-secondary mt-1">${escapeHtml(st.verification_reason)}</p>` : ''}
+            ${status === 'rejected' && st.review_note ? `<p class="text-sm text-error mt-1">${escapeHtml(st.review_note)}</p>` : ''}
             <div class="action-area mt-3"></div>
           </div>
         </div>
       </div>`);
     const actionArea = row.querySelector('.action-area');
     if (verStatus === 'VERIFIED') {
-      actionArea.appendChild(el('<p class="text-sm text-emerald-300">This on-chain task is verified.</p>'));
+      actionArea.appendChild(el('<p class="text-sm text-success">This on-chain task is verified.</p>'));
     } else if (status === 'verified' || status === 'pending') {
-      actionArea.appendChild(el(`<p class="text-sm text-zinc-500">${status === 'verified' ? 'This task is verified.' : 'Your submission is awaiting review.'}</p>`));
+      actionArea.appendChild(el(`<p class="text-sm text-content-secondary">${status === 'verified' ? 'This task is verified.' : 'Your submission is awaiting review.'}</p>`));
     } else if (q.locked) {
-      actionArea.appendChild(el(`<p class="text-sm text-zinc-500">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p>`));
+      actionArea.appendChild(el(`<p class="text-sm text-content-secondary">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p>`));
     } else {
-      actionArea.appendChild(el(`<a href="/quest/${q.id}" class="inline-block text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Open quest tasks</a>`));
+      actionArea.appendChild(el(`<a href="/quest/${q.id}" class="inline-block text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast">Open quest tasks</a>`));
     }
     list.appendChild(row);
   }
@@ -1097,7 +1097,7 @@ async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
 
 // ---------- scoped leaderboard ----------
 async function viewScopedLeaderboard(opts) {
-  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-zinc-900"></div></div>');
+  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-surface-container"></div></div>');
   mount(wrap);
   const metric = opts.metric === 'points' ? 'points' : 'xp';
   const period = opts.period || 'all';
@@ -1114,7 +1114,7 @@ async function viewScopedLeaderboard(opts) {
     : `/api/v1/projects/${p.id}/leaderboard`;
   let board;
   try { board = await window.QuestoraAPI.api.get(`${api}?metric=${metric}&period=${period}`); }
-  catch (err) { wrap.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { wrap.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
 
   const bannerName = quest ? quest.title : campaign ? campaign.name : p.name;
   const bannerScope = quest ? 'Quest leaderboard' : campaign ? 'Campaign leaderboard' : 'Project leaderboard';
@@ -1134,19 +1134,19 @@ async function viewScopedLeaderboard(opts) {
   const node = el(`
     <div>
       ${breadcrumb(crumbItems)}
-      <div class="rounded-2xl border border-zinc-800 bg-gradient-to-b from-violet-600/20 to-transparent p-5 mb-4">
-        <p class="text-xs uppercase tracking-wide text-violet-300 mb-1">${escapeHtml(bannerScope)}</p>
+      <div class="rounded-2xl border border-line bg-gradient-to-b from-accent/20 to-transparent p-5 mb-4">
+        <p class="text-xs uppercase tracking-wide text-accent-text mb-1">${escapeHtml(bannerScope)}</p>
         <h1 class="text-xl font-bold">${escapeHtml(bannerName)} \u2014 ${escapeHtml(bannerScope.replace(' leaderboard', ''))} leaderboard</h1>
         <div class="flex flex-wrap gap-2 mt-3">
-          <div class="flex gap-1 bg-zinc-900 rounded-full p-1 border border-zinc-800">
-            <a href="${qs('xp', period)}" class="px-3 py-1.5 rounded-full text-xs font-medium ${metric === 'xp' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">XP</a>
-            <a href="${qs('points', period)}" class="px-3 py-1.5 rounded-full text-xs font-medium ${metric === 'points' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Points</a>
+          <div class="flex gap-1 bg-surface-container rounded-full p-1 border border-line">
+            <a href="${qs('xp', period)}" class="px-3 py-1.5 rounded-full text-xs font-medium ${metric === 'xp' ? 'bg-accent text-accent-contrast' : 'text-content-secondary'}">XP</a>
+            <a href="${qs('points', period)}" class="px-3 py-1.5 rounded-full text-xs font-medium ${metric === 'points' ? 'bg-accent text-accent-contrast' : 'text-content-secondary'}">Points</a>
           </div>
           <div class="flex flex-wrap gap-1">
-            ${periods.map(per => `<a href="${qs(metric, per)}" class="px-3 py-1.5 rounded-full text-xs font-medium border ${period === per ? 'bg-violet-600 border-violet-600 text-white' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}">${per === 'all' ? 'All time' : per === 'campaign' ? 'Campaign window' : per.charAt(0).toUpperCase() + per.slice(1)}</a>`).join('')}
+            ${periods.map(per => `<a href="${qs(metric, per)}" class="px-3 py-1.5 rounded-full text-xs font-medium border ${period === per ? 'bg-accent border-accent text-accent-contrast' : 'bg-surface-container border-line text-content-secondary'}">${per === 'all' ? 'All time' : per === 'campaign' ? 'Campaign window' : per.charAt(0).toUpperCase() + per.slice(1)}</a>`).join('')}
           </div>
         </div>
-        ${campaign ? `<div class="flex flex-wrap gap-1 mt-2"><a href="/projects/${encodeURIComponent(p.slug)}/leaderboard?metric=${metric}" class="text-xs text-violet-300">Back to project board</a></div>` : ''}
+        ${campaign ? `<div class="flex flex-wrap gap-1 mt-2"><a href="/projects/${encodeURIComponent(p.slug)}/leaderboard?metric=${metric}" class="text-xs text-accent-text">Back to project board</a></div>` : ''}
       </div>
       <div class="board space-y-2"></div>
     </div>`);
@@ -1180,13 +1180,13 @@ const DASH_SECTIONS = [
 function actionMenu(items) {
   const node = el(`
     <details class="relative row-menu">
-      <summary class="list-none cursor-pointer select-none min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300" aria-label="More options" aria-haspopup="menu">${icon('more_vert')}</summary>
-      <div class="absolute right-0 z-20 mt-1 w-56 rounded-xl border border-zinc-700 bg-zinc-900 shadow-lg p-1 space-y-0.5"></div>
+      <summary class="list-none cursor-pointer select-none min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-secondary" aria-label="More options" aria-haspopup="menu">${icon('more_vert')}</summary>
+      <div class="absolute right-0 z-20 mt-1 w-56 rounded-xl border border-line-strong bg-surface-container shadow-lg p-1 space-y-0.5"></div>
     </details>`);
   tooltip(node.querySelector('summary'), 'More options');
   const menu = node.querySelector('div');
   for (const it of items) {
-    const b = el(`<button class="w-full text-left text-sm px-3 py-2 rounded-lg hover:bg-zinc-800 inline-flex items-center gap-3 text-zinc-400 ${it.danger ? 'text-red-300' : ''}">${icon(it.icon || 'chevron_down')}<span class="${it.danger ? 'text-red-300' : 'text-zinc-200'}">${escapeHtml(it.label)}</span></button>`);
+    const b = el(`<button class="w-full text-left text-sm px-3 py-2 rounded-lg hover:bg-surface-container-high inline-flex items-center gap-3 text-content-secondary ${it.danger ? 'text-error' : ''}">${icon(it.icon || 'chevron_down')}<span class="${it.danger ? 'text-error' : 'text-content-primary'}">${escapeHtml(it.label)}</span></button>`);
     b.addEventListener('click', (e) => { e.preventDefault(); node.removeAttribute('open'); it.run(b); });
     menu.appendChild(b);
   }
@@ -1196,15 +1196,15 @@ function actionMenu(items) {
 // Inline two-step confirm used everywhere destructive: the button swaps to a
 // red Confirm plus Cancel, matching the review queue's pattern.
 function confirmButton(label, confirmLabel, run) {
-  const btn = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-200">${escapeHtml(label)}</button>`);
+  const btn = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg bg-surface-container-high hover:bg-error hover:text-error-bg text-content-primary">${escapeHtml(label)}</button>`);
   let armed = false;
   btn.addEventListener('click', async () => {
     if (!armed) {
       armed = true;
-      btn.className = 'text-sm px-3 py-2 min-h-[44px] rounded-lg bg-red-600 hover:bg-red-500 text-white';
+      btn.className = 'text-sm px-3 py-2 min-h-[44px] rounded-lg bg-error hover:bg-error/90 text-error-bg';
       btn.textContent = confirmLabel;
-      const cancel = el('<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 text-zinc-300">Cancel</button>');
-      cancel.addEventListener('click', () => { armed = false; btn.className = 'text-sm px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-200'; btn.textContent = label; cancel.remove(); });
+      const cancel = el('<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg bg-surface-container-high text-content-secondary">Cancel</button>');
+      cancel.addEventListener('click', () => { armed = false; btn.className = 'text-sm px-3 py-2 min-h-[44px] rounded-lg bg-surface-container-high hover:bg-error hover:text-error-bg text-content-primary'; btn.textContent = label; cancel.remove(); });
       btn.after(cancel);
       return;
     }
@@ -1215,7 +1215,7 @@ function confirmButton(label, confirmLabel, run) {
 
 async function viewDashboard(slug, section, params) {
   params = params || new URLSearchParams();
-  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-24 rounded-2xl bg-zinc-900"></div></div>');
+  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-24 rounded-2xl bg-surface-container"></div></div>');
   mount(wrap);
   let data, overview = null;
   try { data = await loadProjectView(slug); }
@@ -1241,13 +1241,13 @@ async function viewDashboard(slug, section, params) {
   const node = el(`
     <div>
       ${breadcrumb([{ label: 'Projects', href: '/projects' }, projectCrumb(p), { label: 'Dashboard' }])}
-      <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 mb-4 flex items-center justify-between gap-4 flex-wrap">
+      <div class="rounded-2xl border border-line bg-surface p-5 mb-4 flex items-center justify-between gap-4 flex-wrap">
         <div class="min-w-0">
           <h1 class="text-xl font-bold truncate">${escapeHtml(p.name)}</h1>
-          <p class="text-sm text-zinc-500">Project dashboard</p>
+          <p class="text-sm text-content-secondary">Project dashboard</p>
         </div>
         <div class="flex gap-2">
-          <a href="/projects/${encodeURIComponent(p.slug)}" class="text-sm px-3 py-2.5 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">View public page</a>
+          <a href="/projects/${encodeURIComponent(p.slug)}" class="text-sm px-3 py-2.5 min-h-[44px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">View public page</a>
         </div>
       </div>
       <div class="grid md:grid-cols-[200px_1fr] gap-4">
@@ -1262,7 +1262,7 @@ async function viewDashboard(slug, section, params) {
   for (const [seg, label, perm] of DASH_SECTIONS) {
     if (!perms[perm]) continue;
     const active = (seg === section) || (seg === 'campaigns' && section.startsWith('campaigns/'));
-    sidebar.appendChild(el(`<a href="${base}${seg ? '/' + seg : ''}" class="shrink-0 px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium ${active ? 'bg-violet-600 text-white' : 'bg-zinc-900 text-zinc-400 hover:text-white'}">${escapeHtml(label)}</a>`));
+    sidebar.appendChild(el(`<a href="${base}${seg ? '/' + seg : ''}" class="shrink-0 px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium ${active ? 'bg-accent text-accent-contrast' : 'bg-surface-container text-content-secondary hover:text-content-primary'}">${escapeHtml(label)}</a>`));
   }
 
   const ctx = { p, data, stats, base, isCreator, perms, params, reload: () => viewDashboard(slug, section, params) };
@@ -1295,21 +1295,21 @@ function renderDashOverview(sectionEl, ctx) {
     statCard('Quests', stats.quests || 0),
     statCard('Participants', stats.participants || 0),
     statCard('Completions', stats.completions || 0),
-    statCard('XP distributed', Number(stats.xp_distributed || 0).toLocaleString(), 'text-violet-300'),
+    statCard('XP distributed', Number(stats.xp_distributed || 0).toLocaleString(), 'text-accent-text'),
     statCard('Awaiting review', stats.pending_review || 0),
   ].join('');
   sectionEl.appendChild(cards);
-  sectionEl.appendChild(el(`<a href="${ctx.base}/campaigns" class="inline-block font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm mb-5">New campaign</a>`));
-  sectionEl.appendChild(el('<h2 class="text-sm font-medium text-zinc-500 mb-2">Recent activity</h2>'));
+  sectionEl.appendChild(el(`<a href="${ctx.base}/campaigns" class="inline-block font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm mb-5">New campaign</a>`));
+  sectionEl.appendChild(el('<h2 class="text-sm font-medium text-content-secondary mb-2">Recent activity</h2>'));
   const act = (ctx.recent_activity || []);
   if (act.length) {
     const list = el('<div class="space-y-2"></div>');
     for (const a of act) {
-      list.appendChild(el(`<div class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-2.5 text-sm"><span class="min-w-0 truncate"><span class="text-zinc-200">@${escapeHtml(a.username)}</span> <span class="text-zinc-500">completed ${escapeHtml(a.title)}</span></span><span class="shrink-0 text-xs text-zinc-600">${new Date(a.completed_at).toLocaleDateString()}</span></div>`));
+      list.appendChild(el(`<div class="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-2.5 text-sm"><span class="min-w-0 truncate"><span class="text-content-primary">@${escapeHtml(a.username)}</span> <span class="text-content-secondary">completed ${escapeHtml(a.title)}</span></span><span class="shrink-0 text-xs text-content-tertiary">${new Date(a.completed_at).toLocaleDateString()}</span></div>`));
     }
     sectionEl.appendChild(list);
   } else {
-    sectionEl.appendChild(el('<p class="text-sm text-zinc-600">No activity yet. Publish a campaign and its quests to start.</p>'));
+    sectionEl.appendChild(el('<p class="text-sm text-content-tertiary">No activity yet. Publish a campaign and its quests to start.</p>'));
   }
 }
 
@@ -1321,14 +1321,14 @@ function renderDashCampaigns(sectionEl, ctx) {
   const pageSize = 5;
 
   const create = el(`
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 mb-4">
+    <div class="rounded-xl border border-line bg-surface p-4 mb-4">
       <h2 class="font-semibold mb-2">Create campaign</h2>
       <div class="flex flex-col sm:flex-row gap-2">
-        <input class="c-name flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none" placeholder="Campaign name">
-        <select class="c-status rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
+        <input class="c-name flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" placeholder="Campaign name">
+        <select class="c-status rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
           <option value="draft">Draft</option><option value="scheduled">Scheduled</option><option value="active">Active</option>
         </select>
-        <button class="c-create shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Create campaign</button>
+        <button class="c-create shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Create campaign</button>
       </div>
     </div>`);
   create.querySelector('.c-create').addEventListener('click', async () => {
@@ -1348,26 +1348,26 @@ function renderDashCampaigns(sectionEl, ctx) {
 
   const controls = el(`
     <div class="flex flex-wrap gap-2 items-center mb-3">
-      <input class="d-search flex-1 min-w-[160px] rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none" placeholder="Search campaigns">
-      <select class="d-status rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
+      <input class="d-search flex-1 min-w-[160px] rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" placeholder="Search campaigns">
+      <select class="d-status rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
         <option value="">All statuses</option>
         <option value="draft">Draft</option><option value="scheduled">Scheduled</option><option value="active">Active</option>
         <option value="paused">Paused</option><option value="ended">Ended</option><option value="archived">Archived</option>
       </select>
-      <select class="d-sort rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
+      <select class="d-sort rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
         <option value="newest">Newest</option><option value="name">Name</option><option value="quests">Most quests</option>
       </select>
-      <input class="d-from rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-300 focus:outline-none" type="date" aria-label="Starts after">
-      <input class="d-to rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-300 focus:outline-none" type="date" aria-label="Ends before">
+      <input class="d-from rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm text-content-secondary focus:outline-none" type="date" aria-label="Starts after">
+      <input class="d-to rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm text-content-secondary focus:outline-none" type="date" aria-label="Ends before">
     </div>`);
   sectionEl.appendChild(controls);
 
   const bulk = el(`
     <div class="bulk flex flex-wrap gap-2 mb-3 hidden">
-      <span class="text-xs text-zinc-500 self-center"><span class="count">0</span> selected</span>
-      <button class="b-publish text-xs px-3 py-2 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">${icon('publish', { class: 'w-4 h-4' })}<span>Publish</span></button>
-      <button class="b-unpublish text-xs px-3 py-2 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">${icon('cancel', { class: 'w-4 h-4' })}<span>Unpublish</span></button>
-      <button class="b-archive text-xs px-3 py-2 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-200">${icon('archive', { class: 'w-4 h-4' })}<span>Archive</span></button>
+      <span class="text-xs text-content-secondary self-center"><span class="count">0</span> selected</span>
+      <button class="b-publish text-xs px-3 py-2 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">${icon('publish', { class: 'w-4 h-4' })}<span>Publish</span></button>
+      <button class="b-unpublish text-xs px-3 py-2 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">${icon('cancel', { class: 'w-4 h-4' })}<span>Unpublish</span></button>
+      <button class="b-archive text-xs px-3 py-2 min-h-[44px] inline-flex items-center gap-1.5 rounded-lg bg-surface-container-high hover:bg-error hover:text-error-bg text-content-primary">${icon('archive', { class: 'w-4 h-4' })}<span>Archive</span></button>
     </div>`);
   sectionEl.appendChild(bulk);
 
@@ -1434,11 +1434,11 @@ function renderDashCampaigns(sectionEl, ctx) {
     }
     for (const c of slice) {
       const row = el(`
-        <div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5">
-          <input type="checkbox" class="sel accent-violet-500" ${state.selected.has(c.id) ? 'checked' : ''} aria-label="Select ${escapeHtml(c.name)}">
+        <div class="flex items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2.5">
+          <input type="checkbox" class="sel accent-[var(--q-accent)]" ${state.selected.has(c.id) ? 'checked' : ''} aria-label="Select ${escapeHtml(c.name)}">
           <span class="min-w-0 flex-1">
             <span class="block font-medium truncate">${escapeHtml(c.name)}</span>
-            <span class="block text-xs text-zinc-600">${c.quest_count || 0} quests \u00b7 ${c.participants || 0} participants \u00b7 ${c.starts_at ? new Date(c.starts_at).toLocaleDateString() : 'no start'} to ${c.ends_at ? new Date(c.ends_at).toLocaleDateString() : 'no end'}</span>
+            <span class="block text-xs text-content-tertiary">${c.quest_count || 0} quests \u00b7 ${c.participants || 0} participants \u00b7 ${c.starts_at ? new Date(c.starts_at).toLocaleDateString() : 'no start'} to ${c.ends_at ? new Date(c.ends_at).toLocaleDateString() : 'no end'}</span>
           </span>
           ${statePill(c.status)}
           <span class="menu-slot shrink-0"></span>
@@ -1450,13 +1450,13 @@ function renderDashCampaigns(sectionEl, ctx) {
     pagerSlot.replaceChildren();
     if (pages > 1) {
       const pg = el('<div class="flex items-center justify-center gap-3 mt-2"></div>');
-      const prev = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 text-zinc-200 ${state.page === 1 ? 'opacity-40' : ''}">Previous</button>`);
+      const prev = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg ${state.page === 1 ? 'bg-surface-container text-content-disabled' : 'bg-surface-container-high hover:bg-surface-container-highest text-content-primary'}">Previous</button>`);
       prev.disabled = state.page === 1;
       prev.addEventListener('click', () => { state.page--; render(); });
-      const next = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 text-zinc-200 ${state.page === pages ? 'opacity-40' : ''}">Next</button>`);
+      const next = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg ${state.page === pages ? 'bg-surface-container text-content-disabled' : 'bg-surface-container-high hover:bg-surface-container-highest text-content-primary'}">Next</button>`);
       next.disabled = state.page === pages;
       next.addEventListener('click', () => { state.page++; render(); });
-      pg.appendChild(prev); pg.appendChild(el(`<span class="text-sm text-zinc-500">Page ${state.page} of ${pages}</span>`)); pg.appendChild(next);
+      pg.appendChild(prev); pg.appendChild(el(`<span class="text-sm text-content-secondary">Page ${state.page} of ${pages}</span>`)); pg.appendChild(next);
       pagerSlot.appendChild(pg);
     }
   }
@@ -1480,18 +1480,18 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
     <div class="mb-4">
       ${breadcrumb([{ label: 'Campaigns', href: ctx.base + '/campaigns' }, { label: campaign.name }])}
       <h2 class="text-lg font-bold">${escapeHtml(campaign.name)}</h2>
-      <p class="text-sm text-zinc-500">Manage this campaign's quests.</p>
+      <p class="text-sm text-content-secondary">Manage this campaign's quests.</p>
     </div>`));
 
   const create = el(`
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 mb-4">
+    <div class="rounded-xl border border-line bg-surface p-4 mb-4">
       <h3 class="font-semibold mb-2">Create quest</h3>
       <div class="flex flex-col sm:flex-row gap-2">
-        <input class="q-title flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none" placeholder="Quest title">
-        <input class="q-xp w-28 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none" type="number" min="0" placeholder="XP">
-        <button class="q-create shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Create quest</button>
+        <input class="q-title flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" placeholder="Quest title">
+        <input class="q-xp w-28 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" type="number" min="0" placeholder="XP">
+        <button class="q-create shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Create quest</button>
       </div>
-      <p class="text-xs text-zinc-600 mt-1">A quest starts with one manual task you can edit later.</p>
+      <p class="text-xs text-content-tertiary mt-1">A quest starts with one manual task you can edit later.</p>
     </div>`);
   create.querySelector('.q-create').addEventListener('click', async () => {
     const title = create.querySelector('.q-title').value.trim();
@@ -1512,18 +1512,18 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
 
   const controls = el(`
     <div class="flex flex-wrap gap-2 items-center mb-3">
-      <input class="k-search flex-1 min-w-[160px] rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none" placeholder="Search quests">
-      <select class="k-status rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
+      <input class="k-search flex-1 min-w-[160px] rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" placeholder="Search quests">
+      <select class="k-status rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
         <option value="">All statuses</option>
         <option value="draft">Draft</option><option value="scheduled">Scheduled</option><option value="active">Active</option>
         <option value="paused">Paused</option><option value="ended">Ended</option><option value="archived">Archived</option>
       </select>
-      <select class="k-type rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
+      <select class="k-type rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
         <option value="">All types</option>
         <option value="Social">Social</option><option value="Quiz">Quiz</option><option value="Wallet">Wallet</option>
         <option value="Submission">Submission</option><option value="Mixed">Mixed</option>
       </select>
-      <select class="k-sort rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
+      <select class="k-sort rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
         <option value="order">Manual order</option><option value="name">Name</option>
         <option value="participants">Most participants</option><option value="xp">Most XP</option>
       </select>
@@ -1572,17 +1572,17 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
     slice.forEach((q) => {
       const idx = quests.indexOf(q);
       const row = el(`
-        <div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5">
-          <span class="drag-handle cursor-grab text-zinc-600 select-none" title="Drag to reorder" aria-hidden="true">${icon('drag_indicator')}</span>
+        <div class="flex items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2.5">
+          <span class="drag-handle cursor-grab text-content-tertiary select-none" title="Drag to reorder" aria-hidden="true">${icon('drag_indicator')}</span>
           <span class="min-w-0 flex-1">
             <span class="block font-medium truncate">${escapeHtml(q.title)}</span>
-            <span class="block text-xs text-zinc-600">${escapeHtml(q.quest_type || 'Mixed')} \u00b7 ${q.participants || 0} participants \u00b7 ${q.points_reward || 0} points</span>
+            <span class="block text-xs text-content-tertiary">${escapeHtml(q.quest_type || 'Mixed')} \u00b7 ${q.participants || 0} participants \u00b7 ${q.points_reward || 0} points</span>
           </span>
           ${statePill(q.status)}
-          <span class="shrink-0 text-sm text-violet-300">+${q.xp_reward} XP</span>
+          <span class="shrink-0 text-sm text-accent-text">+${q.xp_reward} XP</span>
           <span class="updown shrink-0 flex gap-1">
-            <button class="up min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 disabled:opacity-40" aria-label="Move up">${icon('arrow_upward')}</button>
-            <button class="down min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 disabled:opacity-40" aria-label="Move down">${icon('arrow_downward')}</button>
+            <button class="up min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-secondary disabled:bg-surface-container disabled:text-content-disabled disabled:cursor-not-allowed" aria-label="Move up">${icon('arrow_upward')}</button>
+            <button class="down min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-secondary disabled:bg-surface-container disabled:text-content-disabled disabled:cursor-not-allowed" aria-label="Move down">${icon('arrow_downward')}</button>
           </span>
           <span class="menu-slot shrink-0"></span>
         </div>`);
@@ -1623,13 +1623,13 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
     pagerSlot.replaceChildren();
     if (pages > 1) {
       const pg = el('<div class="flex items-center justify-center gap-3 mt-2"></div>');
-      const prev = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 text-zinc-200 ${state.page === 1 ? 'opacity-40' : ''}">Previous</button>`);
+      const prev = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg ${state.page === 1 ? 'bg-surface-container text-content-disabled' : 'bg-surface-container-high hover:bg-surface-container-highest text-content-primary'}">Previous</button>`);
       prev.disabled = state.page === 1;
       prev.addEventListener('click', () => { state.page--; render(); });
-      const next = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 text-zinc-200 ${state.page === pages ? 'opacity-40' : ''}">Next</button>`);
+      const next = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg ${state.page === pages ? 'bg-surface-container text-content-disabled' : 'bg-surface-container-high hover:bg-surface-container-highest text-content-primary'}">Next</button>`);
       next.disabled = state.page === pages;
       next.addEventListener('click', () => { state.page++; render(); });
-      pg.appendChild(prev); pg.appendChild(el(`<span class="text-sm text-zinc-500">Page ${state.page} of ${pages}</span>`)); pg.appendChild(next);
+      pg.appendChild(prev); pg.appendChild(el(`<span class="text-sm text-content-secondary">Page ${state.page} of ${pages}</span>`)); pg.appendChild(next);
       pagerSlot.appendChild(pg);
     }
   }
@@ -1642,10 +1642,10 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
 
 function promptEditQuest(row, q, save) {
   const panel = el(`
-    <div class="mt-2 rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 space-y-2">
-      <input class="e-title w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" value="${escapeHtml(q.title)}" aria-label="Quest title">
-      <input class="e-xp w-32 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="0" value="${q.xp_reward}" aria-label="XP reward">
-      <div class="flex gap-2"><button class="save text-sm px-3 py-2 min-h-[44px] rounded-lg bg-violet-600 text-white">Save</button><button class="cancel text-sm px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 text-zinc-300">Cancel</button></div>
+    <div class="mt-2 rounded-xl border border-line bg-surface p-3 space-y-2">
+      <input class="e-title w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" value="${escapeHtml(q.title)}" aria-label="Quest title">
+      <input class="e-xp w-32 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="0" value="${q.xp_reward}" aria-label="XP reward">
+      <div class="flex gap-2"><button class="save text-sm px-3 py-2 min-h-[44px] rounded-lg bg-accent text-accent-contrast">Save</button><button class="cancel text-sm px-3 py-2 min-h-[44px] rounded-lg bg-surface-container-high text-content-secondary">Cancel</button></div>
     </div>`);
   panel.querySelector('.cancel').addEventListener('click', () => panel.remove());
   panel.querySelector('.save').addEventListener('click', async () => {
@@ -1667,23 +1667,23 @@ function renderDashNewChooser(sectionEl, ctx, mode) {
     <div class="mb-4">
       ${breadcrumb([{ label: 'Quests', href: base + '/quests' }, { label: isTask ? 'New task' : 'New quest' }])}
       <h2 class="text-lg font-bold">${isTask ? 'Add a task' : 'Create a quest'}</h2>
-      <p class="text-sm text-zinc-500">${isTask ? 'Pick the campaign and quest to configure.' : 'Pick the campaign to add the quest to.'}</p>
+      <p class="text-sm text-content-secondary">${isTask ? 'Pick the campaign and quest to configure.' : 'Pick the campaign to add the quest to.'}</p>
     </div>`));
   if (!campaigns.length) {
     sectionEl.appendChild(el(emptyState('This project has no campaigns yet. Create a campaign first.', 'Create campaign', base + '/campaigns?new=campaign')));
     return;
   }
   const form = el(`
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 max-w-xl space-y-3">
+    <div class="rounded-xl border border-line bg-surface p-4 max-w-xl space-y-3">
       <div>
-        <label class="block text-xs text-zinc-500 mb-1">Campaign</label>
-        <select class="nc-campaign w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none"></select>
+        <label class="block text-xs text-content-secondary mb-1">Campaign</label>
+        <select class="nc-campaign w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none"></select>
       </div>
       <div class="nc-quest-wrap hidden">
-        <label class="block text-xs text-zinc-500 mb-1">Quest</label>
-        <select class="nc-quest w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none"></select>
+        <label class="block text-xs text-content-secondary mb-1">Quest</label>
+        <select class="nc-quest w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none"></select>
       </div>
-      <button class="nc-go font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">${isTask ? 'Open task editor' : 'Continue'}</button>
+      <button class="nc-go font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">${isTask ? 'Open task editor' : 'Continue'}</button>
     </div>`);
   const cSel = form.querySelector('.nc-campaign');
   for (const c of campaigns) cSel.appendChild(el(`<option value="${c.id}">${escapeHtml(c.name)}</option>`));
@@ -1713,17 +1713,17 @@ function renderDashNewChooser(sectionEl, ctx, mode) {
 
 function renderDashQuests(sectionEl, ctx) {
   const { p, data } = ctx;
-  sectionEl.appendChild(el('<h2 class="text-lg font-bold mb-1">Quests</h2><p class="text-sm text-zinc-500 mb-4">Every quest in this project.</p>'));
+  sectionEl.appendChild(el('<h2 class="text-lg font-bold mb-1">Quests</h2><p class="text-sm text-content-secondary mb-4">Every quest in this project.</p>'));
   const rows = [];
   for (const c of data.campaigns) for (const q of (c.quests || [])) rows.push({ ...q, campaign_name: c.name, campaign_slug: c.slug });
   if (!rows.length) { sectionEl.appendChild(el(emptyState("This project doesn't have any quests yet."))); return; }
   const list = el('<div class="space-y-2"></div>');
   for (const q of rows) {
     list.appendChild(el(`
-      <a href="${ctx.base}/campaigns/${encodeURIComponent(q.campaign_slug)}" class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40">
-        <span class="min-w-0 flex-1"><span class="block font-medium truncate">${escapeHtml(q.title)}</span><span class="block text-xs text-zinc-600">${escapeHtml(q.campaign_name)} \u00b7 ${escapeHtml(q.quest_type || 'Mixed')}</span></span>
+      <a href="${ctx.base}/campaigns/${encodeURIComponent(q.campaign_slug)}" class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40">
+        <span class="min-w-0 flex-1"><span class="block font-medium truncate">${escapeHtml(q.title)}</span><span class="block text-xs text-content-tertiary">${escapeHtml(q.campaign_name)} \u00b7 ${escapeHtml(q.quest_type || 'Mixed')}</span></span>
         ${statePill(q.status)}
-        <span class="shrink-0 text-sm text-violet-300">+${q.xp_reward} XP</span>
+        <span class="shrink-0 text-sm text-accent-text">+${q.xp_reward} XP</span>
       </a>`));
   }
   sectionEl.appendChild(list);
@@ -1740,7 +1740,7 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
     questData = await api.get(`/api/v1/quests/${encodeURIComponent(questId)}/tasks`);
     netData = await api.get(`/api/v1/projects/${p.id}/networks`);
     tokData = await api.get(`/api/v1/projects/${p.id}/tokens`);
-  } catch (err) { sectionEl.appendChild(el(`<div class="rounded-xl border border-red-900/60 bg-red-950/20 p-4 text-sm text-red-300">${escapeHtml(err.message)}</div>`)); return; }
+  } catch (err) { sectionEl.appendChild(el(`<div class="rounded-xl border border-error/40 bg-error-bg p-4 text-sm text-error">${escapeHtml(err.message)}</div>`)); return; }
   const quest = questData.quest;
   const tasks = questData.tasks || [];
   const networks = netData.networks || [];
@@ -1751,35 +1751,35 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
     <div class="mb-4">
       ${breadcrumb([{ label: 'Campaigns', href: ctx.base + '/campaigns' }, { label: 'Tasks' }])}
       <h2 class="text-lg font-bold">Configure tasks</h2>
-      <p class="text-sm text-zinc-500">${escapeHtml(quest.title)} · ${tasks.length} task${tasks.length === 1 ? '' : 's'}</p>
+      <p class="text-sm text-content-secondary">${escapeHtml(quest.title)} · ${tasks.length} task${tasks.length === 1 ? '' : 's'}</p>
     </div>`));
 
   const netPanel = el(`
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 mb-4">
+    <div class="rounded-xl border border-line bg-surface p-4 mb-4">
       <div class="flex items-center justify-between">
         <h3 class="font-semibold">Networks</h3>
-        <span class="text-xs text-zinc-500">${networks.length} configured</span>
+        <span class="text-xs text-content-secondary">${networks.length} configured</span>
       </div>
       <div class="net-list space-y-2 mt-2"></div>
       <details class="mt-3">
-        <summary class="cursor-pointer text-sm text-violet-300">Add a network</summary>
+        <summary class="cursor-pointer text-sm text-accent-text">Add a network</summary>
         <div class="grid sm:grid-cols-2 gap-2 mt-3">
-          <input class="n-name rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Network name (e.g. Sepolia)">
-          <select class="n-family rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm">
+          <input class="n-name rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Network name (e.g. Sepolia)">
+          <select class="n-family rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
             <option value="eip155">EVM</option>
             <option value="solana">Solana</option>
             <option value="sui">Sui</option>
             <option value="aptos">Aptos</option>
             <option value="octra">Octra</option>
           </select>
-          <input class="n-chainid rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Chain id (EVM only)">
-          <input class="n-symbol rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Native symbol (ETH)">
-          <input class="n-decimals rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" placeholder="Native decimals (18)">
-          <input class="n-rpc rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Primary RPC URL">
-          <input class="n-tx rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Explorer tx URL template (…/{tx})">
-          <label class="flex items-center gap-2 text-sm text-zinc-400"><input type="checkbox" class="n-testnet accent-violet-500" checked> Testnet</label>
+          <input class="n-chainid rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Chain id (EVM only)">
+          <input class="n-symbol rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Native symbol (ETH)">
+          <input class="n-decimals rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" placeholder="Native decimals (18)">
+          <input class="n-rpc rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Primary RPC URL">
+          <input class="n-tx rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Explorer tx URL template (…/{tx})">
+          <label class="flex items-center gap-2 text-sm text-content-secondary"><input type="checkbox" class="n-testnet accent-[var(--q-accent)]" checked> Testnet</label>
         </div>
-        <button class="n-add mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Add network</button>
+        <button class="n-add mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Add network</button>
       </details>
     </div>`);
   sectionEl.appendChild(netPanel);
@@ -1805,27 +1805,27 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
 
   function renderNetworks() {
     netList.replaceChildren();
-    if (!networks.length) { netList.appendChild(el('<p class="text-sm text-zinc-600">No networks yet. Add one below.</p>')); return; }
+    if (!networks.length) { netList.appendChild(el('<p class="text-sm text-content-tertiary">No networks yet. Add one below.</p>')); return; }
     for (const n of networks) {
       const row = el(`
-        <div class="rounded-lg border border-zinc-800 bg-zinc-950/40 px-3 py-2.5">
+        <div class="rounded-lg border border-line bg-surface-container-high px-3 py-2.5">
           <div class="flex flex-wrap items-center gap-2">
             <span class="font-medium">${escapeHtml(n.name)}</span>
-            <span class="text-xs text-zinc-500">${escapeHtml(n.chain_namespace)}${n.chain_id !== null ? ' · chain ' + n.chain_id : ''}${n.native_symbol ? ' · ' + escapeHtml(n.native_symbol) : ''}</span>
+            <span class="text-xs text-content-secondary">${escapeHtml(n.chain_namespace)}${n.chain_id !== null ? ' · chain ' + n.chain_id : ''}${n.native_symbol ? ' · ' + escapeHtml(n.native_symbol) : ''}</span>
             <span class="ml-auto flex items-center gap-2">
-              <button class="test-conn text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Test connection</button>
+              <button class="test-conn text-xs px-3 py-2 min-h-[36px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">Test connection</button>
             </span>
           </div>
           <div class="rpc-add flex gap-2 mt-2">
-            <input class="rpc-url flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2 text-sm" placeholder="Add backup RPC URL">
-            <button class="rpc-save text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Add</button>
+            <input class="rpc-url flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2 text-sm" placeholder="Add backup RPC URL">
+            <button class="rpc-save text-xs px-3 py-2 min-h-[36px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">Add</button>
           </div>
           <div class="rpc-list mt-2 space-y-1"></div>
           <div class="test-result text-xs mt-2"></div>
         </div>`);
       const rpcList = row.querySelector('.rpc-list');
       for (const r of n.rpcs) {
-        rpcList.appendChild(el(`<p class="text-xs text-zinc-500">${r.is_primary ? 'Primary' : 'Backup'} · ${escapeHtml(r.host)} · ${escapeHtml(r.health_state)}</p>`));
+        rpcList.appendChild(el(`<p class="text-xs text-content-secondary">${r.is_primary ? 'Primary' : 'Backup'} · ${escapeHtml(r.host)} · ${escapeHtml(r.health_state)}</p>`));
       }
       row.querySelector('.rpc-save').addEventListener('click', async () => {
         const url = row.querySelector('.rpc-url').value.trim();
@@ -1836,8 +1836,8 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
       row.querySelector('.test-conn').addEventListener('click', async () => {
         const out = row.querySelector('.test-result');
         out.textContent = 'Testing…';
-        try { const r = await api.post(`/api/v1/networks/${n.id}/test`, {}); out.className = 'test-result text-xs mt-2 ' + (r.ok ? 'text-emerald-300' : 'text-amber-300'); out.textContent = r.message; }
-        catch (err) { out.className = 'test-result text-xs mt-2 text-amber-300'; out.textContent = err.message; }
+        try { const r = await api.post(`/api/v1/networks/${n.id}/test`, {}); out.className = 'test-result text-xs mt-2 ' + (r.ok ? 'text-success' : 'text-warning'); out.textContent = r.message; }
+        catch (err) { out.className = 'test-result text-xs mt-2 text-warning'; out.textContent = err.message; }
       });
       netList.appendChild(row);
     }
@@ -1845,27 +1845,27 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
   renderNetworks();
 
   const tokPanel = el(`
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 mb-4">
+    <div class="rounded-xl border border-line bg-surface p-4 mb-4">
       <h3 class="font-semibold">Tokens</h3>
-      <p class="text-xs text-zinc-500">Used by token balance tasks. Metadata is read from the contract when possible; type it in if the read fails.</p>
+      <p class="text-xs text-content-secondary">Used by token balance tasks. Metadata is read from the contract when possible; type it in if the read fails.</p>
       <div class="tok-list space-y-1 mt-2"></div>
       <details class="mt-2">
-        <summary class="cursor-pointer text-sm text-violet-300">Add a token</summary>
+        <summary class="cursor-pointer text-sm text-accent-text">Add a token</summary>
         <div class="grid sm:grid-cols-2 gap-2 mt-3">
-          <select class="t-network rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm"></select>
-          <input class="t-addr rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Contract address">
-          <input class="t-symbol rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Symbol (USDX)">
-          <input class="t-decimals rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" placeholder="Decimals (18)">
+          <select class="t-network rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
+          <input class="t-addr rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Contract address">
+          <input class="t-symbol rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Symbol (USDX)">
+          <input class="t-decimals rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" placeholder="Decimals (18)">
         </div>
-        <button class="t-add mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Add token</button>
+        <button class="t-add mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Add token</button>
       </details>
     </div>`);
   sectionEl.appendChild(tokPanel);
   const tNet = tokPanel.querySelector('.t-network');
   for (const n of networks) tNet.appendChild(el(`<option value="${n.id}">${escapeHtml(n.name)}</option>`));
   const tokList = tokPanel.querySelector('.tok-list');
-  if (!tokens.length) tokList.appendChild(el('<p class="text-sm text-zinc-600">No tokens yet.</p>'));
-  for (const tk of tokens) tokList.appendChild(el(`<p class="text-xs text-zinc-500">${escapeHtml(tk.symbol || tk.address || tk.contract_address)} · ${escapeHtml(String(tk.contract_address))} · ${tk.decimals === null ? 'no decimals' : tk.decimals + ' decimals'}</p>`));
+  if (!tokens.length) tokList.appendChild(el('<p class="text-sm text-content-tertiary">No tokens yet.</p>'));
+  for (const tk of tokens) tokList.appendChild(el(`<p class="text-xs text-content-secondary">${escapeHtml(tk.symbol || tk.address || tk.contract_address)} · ${escapeHtml(String(tk.contract_address))} · ${tk.decimals === null ? 'no decimals' : tk.decimals + ' decimals'}</p>`));
   tokPanel.querySelector('.t-add').addEventListener('click', async () => {
     const b = {
       network_id: Number(tNet.value), contract_address: tokPanel.querySelector('.t-addr').value.trim(),
@@ -1880,34 +1880,34 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
 
   // The task form.
   const form = el(`
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+    <div class="rounded-xl border border-line bg-surface p-4">
       <h3 class="font-semibold task-form-title">Add an on-chain task</h3>
       <div class="grid sm:grid-cols-2 gap-2 mt-3">
-        <input class="f-title rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Task title" value="On-chain task">
-        <select class="f-method rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm">
+        <input class="f-title rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Task title" value="On-chain task">
+        <select class="f-method rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
           <option value="native_balance">Hold native balance</option>
           <option value="erc20_balance">Hold token balance</option>
           <option value="transaction">Make a transaction</option>
         </select>
-        <select class="f-network rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm"></select>
-        <select class="f-token rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm"></select>
-        <select class="f-operator rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm">
+        <select class="f-network rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
+        <select class="f-token rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
+        <select class="f-operator rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
           <option value="gte">At least</option><option value="gt">More than</option>
           <option value="lte">At most</option><option value="lt">Less than</option><option value="eq">Exactly</option>
         </select>
-        <input class="f-amount rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" placeholder="Amount (100)">
-        <input class="f-confirmations rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Confirmations (transaction only)" value="1">
-        <input class="f-xp rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Task XP" value="0">
-        <select class="f-completion rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm">
+        <input class="f-amount rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Amount (100)">
+        <input class="f-confirmations rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Confirmations (transaction only)" value="1">
+        <input class="f-xp rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Task XP" value="0">
+        <select class="f-completion rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
           <option value="one_time">One time</option><option value="daily">Daily</option>
           <option value="weekly">Weekly</option><option value="monthly">Monthly</option>
         </select>
-        <input class="f-attempts rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Attempt limit (optional)">
-        <input class="f-cooldown rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Cooldown seconds (0)">
+        <input class="f-attempts rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Attempt limit (optional)">
+        <input class="f-cooldown rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Cooldown seconds (0)">
       </div>
       <div class="flex flex-wrap gap-2 mt-3">
-        <button class="f-save font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Save task</button>
-        <button class="f-reset text-sm px-4 py-2.5 min-h-[44px] rounded-lg bg-zinc-800 text-zinc-300">Clear</button>
+        <button class="f-save font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save task</button>
+        <button class="f-reset text-sm px-4 py-2.5 min-h-[44px] rounded-lg bg-surface-container-high text-content-secondary">Clear</button>
       </div>
       <div class="f-result text-sm mt-2"></div>
     </div>`);
@@ -1947,7 +1947,7 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
       cooldown_seconds: parseInt(form.querySelector('.f-cooldown').value, 10) || 0,
     };
     const out = form.querySelector('.f-result');
-    out.className = 'f-result text-sm mt-2 text-zinc-400';
+    out.className = 'f-result text-sm mt-2 text-content-secondary';
     out.textContent = 'Saving…';
     try {
       if (editing.taskId) {
@@ -1960,23 +1960,23 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
         await api.post(`/api/v1/quests/${questId}/tasks`, body);
         toast('Task added'); ctx.reload();
       }
-    } catch (err) { out.className = 'f-result text-sm mt-2 text-amber-300'; out.textContent = err.message; }
+    } catch (err) { out.className = 'f-result text-sm mt-2 text-warning'; out.textContent = err.message; }
   });
 
   // Existing tasks with a publish button.
   const list = el('<div class="space-y-2 mt-4"></div>');
-  sectionEl.appendChild(el('<h3 class="text-sm font-medium text-zinc-500 mb-2 mt-4">Tasks on this quest</h3>'));
+  sectionEl.appendChild(el('<h3 class="text-sm font-medium text-content-secondary mb-2 mt-4">Tasks on this quest</h3>'));
   sectionEl.appendChild(list);
-  if (!tasks.length) list.appendChild(el('<p class="text-sm text-zinc-600">No tasks yet.</p>'));
+  if (!tasks.length) list.appendChild(el('<p class="text-sm text-content-tertiary">No tasks yet.</p>'));
   for (const t of tasks) {
     const row = el(`
-      <div class="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5">
+      <div class="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2.5">
         <span class="min-w-0 flex-1">
           <span class="block font-medium truncate">${escapeHtml(t.title)}</span>
-          <span class="block text-xs text-zinc-600">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.type === 'on_chain' && t.config.method ? ' · ' + escapeHtml(t.config.method) : ''} · ${t.xp_reward} XP</span>
+          <span class="block text-xs text-content-tertiary">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.type === 'on_chain' && t.config.method ? ' · ' + escapeHtml(t.config.method) : ''} · ${t.xp_reward} XP</span>
         </span>
         ${statePill(t.verification_type === 'automatic' ? 'active' : 'draft')}
-        <button class="pub text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Publish task</button>
+        <button class="pub text-xs px-3 py-2 min-h-[36px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">Publish task</button>
       </div>`);
     row.querySelector('.pub').addEventListener('click', async () => {
       try { await api.post(`/api/v1/tasks/${t.id}/publish`, {}); toast('Task published'); ctx.reload(); }
@@ -1988,10 +1988,10 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
 
 async function renderDashLeaderboard(sectionEl, ctx, which) {
   const { p } = ctx;
-  sectionEl.appendChild(el(`<h2 class="text-lg font-bold mb-1">${which === 'participants' ? 'Participants' : 'Leaderboard'}</h2><p class="text-sm text-zinc-500 mb-4">${which === 'participants' ? 'Everyone who has earned recognition here.' : 'This project, ranked by points.'}</p>`));
+  sectionEl.appendChild(el(`<h2 class="text-lg font-bold mb-1">${which === 'participants' ? 'Participants' : 'Leaderboard'}</h2><p class="text-sm text-content-secondary mb-4">${which === 'participants' ? 'Everyone who has earned recognition here.' : 'This project, ranked by points.'}</p>`));
   let board;
   try { board = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/leaderboard?metric=points`); }
-  catch (err) { sectionEl.appendChild(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { sectionEl.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   if (!board.entries.length) { sectionEl.appendChild(el(emptyState('No participants have earned points yet.'))); return; }
   const list = el('<div class="space-y-2"></div>');
   board.entries.forEach((e, i) => list.appendChild(leaderboardRow(e, i)));
@@ -2000,35 +2000,35 @@ async function renderDashLeaderboard(sectionEl, ctx, which) {
 
 async function renderDashRewards(sectionEl, ctx) {
   const { p } = ctx;
-  sectionEl.appendChild(el('<h2 class="text-lg font-bold mb-1">Rewards</h2><p class="text-sm text-zinc-500 mb-4">Rewards attached to this project\'s quests.</p>'));
+  sectionEl.appendChild(el('<h2 class="text-lg font-bold mb-1">Rewards</h2><p class="text-sm text-content-secondary mb-4">Rewards attached to this project\'s quests.</p>'));
   let an;
   try { an = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/analytics`); }
-  catch (err) { sectionEl.appendChild(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
-  sectionEl.appendChild(el(`<p class="text-sm text-zinc-500 mb-3">${an.quests.length} quests carry rewards. Credentials and badges are issued on completion.</p>`));
+  catch (err) { sectionEl.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  sectionEl.appendChild(el(`<p class="text-sm text-content-secondary mb-3">${an.quests.length} quests carry rewards. Credentials and badges are issued on completion.</p>`));
   const list = el('<div class="space-y-2"></div>');
   for (const q of an.quests) {
-    list.appendChild(el(`<div class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3"><span class="text-sm">${escapeHtml(q.title)}</span><span class="text-sm text-violet-300">+${q.xp_reward} XP</span></div>`));
+    list.appendChild(el(`<div class="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3"><span class="text-sm">${escapeHtml(q.title)}</span><span class="text-sm text-accent-text">+${q.xp_reward} XP</span></div>`));
   }
   sectionEl.appendChild(list);
 }
 
 async function renderDashAnalytics(sectionEl, ctx) {
   const { p, stats } = ctx;
-  sectionEl.appendChild(el('<h2 class="text-lg font-bold mb-1">Analytics</h2><p class="text-sm text-zinc-500 mb-4">How this project is performing.</p>'));
+  sectionEl.appendChild(el('<h2 class="text-lg font-bold mb-1">Analytics</h2><p class="text-sm text-content-secondary mb-4">How this project is performing.</p>'));
   const cards = el('<div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4"></div>');
   cards.innerHTML = [
     statCard('Participants', stats.participants || 0),
     statCard('Completions', stats.completions || 0),
-    statCard('XP distributed', Number(stats.xp_distributed || 0).toLocaleString(), 'text-violet-300'),
+    statCard('XP distributed', Number(stats.xp_distributed || 0).toLocaleString(), 'text-accent-text'),
   ].join('');
   sectionEl.appendChild(cards);
   let an;
   try { an = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/analytics`); }
-  catch (err) { sectionEl.appendChild(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { sectionEl.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   const list = el('<div class="space-y-2"></div>');
   for (const q of an.quests) {
     const rate = q.submissions ? Math.round((q.completions / q.submissions) * 100) : 0;
-    list.appendChild(el(`<div class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3"><span class="text-sm">${escapeHtml(q.title)}</span><span class="text-sm text-zinc-400">${q.completions} completed \u00b7 ${rate}% conversion</span></div>`));
+    list.appendChild(el(`<div class="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3"><span class="text-sm">${escapeHtml(q.title)}</span><span class="text-sm text-content-secondary">${q.completions} completed \u00b7 ${rate}% conversion</span></div>`));
   }
   sectionEl.appendChild(list);
 }
@@ -2037,30 +2037,30 @@ async function renderDashAnalytics(sectionEl, ctx) {
 async function renderDashSettings(sectionEl, ctx) {
   const { p, data } = ctx;
   const form = el(`
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 mb-5 max-w-xl">
+    <div class="rounded-xl border border-line bg-surface p-4 mb-5 max-w-xl">
       <h2 class="font-semibold mb-2">Project details</h2>
-      <input class="p-name w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.name)}" aria-label="Project name">
-      <textarea class="p-desc w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 text-sm mb-2 focus:outline-none" rows="2" aria-label="Description">${escapeHtml(p.description || '')}</textarea>
-      <input class="p-web w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.website || '')}" placeholder="Website" aria-label="Website">
-      <input class="p-logo w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.logo_url || '')}" placeholder="Logo URL" aria-label="Logo URL">
-      <input class="p-banner w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.banner_url || '')}" placeholder="Banner URL" aria-label="Banner URL">
-      <input class="p-links w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(linksToText(p.social_links))}" placeholder="Links, one per line: label | url" aria-label="Social links">
+      <input class="p-name w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.name)}" aria-label="Project name">
+      <textarea class="p-desc w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm mb-2 focus:outline-none" rows="2" aria-label="Description">${escapeHtml(p.description || '')}</textarea>
+      <input class="p-web w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.website || '')}" placeholder="Website" aria-label="Website">
+      <input class="p-logo w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.logo_url || '')}" placeholder="Logo URL" aria-label="Logo URL">
+      <input class="p-banner w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.banner_url || '')}" placeholder="Banner URL" aria-label="Banner URL">
+      <input class="p-links w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(linksToText(p.social_links))}" placeholder="Links, one per line: label | url" aria-label="Social links">
       <div class="flex flex-wrap gap-2 mb-3">
-        <label class="text-xs text-zinc-500 flex-1 min-w-[140px]">Visibility
-          <select class="p-vis w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" aria-label="Visibility">
+        <label class="text-xs text-content-secondary flex-1 min-w-[140px]">Visibility
+          <select class="p-vis w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" aria-label="Visibility">
             <option value="public" ${p.visibility === 'unlisted' ? '' : 'selected'}>Public</option>
             <option value="unlisted" ${p.visibility === 'unlisted' ? 'selected' : ''}>Unlisted</option>
           </select>
         </label>
-        <label class="text-xs text-zinc-500 flex-1 min-w-[140px]">Status
-          <select class="p-status w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" aria-label="Status">
+        <label class="text-xs text-content-secondary flex-1 min-w-[140px]">Status
+          <select class="p-status w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" aria-label="Status">
             <option value="active" ${p.status === 'active' ? 'selected' : ''}>Active (published)</option>
             <option value="paused" ${p.status === 'paused' ? 'selected' : ''}>Paused</option>
             <option value="archived" ${p.status === 'archived' ? 'selected' : ''}>Archived</option>
           </select>
         </label>
       </div>
-      <button class="save font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Save project</button>
+      <button class="save font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save project</button>
     </div>`);
   form.querySelector('.save').addEventListener('click', async () => {
     try {
@@ -2102,16 +2102,16 @@ function textToLinks(text) {
 async function renderMembers(sectionEl, ctx) {
   const { p, data } = ctx;
   const card = el(`
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 max-w-xl mb-5">
+    <div class="rounded-xl border border-line bg-surface p-4 max-w-xl mb-5">
       <h2 class="font-semibold mb-1">Project Access</h2>
-      <p class="text-xs text-zinc-600 mb-3">The Creator runs this project. Admins manage campaigns, quests, tasks, verification and rewards. Moderators review submissions and moderate participants. Each role applies to this project only. Only the Creator can change access.</p>
+      <p class="text-xs text-content-tertiary mb-3">The Creator runs this project. Admins manage campaigns, quests, tasks, verification and rewards. Moderators review submissions and moderate participants. Each role applies to this project only. Only the Creator can change access.</p>
       <div class="members space-y-2 mb-3"></div>
       <div class="flex flex-col sm:flex-row gap-2">
-        <input class="m-user flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none" placeholder="Username">
-        <select class="m-role rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
+        <input class="m-user flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" placeholder="Username">
+        <select class="m-role rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
           <option value="admin">Admin</option><option value="moderator">Moderator</option>
         </select>
-        <button class="m-add shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Add member</button>
+        <button class="m-add shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Add member</button>
       </div>
       <div class="audit mt-4"></div>
     </div>`);
@@ -2128,37 +2128,37 @@ async function renderMembers(sectionEl, ctx) {
       renderMembers(sectionEl, ctx);
     } catch (err) { toast(err.message, true); }
   });
-  holder.replaceChildren(el('<p class="text-sm text-zinc-600">Loading access\u2026</p>'));
+  holder.replaceChildren(el('<p class="text-sm text-content-tertiary">Loading access\u2026</p>'));
   let roster;
   try { roster = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/members`); }
-  catch (err) { holder.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { holder.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   holder.replaceChildren();
 
   // The Creator always sits at the top and has no membership row.
   const creator = roster.creator;
   if (creator) {
     holder.appendChild(el(`
-      <div class="rounded-lg border border-zinc-800 px-3 py-2">
+      <div class="rounded-lg border border-line px-3 py-2">
         <div class="flex items-center gap-2">
-          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(creator.display_name || creator.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(creator.username)} \u00b7 Creator</span></span>
-          <span class="shrink-0 text-xs px-2 py-1 rounded-full bg-violet-600/20 text-violet-300">Creator</span>
+          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(creator.display_name || creator.username)}</span><span class="block text-xs text-content-tertiary">@${escapeHtml(creator.username)} \u00b7 Creator</span></span>
+          <span class="shrink-0 text-xs px-2 py-1 rounded-full bg-accent/20 text-accent-text">Creator</span>
         </div>
       </div>`));
   }
   const members = (roster.members || []);
   if (!members.length) {
-    holder.appendChild(el('<p class="text-sm text-zinc-600">No admins or moderators yet. Add one below.</p>'));
+    holder.appendChild(el('<p class="text-sm text-content-tertiary">No admins or moderators yet. Add one below.</p>'));
   }
   for (const m of members) {
     const row = el(`
-      <div class="rounded-lg border border-zinc-800 px-3 py-2">
+      <div class="rounded-lg border border-line px-3 py-2">
         <div class="flex items-center gap-2">
-          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(m.display_name || m.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(m.username)} \u00b7 ${m.role === 'admin' ? 'Admin' : 'Moderator'}</span></span>
-          <select class="role rounded-lg bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-xs focus:outline-none" aria-label="Role for ${escapeHtml(m.username)}">
+          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(m.display_name || m.username)}</span><span class="block text-xs text-content-tertiary">@${escapeHtml(m.username)} \u00b7 ${m.role === 'admin' ? 'Admin' : 'Moderator'}</span></span>
+          <select class="role rounded-lg bg-surface-container-high border border-line-strong px-2 py-1.5 text-xs focus:outline-none" aria-label="Role for ${escapeHtml(m.username)}">
             <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option>
             <option value="moderator" ${m.role === 'moderator' ? 'selected' : ''}>Moderator</option>
           </select>
-          <button class="remove text-xs px-2 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-300">Remove</button>
+          <button class="remove text-xs px-2 py-2 min-h-[36px] rounded-lg bg-surface-container-high hover:bg-error hover:text-error-bg text-content-secondary">Remove</button>
         </div>
       </div>`);
     row.querySelector('.role').addEventListener('change', async (e) => {
@@ -2180,21 +2180,21 @@ async function renderMembers(sectionEl, ctx) {
   }
 
   const auditHolder = card.querySelector('.audit');
-  auditHolder.replaceChildren(el('<p class="text-xs text-zinc-600">Loading access history\u2026</p>'));
+  auditHolder.replaceChildren(el('<p class="text-xs text-content-tertiary">Loading access history\u2026</p>'));
   let audit;
   try { audit = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/audit`); }
-  catch (err) { auditHolder.replaceChildren(el(`<p class="text-xs text-red-400">${escapeHtml(err.message)}</p>`)); return; }
-  auditHolder.replaceChildren(el('<h3 class="text-xs font-medium text-zinc-500 mb-1">Access history</h3>'));
+  catch (err) { auditHolder.replaceChildren(el(`<p class="text-xs text-error">${escapeHtml(err.message)}</p>`)); return; }
+  auditHolder.replaceChildren(el('<h3 class="text-xs font-medium text-content-secondary mb-1">Access history</h3>'));
   const entries = audit.entries || [];
   if (!entries.length) {
-    auditHolder.appendChild(el('<p class="text-xs text-zinc-600">No access changes recorded yet.</p>'));
+    auditHolder.appendChild(el('<p class="text-xs text-content-tertiary">No access changes recorded yet.</p>'));
   } else {
     const list = el('<div class="space-y-1"></div>');
     for (const e of entries) {
       const label = AUDIT_LABELS[e.action] || e.action.replace(/_/g, ' ').toLowerCase();
       const who = e.actor ? '@' + e.actor : 'Someone';
       const when = new Date(e.created_at).toLocaleString();
-      list.appendChild(el(`<div class="text-xs text-zinc-500"><span class="text-zinc-300">${escapeHtml(who)}</span> ${escapeHtml(label)} <span class="text-zinc-600">\u00b7 ${escapeHtml(when)}</span></div>`));
+      list.appendChild(el(`<div class="text-xs text-content-secondary"><span class="text-content-secondary">${escapeHtml(who)}</span> ${escapeHtml(label)} <span class="text-content-tertiary">\u00b7 ${escapeHtml(when)}</span></div>`));
     }
     auditHolder.appendChild(list);
   }
@@ -2244,14 +2244,14 @@ async function renderDangerZone(sectionEl, ctx) {
 async function viewNotifications() {
   const wrap = el('<div></div>');
   mount(wrap);
-  wrap.appendChild(el('<div class="flex items-center justify-between mb-4"><h1 class="text-2xl font-bold">Notifications</h1><button class="prefs text-sm text-violet-400">Preferences</button></div>'));
+  wrap.appendChild(el('<div class="flex items-center justify-between mb-4"><h1 class="text-2xl font-bold">Notifications</h1><button class="prefs text-sm text-accent-text">Preferences</button></div>'));
   const body = el('<div class="space-y-2"></div>');
   wrap.appendChild(body);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/notifications'); }
-  catch (err) { body.appendChild(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { body.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   if (!data.notifications.length) {
-    body.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400">Nothing here yet.</p><p class="text-sm text-zinc-600 mt-1">Complete quests and follow campaigns to hear about it here.</p></div>'));
+    body.appendChild(el('<div class="rounded-2xl border border-line bg-surface p-8 text-center"><p class="text-content-secondary">Nothing here yet.</p><p class="text-sm text-content-tertiary mt-1">Complete quests and follow campaigns to hear about it here.</p></div>'));
   } else {
     for (const n of data.notifications) body.appendChild(notificationRow(n, { full: true }));
   }
@@ -2259,14 +2259,14 @@ async function viewNotifications() {
     const prefs = await window.QuestoraAPI.api.get('/api/v1/notifications/prefs');
     const muted = prefs.prefs.muted || [];
     const panel = el(`
-      <div class="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+      <div class="mt-4 rounded-2xl border border-line bg-surface p-5">
         <h2 class="font-semibold mb-3">Notification preferences</h2>
         <div class="space-y-2"></div>
-        <button class="save mt-4 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-violet-600 text-white">Save preferences</button>
+        <button class="save mt-4 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-accent text-accent-contrast">Save preferences</button>
       </div>`);
     const holder = panel.querySelector('.space-y-2');
     for (const [k, label] of NOTIF_KINDS) {
-      holder.appendChild(el(`<label class="flex items-center gap-3 rounded-lg border border-zinc-800 px-4 py-3 min-h-[44px] cursor-pointer"><input type="checkbox" data-kind="${k}" class="accent-violet-500" ${muted.includes(k) ? '' : 'checked'}><span class="text-sm">${label}</span></label>`));
+      holder.appendChild(el(`<label class="flex items-center gap-3 rounded-lg border border-line px-4 py-3 min-h-[44px] cursor-pointer"><input type="checkbox" data-kind="${k}" class="accent-[var(--q-accent)]" ${muted.includes(k) ? '' : 'checked'}><span class="text-sm">${label}</span></label>`));
     }
     panel.querySelector('.save').addEventListener('click', async () => {
       const nowMuted = [];
@@ -2282,10 +2282,10 @@ async function viewNotifications() {
 async function viewSettings() {
   const wrap = el('<div></div>');
   mount(wrap);
-  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">Account Settings</h1><p class="text-sm text-zinc-500 mb-5">Your profile, notifications and theme.</p></div>'));
+  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">Account Settings</h1><p class="text-sm text-content-secondary mb-5">Your profile, notifications and theme.</p></div>'));
   const body = el('<div class="space-y-4 max-w-2xl"></div>');
   wrap.appendChild(body);
-  body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading settings…</p>'));
+  body.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading settings…</p>'));
 
   let meData, prefsData;
   try {
@@ -2295,7 +2295,7 @@ async function viewSettings() {
     ]);
     meData = both[0]; prefsData = both[1];
   } catch (err) {
-    body.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p><button class="retry mt-2 text-sm text-violet-400 font-medium">Try again</button></div>`));
+    body.replaceChildren(el(`<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">${escapeHtml(err.message)}</p><button class="retry mt-2 text-sm text-accent-text font-medium">Try again</button></div>`));
     body.querySelector('.retry').addEventListener('click', viewSettings);
     return;
   }
@@ -2303,13 +2303,13 @@ async function viewSettings() {
   const u = meData.user || {};
 
   const profile = el(`
-    <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+    <section class="rounded-2xl border border-line bg-surface p-5">
       <h2 class="font-semibold mb-3">Profile</h2>
-      <label class="block text-xs text-zinc-500 mb-1" for="s-name">Display name</label>
-      <input id="s-name" class="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-violet-500" value="${escapeHtml(u.display_name || '')}">
-      <label class="block text-xs text-zinc-500 mb-1 mt-3" for="s-avatar">Avatar URL</label>
-      <input id="s-avatar" class="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-violet-500" value="${escapeHtml(u.avatar_url || '')}" placeholder="https://example.com/avatar.png">
-      <button class="p-save mt-4 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Save profile</button>
+      <label class="block text-xs text-content-secondary mb-1" for="s-name">Display name</label>
+      <input id="s-name" class="w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" value="${escapeHtml(u.display_name || '')}">
+      <label class="block text-xs text-content-secondary mb-1 mt-3" for="s-avatar">Avatar URL</label>
+      <input id="s-avatar" class="w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" value="${escapeHtml(u.avatar_url || '')}" placeholder="https://example.com/avatar.png">
+      <button class="p-save mt-4 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save profile</button>
     </section>`);
   profile.querySelector('.p-save').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
@@ -2328,15 +2328,15 @@ async function viewSettings() {
 
   const muted = (prefsData.prefs && prefsData.prefs.muted) || [];
   const notif = el(`
-    <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+    <section class="rounded-2xl border border-line bg-surface p-5">
       <h2 class="font-semibold mb-1">Notifications</h2>
-      <p class="text-xs text-zinc-500 mb-3">Turn off the kinds you do not want to hear about.</p>
+      <p class="text-xs text-content-secondary mb-3">Turn off the kinds you do not want to hear about.</p>
       <div class="k-list space-y-2"></div>
-      <button class="n-save mt-4 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Save notifications</button>
+      <button class="n-save mt-4 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save notifications</button>
     </section>`);
   const klist = notif.querySelector('.k-list');
   for (const [k, label] of NOTIF_KINDS) {
-    klist.appendChild(el(`<label class="flex items-center gap-3 rounded-lg border border-zinc-800 px-4 py-3 min-h-[44px] cursor-pointer"><input type="checkbox" data-kind="${k}" class="accent-violet-500" ${muted.includes(k) ? '' : 'checked'}><span class="text-sm">${label}</span></label>`));
+    klist.appendChild(el(`<label class="flex items-center gap-3 rounded-lg border border-line px-4 py-3 min-h-[44px] cursor-pointer"><input type="checkbox" data-kind="${k}" class="accent-[var(--q-accent)]" ${muted.includes(k) ? '' : 'checked'}><span class="text-sm">${label}</span></label>`));
   }
   notif.querySelector('.n-save').addEventListener('click', async (e) => {
     const btn = e.currentTarget; btn.disabled = true;
@@ -2350,21 +2350,21 @@ async function viewSettings() {
 
   const current = window.QuestoraTheme.mode();
   const theme = el(`
-    <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+    <section class="rounded-2xl border border-line bg-surface p-5">
       <h2 class="font-semibold mb-1">Theme</h2>
-      <p class="text-xs text-zinc-500 mb-3">Applies on this device right away.</p>
+      <p class="text-xs text-content-secondary mb-3">Applies on this device right away.</p>
       <div class="t-list flex flex-wrap gap-2"></div>
     </section>`);
   const tlist = theme.querySelector('.t-list');
   const modes = [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']];
   for (const [mode, label] of modes) {
     const on = current === mode;
-    const b = el(`<button type="button" data-mode="${mode}" class="text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg ${on ? 'bg-violet-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'}">${label}</button>`);
+    const b = el(`<button type="button" data-mode="${mode}" class="text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg ${on ? 'bg-accent text-accent-contrast' : 'bg-surface-container-high hover:bg-surface-container-highest text-content-primary'}">${label}</button>`);
     b.addEventListener('click', () => {
       window.QuestoraTheme.set(mode);
       if (window.QuestoraNav && window.QuestoraNav.themeChanged) window.QuestoraNav.themeChanged();
       tlist.querySelectorAll('button').forEach(x => {
-        x.className = 'text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg ' + (x.dataset.mode === mode ? 'bg-violet-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200');
+        x.className = 'text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg ' + (x.dataset.mode === mode ? 'bg-accent text-accent-contrast' : 'bg-surface-container-high hover:bg-surface-container-highest text-content-primary');
       });
       window.QuestoraAPI.api.patch('/api/v1/users/me', { settings: { theme: mode } }).catch(() => {});
     });
@@ -2377,13 +2377,13 @@ async function viewSettings() {
 async function viewMyProjects() {
   const wrap = el('<div></div>');
   mount(wrap);
-  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">My Projects</h1><p class="text-sm text-zinc-500 mb-5">Projects you created or help with.</p></div>'));
+  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">My Projects</h1><p class="text-sm text-content-secondary mb-5">Projects you created or help with.</p></div>'));
   const body = el('<div class="space-y-2"></div>');
   wrap.appendChild(body);
-  body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading your projects…</p>'));
+  body.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading your projects…</p>'));
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/projects'); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   body.replaceChildren();
   const rows = data.projects || [];
   if (!rows.length) {
@@ -2396,13 +2396,13 @@ async function viewMyProjects() {
     const canManage = p.viewer_role === 'creator' || p.viewer_role === 'admin';
     const members = Number(p.members || 0);
     body.appendChild(el(`
-      <div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+      <div class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3">
         <a href="/projects/${encodeURIComponent(p.slug)}" class="min-w-0 flex-1">
           <span class="block font-medium truncate">${escapeHtml(p.name)}</span>
-          <span class="block text-xs text-zinc-600 truncate">${members} ${members === 1 ? 'member' : 'members'} · ${escapeHtml(p.status || '')}</span>
+          <span class="block text-xs text-content-tertiary truncate">${members} ${members === 1 ? 'member' : 'members'} · ${escapeHtml(p.status || '')}</span>
         </a>
         ${statePill(roleLabel)}
-        ${canManage ? `<a href="/dashboard/projects/${encodeURIComponent(p.slug)}" class="shrink-0 text-xs text-violet-300">Dashboard</a>` : ''}
+        ${canManage ? `<a href="/dashboard/projects/${encodeURIComponent(p.slug)}" class="shrink-0 text-xs text-accent-text">Dashboard</a>` : ''}
       </div>`));
   }
 }
@@ -2413,10 +2413,10 @@ async function viewNotFound() {
   mount(wrap);
   wrap.appendChild(el(`
     <div class="max-w-lg mx-auto text-center py-16">
-      <p class="text-5xl font-bold text-violet-400 mb-3">404</p>
+      <p class="text-5xl font-bold text-accent-text mb-3">404</p>
       <h1 class="text-xl font-bold mb-1">Page not found</h1>
-      <p class="text-sm text-zinc-500 mb-5">That page does not exist, or it moved. Check the link and try again.</p>
-      <a href="/" class="inline-block font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Back to Explore</a>
+      <p class="text-sm text-content-secondary mb-5">That page does not exist, or it moved. Check the link and try again.</p>
+      <a href="/" class="inline-block font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Back to Explore</a>
     </div>`));
 }
 
@@ -2428,45 +2428,45 @@ async function viewSearch(params) {
   wrap.appendChild(el('<h1 class="text-2xl font-bold mb-4">Search</h1>'));
   const form = el(`
     <form action="/search" method="get" class="flex gap-2 mb-6 max-w-xl">
-      <input type="search" name="q" value="${escapeHtml(q)}" placeholder="Search projects, campaigns, quests, people" class="flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500">
-      <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Search</button>
+      <input type="search" name="q" value="${escapeHtml(q)}" placeholder="Search projects, campaigns, quests, people" class="flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent">
+      <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Search</button>
     </form>`);
   wrap.appendChild(form);
   if (!q.trim()) {
-    wrap.appendChild(el('<p class="text-sm text-zinc-600">Type something to search across projects, campaigns, quests and people.</p>'));
+    wrap.appendChild(el('<p class="text-sm text-content-tertiary">Type something to search across projects, campaigns, quests and people.</p>'));
     return;
   }
   const body = el('<div class="space-y-8"></div>');
   wrap.appendChild(body);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/search?q=' + encodeURIComponent(q)); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
 
   function section(label, rows, renderRow, empty) {
-    const sec = el(`<section><h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">${escapeHtml(label)}</h2><div class="space-y-2"></div></section>`);
+    const sec = el(`<section><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">${escapeHtml(label)}</h2><div class="space-y-2"></div></section>`);
     const holder = sec.querySelector('div');
-    if (!rows.length) holder.appendChild(el(`<p class="text-sm text-zinc-600 px-1">${escapeHtml(empty)}</p>`));
+    if (!rows.length) holder.appendChild(el(`<p class="text-sm text-content-tertiary px-1">${escapeHtml(empty)}</p>`));
     for (const r of rows) holder.appendChild(renderRow(r));
     body.appendChild(sec);
   }
   section('People', data.users, u => el(`
-    <a href="/u/${encodeURIComponent(u.username)}" class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
-      <span class="w-8 h-8 rounded-full bg-violet-600/30 flex items-center justify-center text-xs font-bold text-violet-200">${escapeHtml((u.display_name || u.username).slice(0, 2).toUpperCase())}</span>
-      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(u.display_name || u.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(u.username)}</span></span>
+    <a href="/u/${encodeURIComponent(u.username)}" class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40 transition-colors">
+      <span class="w-8 h-8 rounded-full bg-accent/30 flex items-center justify-center text-xs font-bold text-accent-text">${escapeHtml((u.display_name || u.username).slice(0, 2).toUpperCase())}</span>
+      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(u.display_name || u.username)}</span><span class="block text-xs text-content-tertiary">@${escapeHtml(u.username)}</span></span>
     </a>`), 'No people match.');
   section('Projects', data.projects, p => el(`
-    <a href="/p/${encodeURIComponent(p.slug)}" class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
-      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(p.name)}</span><span class="block text-xs text-zinc-600 truncate">${escapeHtml(p.description || '')}</span></span>
+    <a href="/p/${encodeURIComponent(p.slug)}" class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40 transition-colors">
+      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(p.name)}</span><span class="block text-xs text-content-tertiary truncate">${escapeHtml(p.description || '')}</span></span>
     </a>`), 'No projects match.');
   section('Campaigns', data.campaigns, c => el(`
-    <a href="/campaigns/${encodeURIComponent(c.slug)}" class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
-      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(c.name)}</span><span class="block text-xs text-zinc-600">${escapeHtml(c.project_name)}</span></span>
-      <span class="text-sm text-violet-300 font-medium shrink-0">+${c.total_xp} XP</span>
+    <a href="/campaigns/${encodeURIComponent(c.slug)}" class="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40 transition-colors">
+      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(c.name)}</span><span class="block text-xs text-content-tertiary">${escapeHtml(c.project_name)}</span></span>
+      <span class="text-sm text-accent-text font-medium shrink-0">+${c.total_xp} XP</span>
     </a>`), 'No live campaigns match.');
   section('Quests', data.quests, q => el(`
-    <a href="/quest/${q.id}" class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
-      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(q.title)}</span><span class="block text-xs text-zinc-600">${escapeHtml(q.campaign_name)}</span></span>
-      <span class="text-sm text-violet-300 font-medium shrink-0">+${q.xp_reward} XP</span>
+    <a href="/quest/${q.id}" class="flex items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40 transition-colors">
+      <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(q.title)}</span><span class="block text-xs text-content-tertiary">${escapeHtml(q.campaign_name)}</span></span>
+      <span class="text-sm text-accent-text font-medium shrink-0">+${q.xp_reward} XP</span>
     </a>`), 'No quests match.');
 }
 
@@ -2478,10 +2478,10 @@ async function viewJoin(params) {
   const meData = await loadMe().catch(() => null);
   const node = el(`
     <div class="max-w-md mx-auto">
-      <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center" id="join-card">
+      <div class="rounded-2xl border border-line bg-surface p-8 text-center" id="join-card">
         <div class="text-3xl mb-3">🏅</div>
         <h1 class="text-xl font-bold mb-1">Join Questora</h1>
-        <p class="text-sm text-zinc-500 mb-5" id="join-copy">Complete quests, earn XP and points, unlock badges.</p>
+        <p class="text-sm text-content-secondary mb-5" id="join-copy">Complete quests, earn XP and points, unlock badges.</p>
         <div id="join-action"></div>
       </div>
     </div>`);
@@ -2490,14 +2490,14 @@ async function viewJoin(params) {
   const copy = node.querySelector('#join-copy');
 
   if (!meData) {
-    action.appendChild(el('<a href="/" class="inline-block font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Open Questora</a>'));
+    action.appendChild(el('<a href="/" class="inline-block font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Open Questora</a>'));
     return;
   }
   if (!ref.trim()) {
-    action.appendChild(el('<a href="/" class="inline-block font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Explore campaigns</a>'));
+    action.appendChild(el('<a href="/" class="inline-block font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Explore campaigns</a>'));
     return;
   }
-  const btn = el('<button class="font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Join now</button>');
+  const btn = el('<button class="font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Join now</button>');
   btn.addEventListener('click', async () => {
     btn.disabled = true; btn.textContent = 'Joining…';
     try {
@@ -2519,7 +2519,7 @@ async function viewJoin(params) {
 
 // ---------- public credential page (Phase 2) ----------
 async function viewCredential(id) {
-  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-32 rounded-2xl bg-zinc-900"></div></div>');
+  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-32 rounded-2xl bg-surface-container"></div></div>');
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/credentials/' + encodeURIComponent(id)); }
@@ -2528,26 +2528,26 @@ async function viewCredential(id) {
   const criteriaText = c.criteria && (c.criteria.description || c.criteria.quest_title);
   const node = el(`
     <div class="max-w-xl mx-auto">
-      <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center mb-6">
+      <div class="rounded-2xl border border-line bg-surface p-8 text-center mb-6">
         <div class="text-4xl mb-3">🎖️</div>
         <h1 class="text-xl font-bold mb-1">${escapeHtml(c.title)}</h1>
-        <p class="text-sm text-zinc-500 mb-4">Issued ${new Date(c.issued_at).toLocaleDateString()}${c.revoked ? ' · Revoked' : ''}</p>
+        <p class="text-sm text-content-secondary mb-4">Issued ${new Date(c.issued_at).toLocaleDateString()}${c.revoked ? ' · Revoked' : ''}</p>
         ${c.revoked ? statePill('rejected') : badgePill('Verified')}
         <div class="mt-6 space-y-3 text-left">
-          <div class="rounded-xl border border-zinc-800 px-4 py-3">
-            <p class="text-xs text-zinc-500">Issued by</p>
-            ${c.issuer ? `<a href="/p/${escapeHtml(c.issuer.slug)}" class="font-medium text-violet-300 hover:underline">${escapeHtml(c.issuer.name)}</a>` : '<span class="font-medium">Questora</span>'}
+          <div class="rounded-xl border border-line px-4 py-3">
+            <p class="text-xs text-content-secondary">Issued by</p>
+            ${c.issuer ? `<a href="/p/${escapeHtml(c.issuer.slug)}" class="font-medium text-accent-text hover:underline">${escapeHtml(c.issuer.name)}</a>` : '<span class="font-medium">Questora</span>'}
           </div>
-          <div class="rounded-xl border border-zinc-800 px-4 py-3">
-            <p class="text-xs text-zinc-500">Held by</p>
-            <a href="/u/${escapeHtml(c.recipient.username)}" class="font-medium text-violet-300 hover:underline">${escapeHtml(c.recipient.display_name || c.recipient.username)}</a>
-            <span class="text-sm text-zinc-600"> @${escapeHtml(c.recipient.username)}</span>
+          <div class="rounded-xl border border-line px-4 py-3">
+            <p class="text-xs text-content-secondary">Held by</p>
+            <a href="/u/${escapeHtml(c.recipient.username)}" class="font-medium text-accent-text hover:underline">${escapeHtml(c.recipient.display_name || c.recipient.username)}</a>
+            <span class="text-sm text-content-tertiary"> @${escapeHtml(c.recipient.username)}</span>
           </div>
-          ${criteriaText ? `<div class="rounded-xl border border-zinc-800 px-4 py-3"><p class="text-xs text-zinc-500">Criteria</p><p class="text-sm text-zinc-300">${escapeHtml(criteriaText)}</p></div>` : ''}
-          ${c.expires_at ? `<div class="rounded-xl border border-zinc-800 px-4 py-3"><p class="text-xs text-zinc-500">Expires</p><p class="text-sm text-zinc-300">${new Date(c.expires_at).toLocaleDateString()}</p></div>` : ''}
+          ${criteriaText ? `<div class="rounded-xl border border-line px-4 py-3"><p class="text-xs text-content-secondary">Criteria</p><p class="text-sm text-content-secondary">${escapeHtml(criteriaText)}</p></div>` : ''}
+          ${c.expires_at ? `<div class="rounded-xl border border-line px-4 py-3"><p class="text-xs text-content-secondary">Expires</p><p class="text-sm text-content-secondary">${new Date(c.expires_at).toLocaleDateString()}</p></div>` : ''}
         </div>
       </div>
-      <p class="text-xs text-zinc-600 text-center break-all">Credential ID: ${escapeHtml(c.id)}</p>
+      <p class="text-xs text-content-tertiary text-center break-all">Credential ID: ${escapeHtml(c.id)}</p>
     </div>`);
   mount(node);
 }
@@ -2556,7 +2556,7 @@ async function viewCredential(id) {
 async function viewAdmin() {
   const wrap = el('<div></div>');
   mount(wrap);
-  wrap.appendChild(el('<h1 class="text-2xl font-bold mb-1">Admin</h1><p class="text-sm text-zinc-500 mb-6">Platform administration. Every action is audited.</p>'));
+  wrap.appendChild(el('<h1 class="text-2xl font-bold mb-1">Admin</h1><p class="text-sm text-content-secondary mb-6">Platform administration. Every action is audited.</p>'));
   const body = el('<div class="space-y-8"></div>');
   wrap.appendChild(body);
 
@@ -2564,9 +2564,9 @@ async function viewAdmin() {
     body.replaceChildren();
     let meData;
     try { meData = await window.QuestoraAPI.api.get('/api/v1/users/me'); }
-    catch { body.appendChild(el('<p class="text-sm text-red-400">Could not load your account.</p>')); return; }
+    catch { body.appendChild(el('<p class="text-sm text-error">Could not load your account.</p>')); return; }
     if (meData.user.role !== 'admin') {
-      body.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">Admin access required. Ask the platform admin to add your username to ADMIN_USERNAMES.</p></div>'));
+      body.appendChild(el('<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">Admin access required. Ask the platform admin to add your username to ADMIN_USERNAMES.</p></div>'));
       return;
     }
     const [users, projects, campaigns, review, settings, auditRes] = await Promise.all([
@@ -2574,16 +2574,16 @@ async function viewAdmin() {
       window.QuestoraAPI.api.get('/api/v1/admin/review'), window.QuestoraAPI.api.get('/api/v1/admin/settings'), window.QuestoraAPI.api.get('/api/v1/admin/audit'),
     ]);
 
-    const usersSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Users</h2><p class="text-xs text-zinc-600 mb-2">Admin access comes from the ADMIN_USERNAMES secret, so roles cannot be granted here.</p><div class="u-list space-y-2"></div></section>');
+    const usersSec = el('<section><h2 class="text-sm font-medium text-content-secondary mb-2">Users</h2><p class="text-xs text-content-tertiary mb-2">Admin access comes from the ADMIN_USERNAMES secret, so roles cannot be granted here.</p><div class="u-list space-y-2"></div></section>');
     const ul = usersSec.querySelector('.u-list');
     for (const u of users.users) {
       const row = el(`
         <div class="u-row">
-          <div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
-            <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(u.display_name || u.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(u.username)} · ${u.xp} XP</span></span>
+          <div class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3">
+            <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(u.display_name || u.username)}</span><span class="block text-xs text-content-tertiary">@${escapeHtml(u.username)} · ${u.xp} XP</span></span>
             ${statePill(u.risk_state || 'normal')}
-            <span class="role-pill text-xs px-2 py-1 rounded-full ${u.role === 'admin' ? 'bg-violet-600/20 text-violet-300' : 'bg-zinc-800 text-zinc-400'}">${escapeHtml(u.role)}</span>
-            <button class="risk text-xs px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300">Risk</button>
+            <span class="role-pill text-xs px-2 py-1 rounded-full ${u.role === 'admin' ? 'bg-accent/20 text-accent-text' : 'bg-surface-container-high text-content-secondary'}">${escapeHtml(u.role)}</span>
+            <button class="risk text-xs px-3 py-2 min-h-[44px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-secondary">Risk</button>
           </div>
           <div class="risk-detail"></div>
         </div>`);
@@ -2595,22 +2595,22 @@ async function viewAdmin() {
         if (slot.childElementCount) { slot.replaceChildren(); return; }
         try {
           const r = await window.QuestoraAPI.api.get(`/api/v1/admin/users/${u.id}/risk`);
-          const panel = el('<div class="rounded-xl border border-zinc-800 bg-zinc-900/40 px-4 py-3 mt-1 mb-2 mx-1 text-sm"></div>');
-          panel.appendChild(el(`<p class="text-xs text-zinc-500 mb-2">Signals for @${escapeHtml(r.user.username)}. State: ${escapeHtml(r.user.risk_state)}. The engine only escalates; clear it here:</p>`));
-          const clear = el('<button class="text-xs px-3 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 mb-2">Reset state to normal</button>');
+          const panel = el('<div class="rounded-xl border border-line bg-surface px-4 py-3 mt-1 mb-2 mx-1 text-sm"></div>');
+          panel.appendChild(el(`<p class="text-xs text-content-secondary mb-2">Signals for @${escapeHtml(r.user.username)}. State: ${escapeHtml(r.user.risk_state)}. The engine only escalates; clear it here:</p>`));
+          const clear = el('<button class="text-xs px-3 py-2 min-h-[36px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-secondary mb-2">Reset state to normal</button>');
           clear.addEventListener('click', async () => {
             try { await window.QuestoraAPI.api.patch(`/api/v1/admin/users/${u.id}`, { risk_state: 'normal', reason: 'Risk state cleared from admin panel' }); toast('State reset'); load(); }
             catch (err) { toast(err.message, true); }
           });
           panel.appendChild(clear);
           const list = el('<div class="space-y-1"></div>');
-          if (!r.signals.length) list.appendChild(el('<p class="text-zinc-600">No signals recorded. The engine watches completion velocity, duplicate proof hashes and referral graphs.</p>'));
+          if (!r.signals.length) list.appendChild(el('<p class="text-content-tertiary">No signals recorded. The engine watches completion velocity, duplicate proof hashes and referral graphs.</p>'));
           for (const s of r.signals) {
             const d = s.detail || {};
-            list.appendChild(el(`<div class="flex items-center justify-between gap-3 rounded-lg border border-zinc-800 px-3 py-2">
-              <span class="min-w-0"><span class="block text-zinc-200">${escapeHtml(String(s.signal).replace(/_/g, ' '))}${s.signal_key ? ' <span class="text-zinc-600 font-mono text-xs">' + escapeHtml(s.signal_key) + '</span>' : ''}</span>
-              <span class="block text-xs text-zinc-600">${escapeHtml(d.reason || d.detail || '')} · ${new Date(s.created_at).toLocaleString()}</span></span>
-              <span class="font-mono text-xs ${s.severity >= 3 ? 'text-red-300' : 'text-amber-300'}">+${s.severity}</span>
+            list.appendChild(el(`<div class="flex items-center justify-between gap-3 rounded-lg border border-line px-3 py-2">
+              <span class="min-w-0"><span class="block text-content-primary">${escapeHtml(String(s.signal).replace(/_/g, ' '))}${s.signal_key ? ' <span class="text-content-tertiary font-mono text-xs">' + escapeHtml(s.signal_key) + '</span>' : ''}</span>
+              <span class="block text-xs text-content-tertiary">${escapeHtml(d.reason || d.detail || '')} · ${new Date(s.created_at).toLocaleString()}</span></span>
+              <span class="font-mono text-xs ${s.severity >= 3 ? 'text-error' : 'text-warning'}">+${s.severity}</span>
             </div>`));
           }
           panel.appendChild(list);
@@ -2624,13 +2624,13 @@ async function viewAdmin() {
     // Seasons (Phase 3): list + create form.
     let seasonsRes = { seasons: [] };
     try { seasonsRes = await window.QuestoraAPI.api.get('/api/v1/admin/seasons'); } catch {}
-    const seaSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Seasons</h2><div class="s-list space-y-2 mb-3"></div><div class="grid md:grid-cols-4 gap-2"><input class="s-name rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none" placeholder="Season name"><input class="s-start rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none" type="datetime-local" aria-label="Starts at"><input class="s-end rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none" type="datetime-local" aria-label="Ends at"><input class="s-mult rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none" type="number" step="0.1" min="0.1" max="10" value="1" aria-label="XP multiplier"></div><button class="save-season mt-3 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-violet-600 text-white">Create season</button></section>');
+    const seaSec = el('<section><h2 class="text-sm font-medium text-content-secondary mb-2">Seasons</h2><div class="s-list space-y-2 mb-3"></div><div class="grid md:grid-cols-4 gap-2"><input class="s-name rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm text-content-primary focus:outline-none" placeholder="Season name"><input class="s-start rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm text-content-primary focus:outline-none" type="datetime-local" aria-label="Starts at"><input class="s-end rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm text-content-primary focus:outline-none" type="datetime-local" aria-label="Ends at"><input class="s-mult rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm text-content-primary focus:outline-none" type="number" step="0.1" min="0.1" max="10" value="1" aria-label="XP multiplier"></div><button class="save-season mt-3 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-accent text-accent-contrast">Create season</button></section>');
     const sl = seaSec.querySelector('.s-list');
-    if (!seasonsRes.seasons.length) sl.appendChild(el('<p class="text-sm text-zinc-600">No seasons yet. XP is not boosted until one is active.</p>'));
+    if (!seasonsRes.seasons.length) sl.appendChild(el('<p class="text-sm text-content-tertiary">No seasons yet. XP is not boosted until one is active.</p>'));
     for (const s of seasonsRes.seasons) {
-      sl.appendChild(el(`<div class="flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+      sl.appendChild(el(`<div class="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface px-4 py-3">
         <span class="min-w-0"><span class="block text-sm font-medium truncate">${escapeHtml(s.name)}</span>
-        <span class="block text-xs text-zinc-600">${new Date(s.starts_at).toLocaleDateString()} to ${new Date(s.ends_at).toLocaleDateString()} · ${Number(s.xp_multiplier)}x XP</span></span>
+        <span class="block text-xs text-content-tertiary">${new Date(s.starts_at).toLocaleDateString()} to ${new Date(s.ends_at).toLocaleDateString()} · ${Number(s.xp_multiplier)}x XP</span></span>
         ${statePill(s.status || '')}
       </div>`));
     }
@@ -2653,14 +2653,14 @@ async function viewAdmin() {
     });
     body.appendChild(seaSec);
 
-    const campSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Campaigns</h2><div class="c-list space-y-2"></div></section>');
+    const campSec = el('<section><h2 class="text-sm font-medium text-content-secondary mb-2">Campaigns</h2><div class="c-list space-y-2"></div></section>');
     const cl = campSec.querySelector('.c-list');
     for (const c of campaigns.campaigns) {
       const row = el(`
-        <div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
-          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(c.name)}</span><span class="block text-xs text-zinc-600">${escapeHtml(c.project_name)} · ${escapeHtml(c.status)}</span></span>
-          <button class="pause text-xs px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700">${c.status === 'paused' ? 'Resume' : 'Pause'}</button>
-          <button class="archive text-xs px-3 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-red-600">Archive</button>
+        <div class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3">
+          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(c.name)}</span><span class="block text-xs text-content-tertiary">${escapeHtml(c.project_name)} · ${escapeHtml(c.status)}</span></span>
+          <button class="pause text-xs px-3 py-2 min-h-[44px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest">${c.status === 'paused' ? 'Resume' : 'Pause'}</button>
+          <button class="archive text-xs px-3 py-2 min-h-[44px] rounded-lg bg-surface-container-high hover:bg-error hover:text-error-bg">Archive</button>
         </div>`);
       row.querySelector('.pause').addEventListener('click', async () => {
         try { await window.QuestoraAPI.api.patch(`/api/v1/campaigns/${c.id}`, { status: c.status === 'paused' ? 'active' : 'paused', reason: 'Admin panel' }); toast('Updated'); load(); }
@@ -2674,18 +2674,18 @@ async function viewAdmin() {
     }
     body.appendChild(campSec);
 
-    const revSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Review queue</h2><div class="r-list space-y-2"></div></section>');
+    const revSec = el('<section><h2 class="text-sm font-medium text-content-secondary mb-2">Review queue</h2><div class="r-list space-y-2"></div></section>');
     const rl = revSec.querySelector('.r-list');
-    if (!review.submissions.length) rl.appendChild(el('<p class="text-sm text-zinc-600">Nothing pending.</p>'));
+    if (!review.submissions.length) rl.appendChild(el('<p class="text-sm text-content-tertiary">Nothing pending.</p>'));
     for (const s of review.submissions) {
-      rl.appendChild(el(`<div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3"><span class="text-sm flex-1 min-w-0 truncate">@${escapeHtml(s.username)} · ${escapeHtml(s.quest_title)}</span><a href="/quest/${s.quest_id}" class="text-xs text-violet-300">Open</a></div>`));
+      rl.appendChild(el(`<div class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3"><span class="text-sm flex-1 min-w-0 truncate">@${escapeHtml(s.username)} · ${escapeHtml(s.quest_title)}</span><a href="/quest/${s.quest_id}" class="text-xs text-accent-text">Open</a></div>`));
     }
     body.appendChild(revSec);
 
-    const setSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Level thresholds</h2><div class="t-list space-y-2"></div><button class="save-thr mt-3 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-violet-600 text-white">Save thresholds</button></section>');
+    const setSec = el('<section><h2 class="text-sm font-medium text-content-secondary mb-2">Level thresholds</h2><div class="t-list space-y-2"></div><button class="save-thr mt-3 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-accent text-accent-contrast">Save thresholds</button></section>');
     const tl = setSec.querySelector('.t-list');
     for (const t of settings.thresholds) {
-      tl.appendChild(el(`<div class="flex items-center gap-3"><span class="text-sm text-zinc-400 w-20">Level ${t.level}</span><input type="number" min="0" data-level="${t.level}" value="${t.min_xp}" class="min-xp w-40 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 text-sm focus:outline-none focus:border-violet-500"></div>`));
+      tl.appendChild(el(`<div class="flex items-center gap-3"><span class="text-sm text-content-secondary w-20">Level ${t.level}</span><input type="number" min="0" data-level="${t.level}" value="${t.min_xp}" class="min-xp w-40 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm focus:outline-none focus:border-accent"></div>`));
     }
     setSec.querySelector('.save-thr').addEventListener('click', async () => {
       const thresholds = [];
@@ -2695,11 +2695,11 @@ async function viewAdmin() {
     });
     body.appendChild(setSec);
 
-    const auditSec = el('<section><h2 class="text-sm font-medium text-zinc-500 mb-2">Audit log</h2><div class="a-list space-y-1"></div></section>');
+    const auditSec = el('<section><h2 class="text-sm font-medium text-content-secondary mb-2">Audit log</h2><div class="a-list space-y-1"></div></section>');
     const al = auditSec.querySelector('.a-list');
-    if (!auditRes.entries.length) al.appendChild(el('<p class="text-sm text-zinc-600">No admin actions yet.</p>'));
+    if (!auditRes.entries.length) al.appendChild(el('<p class="text-sm text-content-tertiary">No admin actions yet.</p>'));
     for (const a of auditRes.entries.slice(0, 30)) {
-      al.appendChild(el(`<div class="rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2.5 text-sm text-zinc-400"><span class="text-zinc-200 font-medium">${escapeHtml(a.actor || 'system')}</span> ${escapeHtml(a.action)} on ${escapeHtml(a.entity_type)} #${a.entity_id} · ${new Date(a.created_at).toLocaleString()}</div>`));
+      al.appendChild(el(`<div class="rounded-lg border border-line bg-surface px-4 py-2.5 text-sm text-content-secondary"><span class="text-content-primary font-medium">${escapeHtml(a.actor || 'system')}</span> ${escapeHtml(a.action)} on ${escapeHtml(a.entity_type)} #${a.entity_id} · ${new Date(a.created_at).toLocaleString()}</div>`));
     }
     body.appendChild(auditSec);
   }

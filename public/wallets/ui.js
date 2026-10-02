@@ -10,13 +10,18 @@
   const isMobile = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 
   const PILL = {
-    ok: 'bg-emerald-500/15 text-emerald-300',
-    warn: 'bg-amber-500/15 text-amber-300',
-    info: 'bg-sky-500/15 text-sky-300',
-    mute: 'bg-zinc-800 text-zinc-400',
-    bad: 'bg-red-500/15 text-red-300',
+    ok: 'bg-success-bg text-success',
+    warn: 'bg-warning-bg text-warning',
+    info: 'bg-info-bg text-info',
+    mute: 'bg-surface-container text-content-secondary',
+    bad: 'bg-error-bg text-error',
   };
-  const pill = (text, tone) => `<span class="inline-block text-xs font-medium px-2 py-0.5 rounded-full ${PILL[tone || 'mute']}">${esc(text)}</span>`;
+  // A glyph per tone, so a wallet status is never carried by colour alone.
+  const PILL_ICON = { ok: 'check', warn: 'warning', info: 'info', mute: 'info', bad: 'error' };
+  const pill = (text, tone) => {
+    const t = tone || 'mute';
+    return `<span class="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${PILL[t]}">${icon(PILL_ICON[t], { class: 'w-3.5 h-3.5' })}<span>${esc(text)}</span></span>`;
+  };
   // Shared with the rest of the app via QUI, so the wallet UI cannot drift.
   const BTN = BTN_SECONDARY;
   const LINK_BTN = BTN_SECONDARY;
@@ -44,7 +49,7 @@
     const msg = e.error.code === 'not_detected'
       ? `Questora couldn't detect ${/^[AEIOU]/i.test(c.label) ? 'an' : 'a'} ${c.label} wallet provider yet.`
       : e.error.message;
-    const box = el(`<div class="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200" role="alert">
+    const box = el(`<div class="rounded-lg border border-error/40 bg-error-bg p-3 text-sm text-error" role="alert">
       <p>${esc(msg)}</p>
       <div class="mt-2 flex flex-wrap gap-2"><button class="retry ${BTN}">Retry detection</button></div></div>`);
     box.querySelector('.retry').addEventListener('click', () => { W().clearError(eco); W().detect('retry'); });
@@ -65,12 +70,12 @@
     const liveNow = W().isLive(rec);
     const busy = ['connecting', 'switching', 'disconnecting'].includes(W().status(eco));
     const name = rec.nickname || rec.wallet_name || c.label + ' address';
-    const row = el(`<div class="saved-row rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+    const row = el(`<div class="saved-row rounded-xl border border-line bg-surface p-4">
       <div class="flex flex-wrap items-center gap-2">
         <span class="name font-medium min-w-0 truncate">${esc(name)}</span>
         ${pill('Verified', 'ok')}${rec.is_active ? pill('Active', 'info') : ''}${liveNow ? pill('Connected', 'ok') : pill('Disconnected', 'mute')}
       </div>
-      <p class="font-mono text-sm text-zinc-300 mt-1 break-all" title="${esc(rec.address)}">${esc(short(rec.address))}</p>
+      <p class="font-mono text-sm text-content-secondary mt-1 break-all" title="${esc(rec.address)}">${esc(short(rec.address))}</p>
       <div class="actions mt-2 flex flex-wrap gap-2"></div></div>`);
     const acts = row.querySelector('.actions');
     const add = (label, cls, fn) => { const b = el(`<button class="${cls || BTN}"${busy ? ' disabled' : ''}>${esc(label)}</button>`); b.addEventListener('click', fn); acts.appendChild(b); return b; };
@@ -81,7 +86,7 @@
     if (!rec.is_active) add('Make active', BTN, () => guard(W().activate(rec.id), 'Active address updated'));
     if (!liveNow) add('Reconnect', BTN, () => guard(W().reconnect(rec.id), 'Wallet reconnected'));
     add('Rename', BTN, () => {
-      const input = el(`<input type="text" maxlength="40" value="${esc(rec.nickname || '')}" placeholder="Label" aria-label="Address label" class="px-3 py-2 min-h-[44px] rounded-lg bg-zinc-950 border border-zinc-700 text-sm w-full md:w-56">`);
+      const input = el(`<input type="text" maxlength="40" value="${esc(rec.nickname || '')}" placeholder="Label" aria-label="Address label" class="px-3 py-2 min-h-[44px] rounded-lg bg-background border border-line-strong text-sm w-full md:w-56">`);
       const nameEl = row.querySelector('.name');
       nameEl.replaceWith(input);
       input.focus();
@@ -97,7 +102,7 @@
     add('Copy', BTN, () => copy(rec.address));
     const ex = el(`<a class="${LINK_BTN}" href="${esc(c.explorer(rec.address))}" target="_blank" rel="noopener">${icon('open_in_new', { class: 'w-4 h-4' })}<span>Explorer</span></a>`);
     acts.appendChild(ex);
-    add('Disconnect', BTN + ' !text-red-300', () => guard(W().disconnectRecord(rec.id), 'Address disconnected'));
+    add('Disconnect', BTN + ' !text-error', () => guard(W().disconnectRecord(rec.id), 'Address disconnected'));
     return row;
   }
 
@@ -107,14 +112,14 @@
     const recs = w.savedFor(e.id);
     const sec = el(`<section class="space-y-2" aria-label="${esc(e.label)} addresses">
       <div class="flex flex-wrap items-center gap-2"><h3 class="font-semibold">${esc(e.label)}</h3>
-        <span class="text-sm text-zinc-400">${recs.length} of ${w.state().limit} addresses</span>${statusPill(e.id)}</div></section>`);
+        <span class="text-sm text-content-secondary">${recs.length} of ${w.state().limit} addresses</span>${statusPill(e.id)}</div></section>`);
     const eb = errorBlock(e.id);
     if (eb) sec.appendChild(eb);
     const pend = w.state().pending[e.id];
     if (pend) {
-      const box = el(`<div class="pending rounded-lg border border-sky-500/30 bg-sky-500/10 p-3 text-sm">
+      const box = el(`<div class="pending rounded-lg border border-info/40 bg-info-bg p-3 text-sm">
         <p>${pend.atLimit ? esc(`Your ${w.state().limit} ${e.label} address limit has been reached.`) : 'You switched accounts in your wallet.'}</p>
-        <p class="font-mono text-zinc-300 mt-1 break-all">${esc(short(pend.address))}</p></div>`);
+        <p class="font-mono text-content-secondary mt-1 break-all">${esc(short(pend.address))}</p></div>`);
       if (!pend.atLimit) {
         const b = el(`<button class="mt-2 ${BTN}">Add this address to Questora</button>`);
         b.addEventListener('click', () => w.addPending(e.id).then((r) => r.status === 'added' && toast('Address verified'), (err) => toast(err.message, true)));
@@ -122,13 +127,13 @@
       }
       sec.appendChild(box);
     }
-    if (!recs.length) sec.appendChild(el(`<p class="text-sm text-zinc-500">No ${esc(e.label)} addresses yet.</p>`));
+    if (!recs.length) sec.appendChild(el(`<p class="text-sm text-content-secondary">No ${esc(e.label)} addresses yet.</p>`));
     recs.forEach((r) => sec.appendChild(savedRow(r, ctx)));
     const full = w.atLimit(e.id);
     const b = el(`<button class="connect-another ${BTN}"${full ? ' disabled' : ''}>Connect another ${esc(e.label)} address</button>`);
     b.addEventListener('click', () => ctx.openModal(e.id));
     sec.appendChild(b);
-    if (full) sec.appendChild(el(`<p class="text-sm text-amber-300">${esc(w.limitText(e.id))}</p>`));
+    if (full) sec.appendChild(el(`<p class="text-sm text-warning">${esc(w.limitText(e.id))}</p>`));
     return sec;
   }
 
@@ -136,14 +141,14 @@
     const w = W();
     const frag = document.createDocumentFragment();
     const top = el(`<div class="flex flex-wrap items-center justify-between gap-3">
-      <p class="text-sm text-zinc-400">Link up to ${w.state().limit} addresses on each network. Questora asks your wallet to sign a message to verify each one. It never asks for a private key or seed phrase.</p></div>`);
-    const connect = el('<button class="connect-wallet font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Connect wallet</button>');
+      <p class="text-sm text-content-secondary">Link up to ${w.state().limit} addresses on each network. Questora asks your wallet to sign a message to verify each one. It never asks for a private key or seed phrase.</p></div>`);
+    const connect = el('<button class="connect-wallet font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast">Connect wallet</button>');
     connect.addEventListener('click', () => ctx.openModal());
     top.appendChild(connect);
     frag.appendChild(top);
     w.ECOSYSTEMS.forEach((e) => frag.appendChild(managerSection(e, ctx)));
     if (w.state().saved.length) {
-      const all = el(`<button class="disconnect-all ${BTN} !text-red-300">Disconnect all addresses</button>`);
+      const all = el(`<button class="disconnect-all ${BTN} !text-error">Disconnect all addresses</button>`);
       let armed = false;
       all.addEventListener('click', () => {
         if (!armed) { armed = true; all.textContent = 'Confirm: disconnect all addresses'; setTimeout(() => { armed = false; all.textContent = 'Disconnect all addresses'; }, 4000); return; }
@@ -178,10 +183,10 @@
     const w = W();
     const prevFocus = document.activeElement;
     const overlay = el(`<div class="wallet-ui fixed inset-0 z-50 bg-black/60 flex items-end md:items-center justify-center" data-wallet-modal>
-      <div role="dialog" aria-modal="true" aria-labelledby="wallet-modal-title" class="w-full md:max-w-xl max-h-[90vh] overflow-y-auto rounded-t-2xl md:rounded-2xl bg-zinc-900 border border-zinc-800 p-5" style="padding-bottom:calc(1.25rem + var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px)))">
+      <div role="dialog" aria-modal="true" aria-labelledby="wallet-modal-title" class="w-full md:max-w-xl max-h-[90vh] overflow-y-auto rounded-t-2xl md:rounded-2xl bg-surface-container border border-line p-5" style="padding-bottom:calc(1.25rem + var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px)))">
         <div class="flex items-center justify-between gap-3 mb-1"><h2 id="wallet-modal-title" class="text-lg font-semibold">Connect wallet</h2>
           <button class="close ${BTN_ICON}" aria-label="Close">${icon('close')}</button></div>
-        <p class="text-sm text-zinc-400 mb-4">Choose a network, then a wallet. You sign one message to prove you own the address.</p>
+        <p class="text-sm text-content-secondary mb-4">Choose a network, then a wallet. You sign one message to prove you own the address.</p>
         <div class="body space-y-6"></div></div></div>`);
     const dialog = overlay.firstElementChild;
     const body = overlay.querySelector('.body');
@@ -197,8 +202,8 @@
       const link = QW.deepLinkBase();
       const make = ({ name, id, tone, label, button, onClick, href, note, disabled }) => {
         const connectedHere = st.session && st.session.walletId === id;
-        const r = el(`<div class="wallet-row flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-800 px-4 py-3" data-wallet="${esc(id)}">
-          <span class="min-w-0"><span class="block font-medium">${esc(name)}</span>${note ? `<span class="block text-xs text-zinc-500">${esc(note)}</span>` : ''}</span>
+        const r = el(`<div class="wallet-row flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line px-4 py-3" data-wallet="${esc(id)}">
+          <span class="min-w-0"><span class="block font-medium">${esc(name)}</span>${note ? `<span class="block text-xs text-content-secondary">${esc(note)}</span>` : ''}</span>
           <span class="flex items-center gap-2">${connectedHere ? pill('Connected', 'ok') : pill(label, tone)}<span class="slot"></span></span></div>`);
         const slot = r.querySelector('.slot');
         if (href) slot.appendChild(el(`<a class="${LINK_BTN}" href="${esc(href)}" target="_blank" rel="noopener">${esc(button)}</a>`));
@@ -245,9 +250,9 @@
       const st = w.state().eco[e.id];
       const sec = el(`<section class="space-y-2" aria-label="${esc(e.label)}" data-eco="${esc(e.id)}">
         <div class="flex flex-wrap items-center gap-2"><h3 class="font-semibold">${esc(e.label)}</h3>
-          <span class="text-sm text-zinc-400">${w.count(e.id)} of ${w.state().limit} addresses</span>${statusPill(e.id)}</div></section>`);
+          <span class="text-sm text-content-secondary">${w.count(e.id)} of ${w.state().limit} addresses</span>${statusPill(e.id)}</div></section>`);
       if (w.atLimit(e.id)) {
-        const box = el(`<div class="limit rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+        const box = el(`<div class="limit rounded-lg border border-warning/40 bg-warning-bg p-3 text-sm text-warning">
           <p class="font-medium">${esc(w.limitText(e.id))}</p><div class="mt-2 space-y-2 list"></div>
           <div class="mt-2 flex flex-wrap gap-2"><a class="manage ${LINK_BTN}" href="/me?tab=wallets">Manage addresses</a></div></div>`);
         const list = box.querySelector('.list');
@@ -264,10 +269,10 @@
       }
       const eb = errorBlock(e.id);
       if (eb) sec.appendChild(eb);
-      if (w.status(e.id) === 'detecting' && !st.detected.length) sec.appendChild(el('<p class="text-sm text-zinc-500">Looking for wallets…</p>'));
+      if (w.status(e.id) === 'detecting' && !st.detected.length) sec.appendChild(el('<p class="text-sm text-content-secondary">Looking for wallets…</p>'));
       walletRows(e).forEach((r) => sec.appendChild(r));
       if (!st.detected.length && w.status(e.id) !== 'detecting') {
-        const note = el(`<div class="text-sm text-zinc-400"><p>Questora has not detected ${/^[AEIOU]/i.test(e.label) ? 'an' : 'a'} ${esc(e.label)} wallet in this browser yet. Wallets can take a moment to register. You can install one, open Questora inside a wallet app, or check again.</p>
+        const note = el(`<div class="text-sm text-content-secondary"><p>Questora has not detected ${/^[AEIOU]/i.test(e.label) ? 'an' : 'a'} ${esc(e.label)} wallet in this browser yet. Wallets can take a moment to register. You can install one, open Questora inside a wallet app, or check again.</p>
           <div class="mt-2 flex flex-wrap gap-2"><button class="retry ${BTN}">Retry detection</button></div></div>`);
         if (e.id === 'octra') {
           const cp = el(`<button class="${BTN}">${icon('content_copy', { class: 'w-4 h-4' })}<span>Copy link for the 0xio browser</span></button>`);
@@ -329,11 +334,11 @@
       ['Last detection', d.lastDetect ? d.lastDetect.reason + ' at ' + d.lastDetect.at : 'none'],
     ];
     const sessions = d.sessions.map((s) => `${s.ecosystem}: ${s.state}${s.wallet ? ` | ${s.wallet} | network ${s.network || '-'} | chain ${s.chainId || '-'} | active ${s.activeAddress || '-'}` : ''}`);
-    const box = el(`<details class="debug rounded-xl border border-zinc-800 p-4 text-sm"><summary class="cursor-pointer font-medium">Wallet diagnostics (developer)</summary>
-      <dl class="mt-3 space-y-1">${lines.map(([k, v]) => `<div><dt class="inline text-zinc-500">${esc(k)}: </dt><dd class="inline">${esc(v)}</dd></div>`).join('')}</dl>
-      <p class="mt-3 text-zinc-500">Sessions</p><pre class="whitespace-pre-wrap break-all text-xs">${esc(sessions.join('\n'))}</pre>
-      <p class="mt-3 text-zinc-500">Provider registration timing (ms)</p><pre class="whitespace-pre-wrap break-all text-xs">${esc(d.registrationTiming.map((t) => t.at + ' ' + t.what).join('\n'))}</pre>
-      <p class="mt-3 text-zinc-500">Recent connection errors</p><pre class="whitespace-pre-wrap break-all text-xs">${esc(d.errors.map((x) => x.at + ' ' + x.label + ': ' + x.message).join('\n') || 'none')}</pre>
+    const box = el(`<details class="debug rounded-xl border border-line p-4 text-sm"><summary class="cursor-pointer font-medium">Wallet diagnostics (developer)</summary>
+      <dl class="mt-3 space-y-1">${lines.map(([k, v]) => `<div><dt class="inline text-content-secondary">${esc(k)}: </dt><dd class="inline">${esc(v)}</dd></div>`).join('')}</dl>
+      <p class="mt-3 text-content-secondary">Sessions</p><pre class="whitespace-pre-wrap break-all text-xs">${esc(sessions.join('\n'))}</pre>
+      <p class="mt-3 text-content-secondary">Provider registration timing (ms)</p><pre class="whitespace-pre-wrap break-all text-xs">${esc(d.registrationTiming.map((t) => t.at + ' ' + t.what).join('\n'))}</pre>
+      <p class="mt-3 text-content-secondary">Recent connection errors</p><pre class="whitespace-pre-wrap break-all text-xs">${esc(d.errors.map((x) => x.at + ' ' + x.label + ': ' + x.message).join('\n') || 'none')}</pre>
       <button class="mt-3 ${BTN}">Refresh</button></details>`);
     box.querySelector('button').addEventListener('click', () => { W().detect('debug-refresh'); box.open = false; });
     return box;
