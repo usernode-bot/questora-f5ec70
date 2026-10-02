@@ -120,7 +120,7 @@ router.get('/users/:username', async (req, res) => {
   if (!u.rows.length) return res.status(404).json({ error: 'User not found' });
   const user = u.rows[0];
   const lvl = await levels.userLevel(user.id);
-  const [pts, badges, completed, activity, credentials, rank, rep, achv, projects] = await Promise.all([
+  const [pts, badges, completed, activity, credentials, rank, rep, achv, projects, wallets] = await Promise.all([
     pool.query(`SELECT COALESCE(SUM(amount), 0) AS p FROM points_events WHERE user_id = $1`, [user.id]),
     pool.query(`SELECT b.id, b.name, b.icon, b.rarity, b.description, ub.awarded_at FROM user_badges ub JOIN badges b ON b.id = ub.badge_id WHERE ub.user_id = $1 ORDER BY ub.awarded_at DESC`, [user.id]),
     pool.query(`SELECT COUNT(*)::int AS n FROM quest_completions WHERE user_id = $1`, [user.id]),
@@ -148,6 +148,12 @@ router.get('/users/:username', async (req, res) => {
        SELECT r.project_id, r.xp::int AS xp, r.rank::int AS rank, p.name, p.slug
        FROM ranked r JOIN projects p ON p.id = r.project_id
        WHERE r.user_id = $1 ORDER BY r.xp DESC`, [user.id]),
+    // Verified wallets are public (the table is not private), so the profile's
+    // Wallets tab can show the viewed user's linked addresses.
+    pool.query(
+      `SELECT address, chain_namespace, is_primary, verified_at FROM wallets
+       WHERE user_id = $1 AND verified_at IS NOT NULL
+       ORDER BY is_primary DESC, created_at`, [user.id]),
   ]);
   res.json({
     user: {
@@ -163,6 +169,7 @@ router.get('/users/:username', async (req, res) => {
     reputation: rep,
     achievements: achv,
     projects: projects.rows,
+    wallets: wallets.rows,
   });
 });
 

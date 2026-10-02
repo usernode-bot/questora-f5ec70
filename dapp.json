@@ -180,6 +180,29 @@
       "name": "Project quests directory renders",
       "path": "/projects/staging-demo-octra-builders/quests",
       "expectText": "Quests in Staging demo Octra Builders"
+    },
+    {
+      "id": "wallets.panel",
+      "name": "Profile Wallets tab lists a linked wallet",
+      "path": "/u/staging-demo-user-1?tab=wallets",
+      "expectText": "Verified",
+      "visual": true,
+      "impact": [
+        "public/views.js",
+        "public/wallets.js",
+        "src/routes/wallets.js",
+        "src/seed.js"
+      ]
+    },
+    {
+      "name": "Header offers Connect wallet",
+      "path": "/",
+      "expectText": "Connect wallet"
+    },
+    {
+      "name": "Wallet chain picker is reachable",
+      "path": "/me?tab=wallets",
+      "expectText": "Wallets"
     }
   ],
   "visibility": {

@@ -1,35 +1,71 @@
 // API client: forwards the iframe token from the URL into x-usernode-token.
-const params = new URLSearchParams(window.location.search);
-const TOKEN = params.get('token') || '';
+'use strict';
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  var TOKEN = params.get('token') || '';
 
-async function request(path, options = {}) {
-  const res = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-usernode-token': TOKEN,
-      ...(options.headers || {}),
-    },
-  });
-  if (res.status === 401) throw new Error('You need to sign in through Homeroom');
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || 'Something went wrong');
-  return data;
-}
+  // GETs are deduped two ways: concurrent identical reads share one in-flight
+  // promise, and a settled read is reused for a short window. Any write clears
+  // the whole cache so a caller that just changed state reads fresh data.
+  var inflight = new Map();
+  var cache = new Map();
+  var CACHE_MS = 2000;
 
-const api = {
-  get: (p) => request(p),
-  post: (p, body) => request(p, { method: 'POST', body: JSON.stringify(body || {}) }),
-  patch: (p, body) => request(p, { method: 'PATCH', body: JSON.stringify(body || {}) }),
-  del: (p, body) => request(p, { method: 'DELETE', body: JSON.stringify(body || {}) }),
-};
+  function clearCache() { cache.clear(); }
 
-async function signMessage(address, message) {
-  if (window.ethereum) {
-    await window.ethereum.request({ method: 'eth_requestAccounts' });
-    return window.ethereum.request({ method: 'personal_sign', params: [message, address] });
+  async function request(path, options = {}) {
+    // Cancel a read that belongs to a navigation the user has already left.
+    var signal = options.signal || (window.QV && window.QV.__ctx && window.QV.__ctx.signal);
+    var res = await fetch(path, {
+      ...options,
+      signal: signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-usernode-token': TOKEN,
+        ...(options.headers || {}),
+      },
+    });
+    if (res.status === 401) throw new Error('You need to sign in through Homeroom');
+    var data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    return data;
   }
-  throw new Error('No browser wallet found. Install MetaMask or open Questora in a wallet browser.');
-}
 
-window.QuestoraAPI = { api, signMessage, TOKEN };
+  function get(p, opts) {
+    var cached = cache.get(p);
+    if (cached && Date.now() - cached.at < CACHE_MS) return Promise.resolve(cached.data);
+    if (inflight.has(p)) return inflight.get(p);
+    var promise = request(p, opts).then((data) => {
+      cache.set(p, { at: Date.now(), data: data });
+      return data;
+    }).finally(() => { inflight.delete(p); });
+    inflight.set(p, promise);
+    return promise;
+  }
+
+  function write(method, p, body, opts) {
+    // A write can change anything a cached read returned, so drop the cache.
+    clearCache();
+    return request(p, { ...(opts || {}), method: method, body: JSON.stringify(body || {}) });
+  }
+
+  const api = {
+    get: (p, opts) => get(p, opts),
+    post: (p, body, opts) => write('POST', p, body, opts),
+    patch: (p, body, opts) => write('PATCH', p, body, opts),
+    del: (p, body, opts) => write('DELETE', p, body, opts),
+    invalidate: clearCache,
+  };
+
+  // EVM sign-message helper kept for the quest wallet_connect flow and as the
+  // EVM connector's signing primitive. Other chains live in wallets.js.
+  async function signMessage(address, message) {
+    if (window.ethereum) {
+      await window.ethereum.request({ method: 'eth_requestAccounts' });
+      return window.ethereum.request({ method: 'personal_sign', params: [message, address] });
+    }
+    throw new Error('No browser wallet found. Install MetaMask or open Questora in a wallet browser.');
+  }
+
+  window.QuestoraAPI = { api, signMessage, TOKEN };
+})();

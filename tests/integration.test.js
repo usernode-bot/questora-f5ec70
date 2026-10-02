@@ -362,13 +362,13 @@ t('wallet challenge/verify signs over HTTP and pays the quest, guards hold', asy
   const wallet = ethers.Wallet.createRandom();
   const ch = await (await fetch(base + '/api/v1/wallets/challenge', {
     method: 'POST', headers: auth,
-    body: JSON.stringify({ address: wallet.address }),
+    body: JSON.stringify({ chain: 'eip155', address: wallet.address }),
   })).json();
   assert.ok(ch.nonce && ch.message.includes(wallet.address.toLowerCase()), 'challenge must bind the nonce to the address');
   const signature = await wallet.signMessage(ch.message);
   const verified = await fetch(base + '/api/v1/wallets/verify', {
     method: 'POST', headers: auth,
-    body: JSON.stringify({ address: wallet.address, signature, nonce: ch.nonce }),
+    body: JSON.stringify({ chain: 'eip155', address: wallet.address, signature, nonce: ch.nonce }),
   });
   assert.equal(verified.status, 200, JSON.stringify(await verified.json().catch(() => ({}))));
   const mine = await (await fetch(base + '/api/v1/wallets', { headers: auth })).json();
@@ -377,7 +377,7 @@ t('wallet challenge/verify signs over HTTP and pays the quest, guards hold', asy
   // The nonce is one-time: replaying it is refused.
   const replay = await fetch(base + '/api/v1/wallets/verify', {
     method: 'POST', headers: auth,
-    body: JSON.stringify({ address: wallet.address, signature, nonce: ch.nonce }),
+    body: JSON.stringify({ chain: 'eip155', address: wallet.address, signature, nonce: ch.nonce }),
   });
   assert.equal(replay.status, 400);
 
@@ -385,12 +385,12 @@ t('wallet challenge/verify signs over HTTP and pays the quest, guards hold', asy
   const other = ethers.Wallet.createRandom();
   const ch2 = await (await fetch(base + '/api/v1/wallets/challenge', {
     method: 'POST', headers: auth,
-    body: JSON.stringify({ address: other.address }),
+    body: JSON.stringify({ chain: 'eip155', address: other.address }),
   })).json();
   const wrongSig = await wallet.signMessage(ch2.message);
   const wrong = await fetch(base + '/api/v1/wallets/verify', {
     method: 'POST', headers: auth,
-    body: JSON.stringify({ address: other.address, signature: wrongSig, nonce: ch2.nonce }),
+    body: JSON.stringify({ chain: 'eip155', address: other.address, signature: wrongSig, nonce: ch2.nonce }),
   });
   assert.equal(wrong.status, 400);
 
@@ -839,6 +839,96 @@ t('project ownership: create assigns owner, cross-project ids are refused, delet
   const sProject = (await settings.json()).project;
   assert.equal(sProject.visibility, 'unlisted');
   assert.equal(sProject.logo_url, 'https://example.com/l.png');
+}, { timeout: 40000 });
+
+
+// Multi-chain wallet linking: Ed25519 chains verify over HTTP, the address
+// columns hold 66-char Sui/Aptos addresses, cross-chain reuse stays separate,
+// and a wallet already owned by another account is refused (409).
+t('multi-chain wallet link signs over HTTP and refuses cross-account claims', async () => {
+  const jwt = require('jsonwebtoken');
+  const crypto = require('node:crypto');
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const idA = 800000000 + Math.floor(Math.random() * 90000000);
+  const idB = idA + 1;
+  const tokenFor = (id, username) => jwt.sign(
+    { id, username, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  const json = { 'content-type': 'application/json' };
+  const authA = { ...json, 'x-usernode-token': tokenFor(idA, 'staging-demo-chain-a-' + Date.now() % 100000) };
+  const authB = { ...json, 'x-usernode-token': tokenFor(idB, 'staging-demo-chain-b-' + Date.now() % 100000) };
+
+  // A Solana Ed25519 keypair: the base58 public key IS the address.
+  const kp = crypto.generateKeyPairSync('ed25519');
+  const raw = kp.publicKey.export({ type: 'spki', format: 'der' }).slice(12);
+  const solAddress = require('../src/verify/bs58').encode(raw);
+
+  const ch = await (await fetch(base + '/api/v1/wallets/challenge', {
+    method: 'POST', headers: authA,
+    body: JSON.stringify({ chain: 'solana', address: solAddress }),
+  })).json();
+  assert.ok(ch.nonce && ch.message.includes(solAddress), 'challenge binds the nonce to the address');
+  const sig = crypto.sign(null, Buffer.from(ch.message), kp.privateKey);
+  const sigB64 = sig.toString('base64');
+  const ok = await fetch(base + '/api/v1/wallets/verify', {
+    method: 'POST', headers: authA,
+    body: JSON.stringify({ chain: 'solana', address: solAddress, signature: sigB64, nonce: ch.nonce }),
+  });
+  assert.equal(ok.status, 200, JSON.stringify(await ok.json().catch(() => ({}))));
+  const mine = await (await fetch(base + '/api/v1/wallets', { headers: authA })).json();
+  const linked = (mine.wallets || []).find(w => w.address === solAddress);
+  assert.ok(linked && linked.chain === 'solana', 'the linked wallet reports its chain');
+  assert.equal(linked.label, 'Solana', 'the API returns the plain chain label');
+
+  // A second account cannot claim the same (address, chain): 409, no reassign.
+  const chB = await (await fetch(base + '/api/v1/wallets/challenge', {
+    method: 'POST', headers: authB,
+    body: JSON.stringify({ chain: 'solana', address: solAddress }),
+  })).json();
+  const sigB = crypto.sign(null, Buffer.from(chB.message), kp.privateKey);
+  const steal = await fetch(base + '/api/v1/wallets/verify', {
+    method: 'POST', headers: authB,
+    body: JSON.stringify({ chain: 'solana', address: solAddress, signature: sigB.toString('base64'), nonce: chB.nonce }),
+  });
+  assert.equal(steal.status, 409);
+  const owner = await pool.query('SELECT user_id FROM wallets WHERE address = $1 AND chain_namespace = $2', [solAddress, 'solana']);
+  assert.equal(Number(owner.rows[0].user_id), (await pool.query('SELECT id FROM users WHERE usernode_id = $1', [String(idA)])).rows[0].id,
+    'ownership did not move');
+
+  // A 66-char Sui-style address is accepted, proving the column widening.
+  const suiAddr = '0x' + raw.toString('hex');
+  const chS = await (await fetch(base + '/api/v1/wallets/challenge', {
+    method: 'POST', headers: authA,
+    body: JSON.stringify({ chain: 'sui', address: suiAddr }),
+  })).json();
+  assert.ok(chS.nonce, 'a 66-char Sui address is accepted');
+  const sigS = crypto.sign(null, Buffer.from(chS.message), kp.privateKey);
+  const suiOk = await fetch(base + '/api/v1/wallets/verify', {
+    method: 'POST', headers: authA,
+    body: JSON.stringify({ chain: 'sui', address: suiAddr, signature: sigS.toString('base64'), publicKey: raw.toString('base64'), nonce: chS.nonce }),
+  });
+  assert.equal(suiOk.status, 200, 'the same key on a different chain is a separate wallet');
+
+  // An unknown chain is refused before any signature work.
+  const bad = await fetch(base + '/api/v1/wallets/challenge', {
+    method: 'POST', headers: authA, body: JSON.stringify({ chain: 'dogecoin', address: 'D123' }),
+  });
+  assert.equal(bad.status, 400);
+
+  // The profile payload the Wallets tab reads exposes the VIEWED user's
+  // verified wallets (public addresses), so someone else's profile shows
+  // their linked wallets, not the caller's.
+  const prof = await (await fetch(base + '/api/v1/users/staging-demo-user-1', { headers: authB })).json();
+  assert.ok(Array.isArray(prof.wallets) && prof.wallets.length === 5,
+    'the demo profile carries its five seeded wallets');
+  assert.ok(prof.wallets.some(w => w.chain_namespace === 'solana'), 'each row names its chain');
 }, { timeout: 40000 });
 
 

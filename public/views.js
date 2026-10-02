@@ -1,24 +1,32 @@
 window.QV = (function () {
 'use strict';
 var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, statCard, pager, emptyState, permissionList, dangerZone;
+// Resolve the orchestrator's helpers at call time: app.js loads after this
+// file, so a bind-time capture would freeze the fallbacks.
+var mount, errorCard, Render;
+function bindRender() {
+  mount = function (n) { var R = window.QV && window.QV.Render; return R && R.mount ? R.mount(n) : app().replaceChildren(n); };
+  errorCard = function (m) { var R = window.QV && window.QV.Render; return R && R.errorCard ? R.errorCard(m) : el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">' + escapeHtml(m) + '</p></div>'); };
+}
 function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; permissionList = q.permissionList; dangerZone = q.dangerZone; }
 bindQUI();
+bindRender();
 // View renderers. Each returns a DocumentFragment-ish element appended by
 // app.js. Data comes from /api/v1 via api.js; nothing renders a completion
 // state the server did not send.
 
 const app = () => document.getElementById('app');
-const me = { data: null };
+// Session is owned by the orchestrator in app.js (one shared /users/me read,
+// with dedupe and invalidation). Views read it through this shim.
 async function loadMe() {
-  if (me.data) return me.data;
-  try { me.data = await window.QuestoraAPI.api.get('/api/v1/users/me'); } catch { me.data = null; }
-  return me.data;
+  if (window.QV && window.QV.session) return window.QV.session.load();
+  return null;
 }
 
 // ---------- discovery ----------
 async function viewDiscover() {
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">Explore</h1><p class="text-sm text-zinc-500 mb-4">Campaigns you can join right now.</p></div>'));
   const searchForm = el(`
     <form action="/search" method="get" class="flex gap-2 mb-6 max-w-xl">
@@ -55,7 +63,7 @@ async function viewCampaigns(params) {
   const status = ['active', 'scheduled', 'ended', 'paused', 'archived'].includes(params.get('status'))
     ? params.get('status') : 'active';
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el(`
     <div>
       <h1 class="text-2xl font-bold mb-1">Campaigns</h1>
@@ -86,11 +94,11 @@ async function viewCampaigns(params) {
 // ---------- campaign ----------
 async function viewCampaign(slug) {
   const wrap = el('<div class="animate-pulse space-y-4"><div class="h-32 rounded-2xl bg-zinc-900"></div><div class="h-6 w-1/2 rounded bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/campaigns/' + encodeURIComponent(slug)); }
   catch (err) {
-    wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`));
+    mount(errorCard(err.message));
     return;
   }
   const c = data.campaign;
@@ -116,7 +124,7 @@ async function viewCampaign(slug) {
       <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Quests ${completedCount ? `<span class="text-violet-300">${completedCount}/${data.quests.length} done</span>` : ''}</h2>
       <div class="quest-list space-y-3"></div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
 
   // Join button: the server only accepts joins on live campaigns.
   if (data.joined === false && c.status === 'active') {
@@ -168,10 +176,10 @@ const TASK_LABEL = {
 
 async function viewQuest(id) {
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-8 w-2/3 rounded bg-zinc-900"></div><div class="h-24 rounded-xl bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/quests/' + encodeURIComponent(id)); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const q = data.quest;
   let states;
   try { states = await window.QuestoraAPI.api.get(`/api/v1/quests/${q.id}/my`); } catch { states = { states: [] }; }
@@ -189,7 +197,7 @@ async function viewQuest(id) {
       <div class="task-list space-y-3"></div>
       <div class="result mt-6"></div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
   // A locked quest explains itself and offers no actions.
   if (q.locked) {
     node.querySelector('.lock-banner').appendChild(el(`
@@ -198,6 +206,17 @@ async function viewQuest(id) {
       </div>`));
   }
   const list = node.querySelector('.task-list');
+
+  // Rebuild just the checklist in place after a submission, so verifying a
+  // wallet or answering a quiz updates the page instead of remounting it.
+  async function refreshStates() {
+    let fresh;
+    try { fresh = await window.QuestoraAPI.api.get(`/api/v1/quests/${q.id}/my`); } catch { fresh = { states: [] }; }
+    for (const k of Object.keys(stateByTask)) delete stateByTask[k];
+    for (const st of fresh.states || []) stateByTask[st.task_id] = st;
+    list.replaceChildren();
+    for (const t of data.tasks) list.appendChild(taskRow(t));
+  }
 
   function taskRow(t) {
     const st = stateByTask[t.id];
@@ -259,9 +278,9 @@ async function viewQuest(id) {
         return address;
       }
     } catch { /* fall through to the full flow */ }
-    const ch = await window.QuestoraAPI.api.post('/api/v1/wallets/challenge', { address });
+    const ch = await window.QuestoraAPI.api.post('/api/v1/wallets/challenge', { chain: 'eip155', address });
     const signature = await window.QuestoraAPI.signMessage(address, ch.message);
-    await window.QuestoraAPI.api.post('/api/v1/wallets/verify', { address, signature, nonce: ch.nonce });
+    await window.QuestoraAPI.api.post('/api/v1/wallets/verify', { chain: 'eip155', address, signature, nonce: ch.nonce });
     toast('Wallet verified');
     return address;
   }
@@ -275,7 +294,7 @@ async function viewQuest(id) {
         try {
           await walletConnectFlow(b);
           await window.QuestoraAPI.api.post(`/api/v1/tasks/${t.id}/submit`, {});
-          viewQuest(q.id);
+          refreshStates();
         } catch (err) {
           toast(err.message || 'Could not verify the wallet', true);
           b.disabled = false; b.textContent = 'Connect wallet';
@@ -293,7 +312,7 @@ async function viewQuest(id) {
         try {
           await window.QuestoraAPI.api.post(`/api/v1/tasks/${t.id}/submit`, {});
           toast('Sent for review');
-          viewQuest(q.id);
+          refreshStates();
         } catch (err) { toast(err.message, true); b.disabled = false; b.textContent = 'Visit and confirm'; }
       });
       holder.appendChild(b); holder.appendChild(link);
@@ -322,7 +341,7 @@ async function viewQuest(id) {
         try {
           const r = await window.QuestoraAPI.api.post(`/api/v1/quests/${q.id}/quiz`, { task_id: t.id, answers });
           if (r.passed) toast(`Scored ${r.score}%`);
-          viewQuest(q.id);
+          refreshStates();
         } catch (err) { toast(err.message, true); submit.disabled = false; submit.textContent = 'Check answers'; }
       });
       form.appendChild(submit);
@@ -345,7 +364,7 @@ async function viewQuest(id) {
       try {
         await window.QuestoraAPI.api.post(`/api/v1/tasks/${t.id}/submit`, { proof_url: url, proof_data: text ? { text } : null });
         toast('Sent for review');
-        viewQuest(q.id);
+        refreshStates();
       } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = 'Submit for review'; }
     });
     holder.appendChild(form);
@@ -358,10 +377,10 @@ async function viewQuest(id) {
 async function viewProfile(username, params) {
   params = params || new URLSearchParams();
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/users/' + encodeURIComponent(username)); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const u = data.user;
   const pct = u.next ? Math.min(100, Math.round(((u.xp - (u.next.min_xp - (u.next.min_xp - 0))) / u.next.min_xp) * 100)) : 100;
   const progress = u.next
@@ -388,17 +407,85 @@ async function viewProfile(username, params) {
         <button data-tab="credentials" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Credentials</button>
         <button data-tab="reputation" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Reputation</button>
         <button data-tab="achievements" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Achievements</button>
+        <button data-tab="wallets" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Wallets</button>
       </div>
       <div class="tab-body"></div>
       <div class="invite-slot mt-6"></div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
   // levelRing builds a DOM node, so it is inserted here rather than
   // interpolated into the template above (which would stringify it).
   node.querySelector('.level-ring-slot').appendChild(levelRing(u.level, progress));
   const body = node.querySelector('.tab-body');
   const inviteSlot = node.querySelector('.invite-slot');
+  // Wallets link to your own account only, but verified addresses are public,
+  // so everyone sees the viewed profile's linked wallets. The rows come from
+  // the profile payload; the owner also gets a Connect wallet control.
+  let isOwn = false;
+  const chainLabel = (ns) => {
+    const c = (window.QuestoraWallets.CHAINS || []).find(x => x.chain === ns);
+    return c ? c.label : ns;
+  };
+  function walletRows() {
+    const list = el('<div class="space-y-2"></div>');
+    const wallets = data.wallets || [];
+    if (!wallets.length) {
+      list.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400">No wallets linked yet. Link one to prove you own it and complete wallet quests.</p></div>'));
+      return list;
+    }
+    for (const w of wallets) {
+      list.appendChild(el(`
+        <div class="flex items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+          <span class="min-w-0">
+            <span class="block text-xs text-zinc-500 mb-0.5">${escapeHtml(chainLabel(w.chain_namespace))}${w.is_primary ? ' \u00b7 primary' : ''}</span>
+            <span class="block font-mono text-sm truncate">${escapeHtml(w.address)}</span>
+          </span>
+          <span class="shrink-0">${statePill('verified')}</span>
+        </div>`));
+    }
+    return list;
+  }
+  // Re-read the profile payload so a just-added wallet appears without
+  // remounting the whole view.
+  async function reloadWallets() {
+    try {
+      const fresh = await window.QuestoraAPI.api.get('/api/v1/users/' + encodeURIComponent(username));
+      data.wallets = fresh.wallets || [];
+    } catch { /* keep the rows we already have */ }
+  }
+  function renderWallets() {
+    body.replaceChildren(walletRows());
+    if (!isOwn) return;
+    const addBtn = el('<button class="connect-wallet mt-3 w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Connect wallet</button>');
+    addBtn.addEventListener('click', () => {
+      // Chain picker first, then the connector hands off to the wallet.
+      const pick = el('<div class="space-y-2"></div>');
+      for (const c of window.QuestoraWallets.CHAINS) {
+        const b = el(`<button class="chain-pick w-full text-left font-medium px-4 py-3 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100">${escapeHtml(c.label)}</button>`);
+        b.addEventListener('click', async () => {
+          pick.replaceChildren(el('<p class="text-sm text-zinc-400">Connect and sign in your wallet\u2026</p>'));
+          try {
+            await window.QuestoraWallets.link(c.chain);
+            toast('Wallet verified');
+            await reloadWallets();
+            renderWallets();
+          } catch (err) {
+            toast(err.message || 'Could not verify the wallet', true);
+            renderWallets();
+          }
+        });
+        pick.appendChild(b);
+      }
+      const panel = el('<div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4"></div>');
+      panel.appendChild(el('<p class="text-sm font-medium mb-2">Choose a chain</p>'));
+      panel.appendChild(pick);
+      body.replaceChildren(panel);
+    });
+    body.appendChild(addBtn);
+  }
+  let lastTab = 'activity';
   function show(tab) {
+    lastTab = tab;
     node.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === tab;
       b.className = 'tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium ' + (on ? 'bg-violet-600 text-white' : 'bg-zinc-800/70 text-zinc-400');
@@ -482,6 +569,7 @@ async function viewProfile(username, params) {
       body.appendChild(list);
       return;
     }
+    if (tab === 'wallets') { renderWallets(); return; }
     if (tab === 'badges') {
       if (!data.badges.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No badges yet. Complete quests to earn them.</p>')); return; }
       const grid = el('<div class="grid grid-cols-2 md:grid-cols-4 gap-3"></div>');
@@ -500,11 +588,13 @@ async function viewProfile(username, params) {
   }
   node.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
   const initialTab = params.get('tab');
-  show(['projects', 'badges', 'credentials', 'reputation', 'achievements'].includes(initialTab) ? initialTab : 'activity');
+  show(['projects', 'badges', 'credentials', 'reputation', 'achievements', 'wallets'].includes(initialTab) ? initialTab : 'activity');
 
   // Own profile: the invite block (Phase 2 referrals).
   const meData = await loadMe();
   if (meData && meData.user && (meData.user.username || '').toLowerCase() === String(username).toLowerCase()) {
+    isOwn = true;
+    if (lastTab === 'wallets') renderWallets();
     let inv;
     try { inv = await window.QuestoraAPI.api.get('/api/v1/referrals/me'); } catch { inv = null; }
     if (inv && inv.code) {
@@ -533,7 +623,7 @@ async function viewLeaderboard(params) {
   const by = params.get('by') === 'points' ? 'points' : 'xp';
   const seasonParam = params.get('season') || '';
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el(`
     <div class="flex items-center justify-between mb-4">
       <h1 class="text-2xl font-bold">Leaderboard</h1>
@@ -609,7 +699,7 @@ async function viewLeaderboard(params) {
 // ---------- teams ----------
 async function viewTeams(params) {
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el('<h1 class="text-2xl font-bold mb-4">Teams</h1>'));
   const mySlot = el('<div class="mb-6"></div>');
   const boardSlot = el('<div></div>');
@@ -742,7 +832,7 @@ const CATEGORY_LIST = ['DeFi', 'Gaming', 'AI', 'Infrastructure', 'Developer', 'N
 
 async function viewCreate() {
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el('<h1 class="text-2xl font-bold mb-1">Create</h1><p class="text-sm text-zinc-500 mb-6">Start a project, add a campaign, then build its quests.</p>'));
   const meData = await loadMe();
   const form = el(`
@@ -878,10 +968,10 @@ async function viewCreate() {
 async function viewProject(slug, params) {
   params = params || new URLSearchParams();
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-24 rounded-2xl bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/projects/' + encodeURIComponent(slug)); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const p = data.project;
   const node = el(`
     <div>
@@ -898,7 +988,7 @@ async function viewProject(slug, params) {
       </div>
       <div class="tab-body"></div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
   const body = node.querySelector('.tab-body');
 
   async function show(tab) {
@@ -1011,7 +1101,7 @@ async function viewProject(slug, params) {
 // ---------- projects directory ----------
 async function viewProjects() {
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el('<h1 class="text-2xl font-bold mb-1">Projects</h1><p class="text-sm text-zinc-500 mb-5">Every project on Questora, with its campaigns and quests.</p>'));
   const body = el('<div class="space-y-2"></div>');
   wrap.appendChild(body);
@@ -1053,10 +1143,10 @@ function projectCrumb(p) { return { label: p.name, href: '/projects/' + encodeUR
 async function viewProjectOverview(slug, params, legacyTab) {
   params = params || new URLSearchParams();
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-24 rounded-2xl bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data;
   try { data = await loadProjectView(slug); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const p = data.project;
   let tab = legacyTab || params.get('tab') || 'overview';
   if (tab === 'points') tab = 'leaderboard';
@@ -1088,7 +1178,7 @@ async function viewProjectOverview(slug, params, legacyTab) {
       </div>
       <div class="tab-body"></div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
   const body = node.querySelector('.tab-body');
   showTab(tab);
 
@@ -1196,10 +1286,10 @@ async function viewProjectCampaigns(slug, params) {
 async function viewProjectQuests(slug, params) {
   params = params || new URLSearchParams();
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data;
   try { data = await loadProjectView(slug); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const p = data.project;
   const node = el(`
     <div>
@@ -1207,7 +1297,7 @@ async function viewProjectQuests(slug, params) {
       <h1 class="text-2xl font-bold mb-4">Quests in ${escapeHtml(p.name)}</h1>
       <div class="space-y-4"></div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
   const holder = node.querySelector('.space-y-4');
   let any = false;
   for (const c of data.campaigns) {
@@ -1229,10 +1319,10 @@ async function viewProjectQuests(slug, params) {
 // ---------- campaign detail (hierarchical) ----------
 async function viewCampaignDetail(projectSlug, campaignSlug) {
   const wrap = el('<div class="animate-pulse space-y-4"><div class="h-32 rounded-2xl bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/campaigns/' + encodeURIComponent(campaignSlug)); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const c = data.campaign;
   const pSlug = projectSlug || c.project_slug;
   const completedCount = data.quests.filter(q => q.completed).length;
@@ -1263,7 +1353,7 @@ async function viewCampaignDetail(projectSlug, campaignSlug) {
       <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Quests</h2>
       <div class="quest-list space-y-3"></div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
 
   if (data.joined === false && c.status === 'active') {
     const joinBtn = el('<button class="join font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Join campaign</button>');
@@ -1310,10 +1400,10 @@ async function resolveCampaignPath(slug) {
 // ---------- quest detail (hierarchical) ----------
 async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-8 w-2/3 rounded bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/quests/' + encodeURIComponent(questSlug)); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const q = data.quest;
   const pSlug = projectSlug || q.project_slug;
   let states;
@@ -1335,7 +1425,7 @@ async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
       <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Tasks</h2>
       <div class="task-list space-y-3"></div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
   if (q.locked) {
     node.querySelector('.lock-banner').appendChild(el(`<div class="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4"><p class="text-sm text-amber-200">${escapeHtml(q.locked_reason || 'This quest is locked.')}</p></div>`));
   }
@@ -1374,12 +1464,12 @@ async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
 // ---------- scoped leaderboard ----------
 async function viewScopedLeaderboard(opts) {
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-20 rounded-2xl bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   const metric = opts.metric === 'points' ? 'points' : 'xp';
   const period = opts.period || 'all';
   let data;
   try { data = await loadProjectView(opts.projectSlug); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const p = data.project;
   let campaign = null, quest = null;
   if (opts.campaignSlug) campaign = data.campaigns.find(c => c.slug === opts.campaignSlug) || null;
@@ -1426,7 +1516,7 @@ async function viewScopedLeaderboard(opts) {
       </div>
       <div class="board space-y-2"></div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
   const boardEl = node.querySelector('.board');
   if (!board.entries.length) {
     boardEl.appendChild(el(emptyState('No participants have earned points yet.')));
@@ -1441,7 +1531,7 @@ async function viewLeaderboardHub(params) {
   const by = params.get('by') === 'points' ? 'points' : 'xp';
   const seasonParam = params.get('season') || '';
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el(`
     <div>
       <h1 class="text-2xl font-bold mb-1">Leaderboard</h1>
@@ -1535,10 +1625,10 @@ function confirmButton(label, confirmLabel, run) {
 async function viewDashboard(slug, section, params) {
   params = params || new URLSearchParams();
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-24 rounded-2xl bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data, overview = null;
   try { data = await loadProjectView(slug); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const p = data.project;
   if (!data.can_manage) {
     wrap.replaceChildren(el(`
@@ -1569,7 +1659,7 @@ async function viewDashboard(slug, section, params) {
         <div class="section"></div>
       </div>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
   const sidebar = node.querySelector('.sidebar');
   const sectionEl = node.querySelector('.section');
   const base = '/dashboard/projects/' + encodeURIComponent(p.slug);
@@ -2182,7 +2272,7 @@ async function renderDangerZone(sectionEl, ctx) {
 // ---------- notifications ----------
 async function viewNotifications() {
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el('<div class="flex items-center justify-between mb-4"><h1 class="text-2xl font-bold">Notifications</h1><button class="prefs text-sm text-violet-400">Preferences</button></div>'));
   const body = el('<div class="space-y-2"></div>');
   wrap.appendChild(body);
@@ -2229,7 +2319,7 @@ async function viewNotifications() {
 async function viewSearch(params) {
   const q = params.get('q') || '';
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el('<h1 class="text-2xl font-bold mb-4">Search</h1>'));
   const form = el(`
     <form action="/search" method="get" class="flex gap-2 mb-6 max-w-xl">
@@ -2279,7 +2369,7 @@ async function viewSearch(params) {
 async function viewJoin(params) {
   const ref = params.get('ref') || '';
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   const meData = await loadMe().catch(() => null);
   const node = el(`
     <div class="max-w-md mx-auto">
@@ -2325,10 +2415,10 @@ async function viewJoin(params) {
 // ---------- public credential page (Phase 2) ----------
 async function viewCredential(id) {
   const wrap = el('<div class="animate-pulse space-y-3"><div class="h-32 rounded-2xl bg-zinc-900"></div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/credentials/' + encodeURIComponent(id)); }
-  catch (err) { wrap.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p></div>`)); return; }
+  catch (err) { mount(errorCard(err.message)); return; }
   const c = data.credential;
   const criteriaText = c.criteria && (c.criteria.description || c.criteria.quest_title);
   const node = el(`
@@ -2354,13 +2444,13 @@ async function viewCredential(id) {
       </div>
       <p class="text-xs text-zinc-600 text-center break-all">Credential ID: ${escapeHtml(c.id)}</p>
     </div>`);
-  wrap.replaceChildren(node);
+  mount(node);
 }
 
 // ---------- admin ----------
 async function viewAdmin() {
   const wrap = el('<div></div>');
-  app().replaceChildren(wrap);
+  mount(wrap);
   wrap.appendChild(el('<h1 class="text-2xl font-bold mb-1">Admin</h1><p class="text-sm text-zinc-500 mb-6">Platform administration. Every action is audited.</p>'));
   const body = el('<div class="space-y-8"></div>');
   wrap.appendChild(body);
