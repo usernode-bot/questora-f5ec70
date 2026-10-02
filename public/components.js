@@ -29,7 +29,7 @@ function campaignCard(c) {
       <div class="flex items-center gap-2 mb-2">
         ${c.project_logo ? `<img src="${escapeHtml(c.project_logo)}" alt="" class="w-5 h-5 rounded-full">` : `<span class="w-5 h-5 rounded-full bg-violet-600/30 inline-block"></span>`}
         <span class="text-xs text-zinc-500">${escapeHtml(c.project_name)}</span>
-        ${c.status !== 'live' ? `<span class="ml-auto text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400">${escapeHtml(c.status)}</span>` : ''}
+        ${c.status !== 'active' ? `<span class="ml-auto text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400">${escapeHtml(c.status)}</span>` : ''}
       </div>
       <h3 class="font-semibold text-zinc-100 mb-1 leading-snug">${escapeHtml(c.name)}</h3>
       <p class="text-sm text-zinc-400 line-clamp-2 mb-3">${escapeHtml(c.description || '')}</p>
@@ -106,6 +106,96 @@ const statePill = (status) => {
   return `<span class="inline-block text-xs font-medium px-2.5 py-1 rounded-full ${cls}">${label}</span>`;
 };
 
-return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill };
+// Hierarchical navigation: Project -> Campaign -> Quest. Each item is
+// { label, href }; the last one is the current page and is not a link.
+function breadcrumb(items) {
+  const parts = [];
+  items.forEach((it, i) => {
+    if (i > 0) parts.push('<span class="text-zinc-600" aria-hidden="true">/</span>');
+    const last = i === items.length - 1;
+    if (last || !it.href) {
+      parts.push(`<span class="text-zinc-300">${escapeHtml(it.label)}</span>`);
+    } else {
+      parts.push(`<a href="${escapeHtml(it.href)}" class="text-zinc-500 hover:text-violet-300">${escapeHtml(it.label)}</a>`);
+    }
+  });
+  return `<nav class="flex items-center flex-wrap gap-1.5 text-xs mb-3" aria-label="Breadcrumb">${parts.join('')}</nav>`;
+}
+
+// The banner a scoped leaderboard (or a scoped directory) leads with. Plain
+// language: whose ranking this is, or what lives under this scope.
+function scopeBanner(title, scopeLabel, subtitle) {
+  return `<div class="rounded-2xl border border-zinc-800 bg-gradient-to-b from-violet-600/20 to-transparent p-5 mb-4">
+    <p class="text-xs uppercase tracking-wide text-violet-300 mb-1">${escapeHtml(scopeLabel)}</p>
+    <h1 class="text-xl font-bold">${escapeHtml(title)}</h1>
+    ${subtitle ? `<p class="text-sm text-zinc-400 mt-1">${escapeHtml(subtitle)}</p>` : ''}
+  </div>`;
+}
+
+function statCard(label, value, accent) {
+  return `<div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+    <p class="text-xs text-zinc-500">${escapeHtml(label)}</p>
+    <p class="text-xl font-bold ${accent || ''}">${escapeHtml(String(value))}</p>
+  </div>`;
+}
+
+function pager(page, hasMore, makeHref) {
+  const holder = el('<div class="flex items-center justify-center gap-3 mt-4"></div>');
+  if (page > 1) {
+    const prev = el(`<a href="${escapeHtml(makeHref(page - 1))}" class="text-sm font-medium px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Previous</a>`);
+    holder.appendChild(prev);
+  }
+  holder.appendChild(el(`<span class="text-sm text-zinc-500">Page ${page}</span>`));
+  if (hasMore) {
+    holder.appendChild(el(`<a href="${escapeHtml(makeHref(page + 1))}" class="text-sm font-medium px-4 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Next</a>`));
+  }
+  return holder;
+}
+
+// Empty state with a plain next step.
+function emptyState(text, actionLabel, actionHref) {
+  const action = actionLabel
+    ? `<a href="${escapeHtml(actionHref || '#')}" class="inline-block mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">${escapeHtml(actionLabel)}</a>`
+    : '';
+  return `<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center">
+    <p class="text-zinc-400">${escapeHtml(text)}</p>${action}</div>`;
+}
+
+// Per-member ability toggles for the ownership roster. Each row is one
+// explicit override; leaving it alone falls back to the role's default.
+// lockDelete disables the one ability only the owner may hand out.
+function permissionList(actions, permissions, lockDelete) {
+  const perms = permissions || {};
+  const holder = el('<div class="flex flex-wrap gap-x-3 gap-y-1.5"></div>');
+  for (const a of actions) {
+    const granted = Object.prototype.hasOwnProperty.call(perms, a) ? !!perms[a] : null;
+    const locked = lockDelete && a === 'delete_project';
+    holder.appendChild(el(`<label class="flex items-center gap-1.5 text-[11px] text-zinc-400">
+      <input type="checkbox" class="perm-toggle accent-violet-500" data-action="${escapeHtml(a)}" ${granted === true ? 'checked' : ''} ${locked ? 'disabled' : ''}>
+      <span>${escapeHtml(a.replace(/_/g, ' '))}</span>
+    </label>`));
+  }
+  return holder;
+}
+
+// The project deletion card: two steps, archive-first. Only rendered for a
+// caller that holds delete_project.
+function dangerZone() {
+  return el(`<div class="rounded-xl border border-red-900/60 bg-red-950/20 p-4 max-w-xl">
+    <h2 class="font-semibold mb-1 text-red-300">Danger zone</h2>
+    <p class="text-xs text-zinc-400 mb-3">Archiving hides the project and keeps participant history. Permanent deletion removes everything and cannot be undone.</p>
+    <div class="dz-confirm hidden mb-3 rounded-lg border border-red-900/60 bg-zinc-900/60 p-3">
+      <p class="text-xs text-zinc-300 mb-2 dz-summary"></p>
+      <div class="flex flex-wrap gap-2">
+        <button class="dz-archive font-medium px-3 py-2 min-h-[40px] rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm">Archive project</button>
+        <button class="dz-hard font-medium px-3 py-2 min-h-[40px] rounded-lg bg-red-700 hover:bg-red-600 text-white text-sm">Delete permanently</button>
+        <button class="dz-cancel font-medium px-3 py-2 min-h-[40px] rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-sm">Cancel</button>
+      </div>
+    </div>
+    <button class="dz-open font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-red-700 hover:bg-red-600 text-white text-sm">Delete this project</button>
+  </div>`);
+}
+
+return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState, permissionList, dangerZone };
 
 })();

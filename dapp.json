@@ -20,12 +20,12 @@
       "expectText": "Explore"
     },
     {
-      "name": "Staging demo campaign checklist",
-      "path": "/campaigns/staging-demo-welcome-campaign",
+      "name": "Hierarchical campaign page checklist",
+      "path": "/projects/staging-demo-octra-builders/campaigns/staging-demo-welcome-campaign",
       "expectText": "Quests"
     },
     {
-      "name": "Leaderboard shows seeded users",
+      "name": "Leaderboard hub shows seeded users",
       "path": "/leaderboard",
       "expectText": "staging-demo-user-1"
     },
@@ -55,8 +55,8 @@
       "expectText": "staging-demo-user-2"
     },
     {
-      "name": "Project points leaderboard renders",
-      "path": "/p/staging-demo-octra-builders?tab=points",
+      "name": "Project leaderboard renders",
+      "path": "/projects/staging-demo-octra-builders/leaderboard",
       "expectText": "staging-demo-user-1"
     },
     {
@@ -85,9 +85,9 @@
       "expectText": "Staging demo Quest Crew"
     },
     {
-      "id": "quest.checklist",
-      "name": "Quest checklist flow",
-      "path": "/campaigns/staging-demo-welcome-campaign",
+      "id": "campaign.checklist",
+      "name": "Campaign checklist flow",
+      "path": "/projects/staging-demo-octra-builders/campaigns/staging-demo-welcome-campaign",
       "expectSelector": ".quest-list",
       "visual": true,
       "impact": [
@@ -140,6 +140,46 @@
         "src/teams.js",
         "src/routes/teams.js"
       ]
+    },
+    {
+      "name": "Projects directory renders",
+      "path": "/projects",
+      "expectText": "Projects"
+    },
+    {
+      "name": "Project overview renders",
+      "path": "/projects/staging-demo-octra-builders",
+      "expectText": "Staging demo Octra Builders"
+    },
+    {
+      "name": "Campaign leaderboard renders",
+      "path": "/projects/staging-demo-octra-builders/campaigns/staging-demo-welcome-campaign/leaderboard",
+      "expectText": "staging-demo-user-1"
+    },
+    {
+      "name": "Quest leaderboard renders",
+      "path": "/projects/staging-demo-octra-builders/campaigns/staging-demo-welcome-campaign/quests/complete-quiz/leaderboard",
+      "expectText": "staging-demo-user-1"
+    },
+    {
+      "name": "Dashboard blocks a non-member",
+      "path": "/dashboard/projects/staging-demo-octra-builders",
+      "expectText": "access"
+    },
+    {
+      "name": "Project settings route resolves",
+      "path": "/dashboard/projects/staging-demo-octra-builders/settings",
+      "expectText": "access"
+    },
+    {
+      "name": "Profile projects tab renders",
+      "path": "/u/staging-demo-user-1?tab=projects",
+      "expectText": "Staging demo Octra Builders"
+    },
+    {
+      "name": "Project quests directory renders",
+      "path": "/projects/staging-demo-octra-builders/quests",
+      "expectText": "Quests in Staging demo Octra Builders"
     }
   ],
   "visibility": {

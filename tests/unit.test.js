@@ -175,11 +175,11 @@ test('task config validation rejects on-chain publishes', () => {
 });
 
 test('campaign state machine only allows forward transitions', () => {
-  assert.ok(CAMPAIGN_TRANSITIONS.live.includes('paused'));
-  assert.ok(CAMPAIGN_TRANSITIONS.paused.includes('live'));
+  assert.ok(CAMPAIGN_TRANSITIONS.active.includes('paused'));
+  assert.ok(CAMPAIGN_TRANSITIONS.paused.includes('active'));
   assert.ok(CAMPAIGN_TRANSITIONS.ended.includes('archived'));
-  assert.ok(!CAMPAIGN_TRANSITIONS.live.includes('archived'), 'live campaigns end, they are not archived directly');
-  assert.ok(!CAMPAIGN_TRANSITIONS.live.includes('draft'), 'no going back to draft');
+  assert.ok(!CAMPAIGN_TRANSITIONS.active.includes('archived'), 'active campaigns end, they are not archived directly');
+  assert.ok(!CAMPAIGN_TRANSITIONS.active.includes('draft'), 'no going back to draft');
   assert.equal(CAMPAIGN_TRANSITIONS.archived.length, 0, 'archived is terminal');
 });
 
@@ -197,4 +197,39 @@ test('quest lock evaluator: pure logic over completed sets', () => {
   assert.equal(conditions.evaluateLock(7, 'any', reqs, new Set([12])), false);
   // No prerequisites: never locked.
   assert.equal(conditions.evaluateLock(7, 'all', [], new Set()), false);
+});
+
+// ---- Project Ownership: action resolution (pure) ----
+const { resolveAction, PROJECT_ACTIONS } = require('../src/rbac');
+const util = require('../src/util');
+
+test('rbac default-deny: a project admin cannot delete without a grant', () => {
+  const admin = { ownerUserId: 1, userId: 2, role: 'admin', permissions: {}, action: 'delete_project' };
+  assert.equal(resolveAction(admin), false, 'admin has no delete_project by default');
+  assert.equal(resolveAction({ ...admin, action: 'manage' }), true, 'admin still manages');
+  assert.equal(resolveAction({ ...admin, action: 'edit' }), true);
+  assert.equal(resolveAction({ ...admin, action: 'publish' }), true);
+  assert.equal(resolveAction({ ...admin, action: 'review' }), true);
+});
+
+test('rbac explicit grant flips a withheld ability, and a revoke withholds a default', () => {
+  assert.equal(resolveAction({ ownerUserId: 1, userId: 2, role: 'admin', permissions: { delete_project: true }, action: 'delete_project' }), true);
+  // Explicit override beats the role default in either direction.
+  assert.equal(resolveAction({ ownerUserId: 1, userId: 2, role: 'admin', permissions: { edit: false }, action: 'edit' }), false);
+  assert.equal(resolveAction({ ownerUserId: 1, userId: 2, role: 'analyst', permissions: { edit: true }, action: 'edit' }), true);
+});
+
+test('rbac owner and platform admin resolve to true for every action', () => {
+  for (const action of PROJECT_ACTIONS) {
+    assert.equal(resolveAction({ isPlatformAdmin: true, ownerUserId: 1, userId: 9, role: null, permissions: null, action }), true, 'platform admin: ' + action);
+    assert.equal(resolveAction({ ownerUserId: 1, userId: 1, role: 'owner', permissions: {}, action }), true, 'owner: ' + action);
+    // A non-member gets nothing.
+    assert.equal(resolveAction({ ownerUserId: 1, userId: 42, role: null, permissions: null, action }), false);
+  }
+});
+
+test('quest slugs are unique per campaign via slugify', () => {
+  assert.equal(util.slugify('Complete Quiz'), 'complete-quiz');
+  assert.equal(util.slugify('Staging demo Vote on Proposal'), 'staging-demo-vote-on-proposal');
+  assert.equal(util.slugify(''), '');
 });

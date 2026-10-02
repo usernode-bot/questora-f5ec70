@@ -40,12 +40,15 @@ async function upsertCampaign(projectId, name, extra) {
   const slug = slugify(name);
   const { rows } = await pool.query(
     `INSERT INTO campaigns (project_id, slug, name, description, banner_url, category, chains,
-                            starts_at, ends_at, status, featured, xp_multiplier)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-     ON CONFLICT (project_id, slug) DO UPDATE SET status = EXCLUDED.status, description = EXCLUDED.description
+                            starts_at, ends_at, status, featured, xp_multiplier, visibility, rules)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     ON CONFLICT (project_id, slug) DO UPDATE SET
+       status = EXCLUDED.status, description = EXCLUDED.description,
+       visibility = EXCLUDED.visibility, rules = EXCLUDED.rules
      RETURNING id`,
     [projectId, slug, name, extra.description, extra.banner_url, extra.category, extra.chains || [],
-      extra.starts_at, extra.ends_at, extra.status, !!extra.featured, extra.xp_multiplier || 1]
+      extra.starts_at, extra.ends_at, extra.status, !!extra.featured, extra.xp_multiplier || 1,
+      extra.visibility || 'public', extra.rules || null]
   );
   return rows[0].id;
 }
@@ -53,16 +56,28 @@ async function upsertCampaign(projectId, name, extra) {
 async function upsertQuest(campaignId, title, extra, tasks) {
   // Idempotency guard: seeded quests are found by campaign + title.
   const existing = await pool.query(
-    'SELECT id FROM quests WHERE campaign_id = $1 AND title = $2 ORDER BY id LIMIT 1',
+    'SELECT id, slug FROM quests WHERE campaign_id = $1 AND title = $2 ORDER BY id LIMIT 1',
     [campaignId, title]
   );
-  if (existing.rows.length) return existing.rows[0].id;
+  if (existing.rows.length) {
+    // Keep the seeded status/type/dates current across re-seeds.
+    await pool.query(
+      `UPDATE quests SET status = $2, quest_type = $3, starts_at = $4, ends_at = $5 WHERE id = $1`,
+      [existing.rows[0].id, extra.status || 'active', extra.quest_type || null,
+        extra.starts_at || null, extra.ends_at || null]);
+    return existing.rows[0].id;
+  }
+  let slug = slugify(title) || ('quest-' + Date.now());
+  const clash = await pool.query('SELECT 1 FROM quests WHERE campaign_id = $1 AND slug = $2', [campaignId, slug]);
+  if (clash.rows.length) slug = slug + '-' + Math.floor(Math.random() * 9000 + 1000);
   const { rows } = await pool.query(
-    `INSERT INTO quests (campaign_id, title, description, sort_order, is_required, xp_reward, points_reward, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'published')
+    `INSERT INTO quests (campaign_id, slug, title, description, sort_order, is_required, xp_reward,
+                         points_reward, status, quest_type, starts_at, ends_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING id`,
-    [campaignId, title, extra.description || null, extra.sort_order || 0,
-      extra.is_required !== false, extra.xp || 0, extra.points || 0]
+    [campaignId, slug, title, extra.description || null, extra.sort_order || 0,
+      extra.is_required !== false, extra.xp || 0, extra.points || 0,
+      extra.status || 'active', extra.quest_type || null, extra.starts_at || null, extra.ends_at || null]
   );
   const questId = rows[0].id;
   for (let i = 0; i < tasks.length; i++) {
@@ -97,31 +112,31 @@ async function upsertBadge(projectId, key, name, icon, rarity, description) {
   return rows[0].id;
 }
 
-async function completeQuest(questId, userId, xp, projectSystemId, seasonId) {
+async function completeQuest(questId, userId, xp, seasonId) {
+  const scope = await pool.query(
+    `SELECT q.campaign_id, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`,
+    [questId]);
+  const campaignId = scope.rows[0] ? scope.rows[0].campaign_id : null;
+  const projectId = scope.rows[0] ? scope.rows[0].project_id : null;
   await pool.query(
-    `INSERT INTO quest_completions (quest_id, user_id, status, xp_awarded)
-     VALUES ($1, $2, 'completed', $3) ON CONFLICT (quest_id, user_id) DO NOTHING`,
-    [questId, userId, xp]
+    `INSERT INTO quest_completions (quest_id, user_id, project_id, campaign_id, status, xp_awarded)
+     VALUES ($1, $2, $3, $4, 'completed', $5) ON CONFLICT (quest_id, user_id) DO NOTHING`,
+    [questId, userId, projectId, campaignId, xp]
   );
   await pool.query(
-    `INSERT INTO xp_events (user_id, amount, source_type, source_id, season_id)
-     VALUES ($1, $2, 'quest', $3, $4) ON CONFLICT (source_type, source_id, user_id) DO NOTHING`,
-    [userId, xp, questId, seasonId || null]
+    `INSERT INTO xp_events (user_id, amount, source_type, source_id, season_id, project_id, campaign_id, quest_id)
+     VALUES ($1, $2, 'quest', $3, $4, $5, $6, $3) ON CONFLICT (source_type, source_id, user_id) DO NOTHING`,
+    [userId, xp, questId, seasonId || null, projectId, campaignId]
   );
+  // One scoped points row, on the project's own system when one exists.
   await pool.query(
-    `INSERT INTO points_events (system_id, user_id, amount, source_type, source_id)
-     SELECT ps.id, $1, $2, 'quest', $3 FROM points_systems ps WHERE ps.key = 'global'
+    `INSERT INTO points_events (system_id, user_id, amount, source_type, source_id, project_id, campaign_id, quest_id)
+     SELECT COALESCE((SELECT id FROM points_systems WHERE project_id = $4 ORDER BY id LIMIT 1),
+                     (SELECT id FROM points_systems WHERE key = 'global' LIMIT 1)),
+            $1, $2, 'quest', $3, $4, $5, $3
      ON CONFLICT (source_type, source_id, user_id, system_id) DO NOTHING`,
-    [userId, Math.round(xp / 2), questId]
+    [userId, Math.round(xp / 2), questId, projectId, campaignId]
   );
-  if (projectSystemId) {
-    await pool.query(
-      `INSERT INTO points_events (system_id, user_id, amount, source_type, source_id)
-       VALUES ($1, $2, $3, 'quest', $4)
-       ON CONFLICT (source_type, source_id, user_id, system_id) DO NOTHING`,
-      [projectSystemId, userId, Math.round(xp / 2), questId]
-    );
-  }
 }
 
 async function seed() {
@@ -140,6 +155,9 @@ async function seed() {
     { name: 'Staging demo Nova Gaming', user: 3, description: 'Staging demo project for gaming quests.', logo_url: null, website: 'https://example.com/nova' },
     { name: 'Staging demo Open DeFi', user: 4, description: 'Staging demo project for DeFi quests.', logo_url: null, website: 'https://example.com/defi' },
     { name: 'Staging demo Chain Academy', user: 5, description: 'Staging demo project for learning quests.', logo_url: null, website: 'https://example.com/academy' },
+    // Archived (soft-deleted): owned by user 6, hidden from the public
+    // directory, restorable through PATCH status='active'.
+    { name: 'Staging demo Legacy Vault', user: 6, description: 'Staging demo project: archived, kept for the restore path.', logo_url: null, website: 'https://example.com/legacy' },
   ];
   const userIds = {};
   for (const u of USERS) userIds[u.username] = await upsertUser(u.username, u.display_name);
@@ -161,6 +179,10 @@ async function seed() {
       [projectIds[p.name], p.name + ' points']);
     projectSystemIds[p.name] = sys.rows[0].id;
   }
+  // Soft-delete the Legacy Vault so the directory filter has an archived row.
+  await pool.query(
+    `UPDATE projects SET status = 'archived', deleted_at = NOW() WHERE slug = $1 AND deleted_at IS NULL`,
+    [slugify('Staging demo Legacy Vault')]);
 
   // Season (Phase 3): a 2x demo season, more recent than the Season 1 row
   // the migration creates, so seasons.current() picks this one in staging
@@ -186,17 +208,35 @@ async function seed() {
   // 5 campaigns in every visible state.
   const campWelcome = await upsertCampaign(projectIds['Staging demo Octra Builders'], 'Staging demo Welcome Campaign', {
     description: 'Staging demo campaign: your first steps on Questora.',
-    category: 'Community', status: 'live', featured: true,
+    category: 'Community', status: 'active', featured: true, rules: 'Complete every quest to finish the campaign.',
     starts_at: new Date(Date.now() - 7 * 864e5), ends_at: new Date(Date.now() + 21 * 864e5),
+  });
+  // A second campaign in the same project, so the project leaderboard sums
+  // more than one campaign and differs from any single campaign board.
+  const campGrowth = await upsertCampaign(projectIds['Staging demo Octra Builders'], 'Staging demo Growth Sprint', {
+    description: 'Staging demo campaign: a short sprint with its own board.',
+    category: 'Community', status: 'active', featured: false,
+    starts_at: new Date(Date.now() - 1 * 864e5), ends_at: new Date(Date.now() + 9 * 864e5),
+  });
+  // A paused and an archived campaign so the status filters have data.
+  await upsertCampaign(projectIds['Staging demo Octra Builders'], 'Staging demo Paused Pilot', {
+    description: 'Staging demo campaign: paused, so it is not joinable.',
+    category: 'Community', status: 'paused',
+    starts_at: new Date(Date.now() - 2 * 864e5), ends_at: new Date(Date.now() + 12 * 864e5),
+  });
+  await upsertCampaign(projectIds['Staging demo Octra Builders'], 'Staging demo Archived Draft', {
+    description: 'Staging demo campaign: archived, kept for reference.',
+    category: 'Community', status: 'archived', visibility: 'unlisted',
+    starts_at: new Date(Date.now() - 40 * 864e5), ends_at: new Date(Date.now() - 10 * 864e5),
   });
   const campDev = await upsertCampaign(projectIds['Staging demo Nebula AI'], 'Staging demo Developer Journey', {
     description: 'Staging demo campaign: developer quests and contributions.',
-    category: 'Developer', status: 'live', featured: true,
+    category: 'Developer', status: 'active', featured: true,
     starts_at: new Date(Date.now() - 3 * 864e5), ends_at: new Date(Date.now() + 30 * 864e5),
   });
   const campExplore = await upsertCampaign(projectIds['Staging demo Nova Gaming'], 'Staging demo Community Explorer', {
     description: 'Staging demo campaign: explore the community.',
-    category: 'Social', status: 'live',
+    category: 'Social', status: 'active',
     starts_at: new Date(Date.now() - 864e5), ends_at: new Date(Date.now() + 3 * 864e5),
   });
   await upsertCampaign(projectIds['Staging demo Open DeFi'], 'Staging demo On-Chain Pioneer', {
@@ -270,6 +310,44 @@ async function seed() {
     { type: 'social', title: 'Join the call', config: { url: 'https://example.com/call', action: 'join' } },
   ]);
 
+  // Growth Sprint quests (second Octra campaign) plus one draft quest so the
+  // quest status filter has a non-active row.
+  const qRefer = await upsertQuest(campGrowth, 'Staging demo Refer a Builder', { description: 'Staging demo quest: bring a fellow builder along.', xp: 50, points: 25, quest_type: 'Social', sort_order: 0 }, [
+    { type: 'social', title: 'Share your invite', config: { url: 'https://example.com/invite', action: 'join' } },
+  ]);
+  const qVote = await upsertQuest(campGrowth, 'Staging demo Vote on Proposal', { description: 'Staging demo quest: cast a vote on the open proposal.', xp: 75, points: 35, quest_type: 'Submission', sort_order: 1 }, [
+    { type: 'manual', title: 'Confirm you voted', config: {} },
+  ]);
+  await upsertQuest(campGrowth, 'Staging demo Draft Idea', { description: 'Staging demo quest: still a draft, not yet published.', xp: 40, points: 20, quest_type: 'Submission', status: 'draft', sort_order: 2 }, [
+    { type: 'manual', title: 'Draft task', config: {} },
+  ]);
+
+  // A draft and a scheduled campaign in the same project so the campaign
+  // table's status filter and the empty-state copy have data at every state.
+  const campDraft = await upsertCampaign(projectIds['Staging demo Octra Builders'], 'Staging demo Orbit Lab', {
+    description: 'Staging demo campaign: a draft, not yet published.',
+    category: 'Community', status: 'draft',
+    starts_at: new Date(Date.now() + 14 * 864e5), ends_at: new Date(Date.now() + 45 * 864e5),
+  });
+  const campScheduled = await upsertCampaign(projectIds['Staging demo Octra Builders'], 'Staging demo Signal Boost', {
+    description: 'Staging demo campaign: scheduled to start soon.',
+    category: 'Community', status: 'scheduled',
+    starts_at: new Date(Date.now() + 2 * 864e5), ends_at: new Date(Date.now() + 20 * 864e5),
+  });
+  // Quest status variety so the quest table's status filter is exercisable.
+  await upsertQuest(campScheduled, 'Staging demo Scheduled Quest', { description: 'Staging demo quest: scheduled to open with its campaign.', xp: 60, points: 30, quest_type: 'Social', status: 'scheduled', sort_order: 0 }, [
+    { type: 'social', title: 'Share the news', config: { url: 'https://example.com/boost', action: 'visit' } },
+  ]);
+  await upsertQuest(campGrowth, 'Staging demo Paused Quest', { description: 'Staging demo quest: paused while the team reviews it.', xp: 45, points: 20, quest_type: 'Submission', status: 'paused', sort_order: 3 }, [
+    { type: 'manual', title: 'Confirm a review is pending', config: {} },
+  ]);
+  await upsertQuest(campGrowth, 'Staging demo Ended Quest', { description: 'Staging demo quest: this one has ended.', xp: 30, points: 15, quest_type: 'Social', status: 'ended', sort_order: 4 }, [
+    { type: 'social', title: 'Old social task', config: { url: 'https://example.com/old', action: 'visit' } },
+  ]);
+  await upsertQuest(campDraft, 'Staging demo Archived Quest', { description: 'Staging demo quest: archived, kept for reference.', xp: 25, points: 10, quest_type: 'Submission', status: 'archived', sort_order: 0 }, [
+    { type: 'manual', title: 'Archived task', config: {} },
+  ]);
+
   // Credential rewards (Phase 2): completing the quiz quest issues one.
   await pool.query(
     `INSERT INTO rewards (quest_id, kind, config)
@@ -289,15 +367,45 @@ async function seed() {
   // User history: users 1-3 complete the whole Welcome Campaign, feeding
   // both the global and the Octra Builders project points boards.
   const welcomeQuests = [q1, q2, q3];
-  const octraSystemId = projectSystemIds['Staging demo Octra Builders'];
   for (const uname of ['staging-demo-user-1', 'staging-demo-user-2', 'staging-demo-user-3']) {
     const uid = userIds[uname];
-    for (const qid of welcomeQuests) await completeQuest(qid, uid, 100, octraSystemId, seasonId);
+    for (const qid of welcomeQuests) await completeQuest(qid, uid, 100, seasonId);
     await pool.query(
       `INSERT INTO user_badges (user_id, badge_id, source_type, source_id)
        VALUES ($1, $2, 'quest', $3) ON CONFLICT (user_id, badge_id) DO NOTHING`,
       [uid, platformBadge, q3]
     );
+  }
+  // Uneven history so the project, campaign and quest boards all differ:
+  // user 1 also completes both Growth Sprint quests; user 2 completes one;
+  // user 4 completes one. User 1 is therefore the Octra project leader with
+  // more XP than either campaign board alone.
+  await completeQuest(qRefer, userIds['staging-demo-user-1'], 50, seasonId);
+  await completeQuest(qVote, userIds['staging-demo-user-1'], 75, seasonId);
+  await completeQuest(qRefer, userIds['staging-demo-user-2'], 50, seasonId);
+  await completeQuest(qVote, userIds['staging-demo-user-4'], 75, seasonId);
+  // Cross-project activity: users 1 and 2 also complete the Nebula AI board,
+  // so project isolation is visible (user 1 is high on both projects, and
+  // neither board's total leaks into the other).
+  const devQuests = (await pool.query(
+    `SELECT id FROM quests WHERE campaign_id = $1 AND status = 'active' ORDER BY sort_order`, [campDev])).rows;
+  for (const uname of ['staging-demo-user-1', 'staging-demo-user-2']) {
+    for (const row of devQuests) await completeQuest(row.id, userIds[uname], 100, seasonId);
+  }
+  // Membership roles so the permissions model has non-owner data: user 2 is
+  // an admin on Octra Builders, user 3 a reviewer, user 4 an analyst.
+  // The admin grant carries an explicit empty permissions map, so the
+  // default-deny rule on delete_project is visible rather than implicit.
+  const memberRoles = {
+    'staging-demo-user-2': { role: 'admin', permissions: {} },
+    'staging-demo-user-3': { role: 'reviewer', permissions: {} },
+    'staging-demo-user-4': { role: 'analyst', permissions: {} },
+  };
+  for (const [uname, def] of Object.entries(memberRoles)) {
+    await pool.query(
+      `INSERT INTO project_members (project_id, user_id, role, permissions) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (project_id, user_id) DO NOTHING`,
+      [projectIds['Staging demo Octra Builders'], userIds[uname], def.role, JSON.stringify(def.permissions)]);
   }
   // User 4 has a pending submission (review queue non-empty).
   const u4 = userIds['staging-demo-user-4'];

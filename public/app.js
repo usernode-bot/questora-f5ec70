@@ -4,7 +4,7 @@
   'use strict';
   const BASE_NAV = [
     { label: 'Explore', path: '/', match: /^\/$/ },
-    { label: 'Quests', path: '/quests', match: /^\/quests/ },
+    { label: 'Projects', path: '/projects', match: /^\/projects/ },
     { label: 'Campaigns', path: '/campaigns', match: /^\/campaigns$/ },
     { label: 'Leaderboard', path: '/leaderboard', match: /^\/leaderboard/ },
     { label: 'Teams', path: '/teams', match: /^\/teams/ },
@@ -58,20 +58,58 @@
     const V = window.QV;
     try {
       if (path === '/' || path === '') return await V.viewDiscover();
-      if (path === '/quests') return await viewQuestsList();
-      if (path === '/leaderboard') return await V.viewLeaderboard(params);
+      if (path === '/leaderboard') return await V.viewLeaderboardHub(params);
       if (path === '/campaigns') return await V.viewCampaigns(params);
+      if (path === '/projects') return await V.viewProjects(params);
       if (path === '/teams') return await V.viewTeams(params);
       if (path === '/create') return await V.viewCreate();
       if (path === '/me') {
         const meData = await V.loadMe();
         return await V.viewProfile(meData ? meData.user.username : 'me', params);
       }
+      // The dashboard is its own shell: /dashboard/projects/:slug/<section>.
       let m;
-      if ((m = path.match(/^\/campaigns\/([^/]+)$/))) return await V.viewCampaign(decodeURIComponent(m[1]));
+      if ((m = path.match(/^\/dashboard\/projects\/([^/]+)(?:\/(.*))?$/))) {
+        return await V.viewDashboard(decodeURIComponent(m[1]), m[2] || '', params);
+      }
+      // Hierarchical public routes. The campaign and quest segment forms come
+      // first because they are more specific than the project overview.
+      if ((m = path.match(/^\/projects\/([^/]+)\/campaigns\/([^/]+)\/quests\/([^/]+)\/leaderboard$/))) {
+        return await V.viewScopedLeaderboard({ projectSlug: decodeURIComponent(m[1]), campaignSlug: decodeURIComponent(m[2]), questSlug: decodeURIComponent(m[3]), metric: params.get('metric') || 'xp' });
+      }
+      if ((m = path.match(/^\/projects\/([^/]+)\/campaigns\/([^/]+)\/quests\/([^/]+)$/))) {
+        return await V.viewQuestDetail(decodeURIComponent(m[1]), decodeURIComponent(m[2]), decodeURIComponent(m[3]));
+      }
+      if ((m = path.match(/^\/projects\/([^/]+)\/campaigns\/([^/]+)\/leaderboard$/))) {
+        return await V.viewScopedLeaderboard({ projectSlug: decodeURIComponent(m[1]), campaignSlug: decodeURIComponent(m[2]), metric: params.get('metric') || 'xp' });
+      }
+      if ((m = path.match(/^\/projects\/([^/]+)\/campaigns\/([^/]+)$/))) {
+        return await V.viewCampaignDetail(decodeURIComponent(m[1]), decodeURIComponent(m[2]));
+      }
+      if ((m = path.match(/^\/projects\/([^/]+)\/leaderboard$/))) {
+        return await V.viewScopedLeaderboard({ projectSlug: decodeURIComponent(m[1]), metric: params.get('metric') || 'xp' });
+      }
+      if ((m = path.match(/^\/projects\/([^/]+)\/quests$/))) {
+        return await V.viewProjectQuests(decodeURIComponent(m[1]), params);
+      }
+      if ((m = path.match(/^\/projects\/([^/]+)\/campaigns$/))) {
+        return await V.viewProjectCampaigns(decodeURIComponent(m[1]), params);
+      }
+      if ((m = path.match(/^\/projects\/([^/]+)$/))) {
+        return await V.viewProjectOverview(decodeURIComponent(m[1]), params);
+      }
       if ((m = path.match(/^\/quest\/(\d+)$/))) return await V.viewQuest(m[1]);
+      if ((m = path.match(/^\/quests\/(\d+)$/))) return await V.viewQuest(m[1]);
+      // Legacy flat links: resolve to the owning project, then hand off.
+      if ((m = path.match(/^\/campaigns\/([^/]+)$/))) {
+        const s = await V.resolveCampaignPath(decodeURIComponent(m[1]));
+        return await V.viewCampaignDetail(s.projectSlug, decodeURIComponent(m[1]));
+      }
+      if ((m = path.match(/^\/p\/([^/]+)$/))) {
+        const tab = params.get('tab');
+        return await V.viewProjectOverview(decodeURIComponent(m[1]), params, tab);
+      }
       if ((m = path.match(/^\/u\/([^/]+)$/))) return await V.viewProfile(decodeURIComponent(m[1]), params);
-      if ((m = path.match(/^\/p\/([^/]+)$/))) return await V.viewProject(decodeURIComponent(m[1]), params);
       if ((m = path.match(/^\/credentials\/([0-9a-fA-F-]{36})$/))) return await V.viewCredential(m[1]);
       if (path === '/join') return await V.viewJoin(params);
       if (path === '/search') return await V.viewSearch(params);
@@ -83,29 +121,6 @@
       appEl().append(err.message);
       console.error(err);
     }
-  }
-
-  // /quests is a convenience list: reuse the discover data grouped flat.
-  async function viewQuestsList() {
-    const el = window.QUI.el;
-    const escapeHtml = window.QUI.escapeHtml;
-    const wrap = el('<div></div>');
-    appEl().replaceChildren(wrap);
-    wrap.appendChild(el('<h1 class="text-2xl font-bold mb-4">Quests</h1>'));
-    let data;
-    try { data = await window.QuestoraAPI.api.get('/api/v1/discover'); }
-    catch (err) { wrap.appendChild(el('<p class="text-zinc-400">' + escapeHtml(err.message) + '</p>')); return; }
-    const all = [];
-    const seen = new Set();
-    for (const key of ['featured', 'trending', 'fresh', 'ending']) {
-      for (const c of data[key]) { if (!seen.has(c.id)) { seen.add(c.id); all.push(c); } }
-    }
-    if (!all.length) { wrap.appendChild(el('<p class="text-sm text-zinc-600">No live campaigns with quests yet.</p>')); return; }
-    const list = el('<div class="space-y-2"></div>');
-    for (const c of all) {
-      list.appendChild(el('<a href="/campaigns/' + c.slug + '" class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40"><span class="flex-1 min-w-0"><span class="block font-medium truncate">' + escapeHtml(c.name) + '</span><span class="block text-xs text-zinc-600">' + escapeHtml(c.project_name) + ' · ' + c.quest_count + ' quests</span></span><span class="text-sm text-violet-300 font-medium">+' + c.total_xp + ' XP</span></a>'));
-    }
-    wrap.appendChild(list);
   }
 
   // Notifications badge

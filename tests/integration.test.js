@@ -536,16 +536,16 @@ t('campaign transitions are enforced server-side with an admin bypass', async ()
   // A non-member cannot edit it at all.
   const denied = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
     method: 'PATCH', headers: plain,
-    body: JSON.stringify({ status: 'live' }),
+    body: JSON.stringify({ status: 'active' }),
   });
   assert.equal(denied.status, 403);
 
-  // draft -> live is legal, live -> archived is not.
+  // draft -> active is legal, active -> archived is not.
   const goLive = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
-    method: 'PATCH', headers: owner, body: JSON.stringify({ status: 'live' }),
+    method: 'PATCH', headers: owner, body: JSON.stringify({ status: 'active' }),
   });
   assert.equal(goLive.status, 200);
-  assert.equal((await goLive.json()).campaign.status, 'live');
+  assert.equal((await goLive.json()).campaign.status, 'active');
   const illegal = await fetch(base + `/api/v1/campaigns/${camp.id}`, {
     method: 'PATCH', headers: owner, body: JSON.stringify({ status: 'archived' }),
   });
@@ -563,9 +563,284 @@ t('campaign transitions are enforced server-side with an admin bypass', async ()
   // The campaign directory endpoint filters by whitelisted status only.
   const list = await (await fetch(base + '/api/v1/campaigns?status=scheduled', { headers: owner })).json();
   assert.ok((list.campaigns || []).some(c => c.slug === 'staging-demo-on-chain-pioneer'));
-  const bogus = await (await fetch(base + '/api/v1/campaigns?status=draft', { headers: owner })).json();
-  assert.ok((bogus.campaigns || []).every(c => c.status === 'live'), 'unknown statuses fall back to live');
+  const bogus = await (await fetch(base + '/api/v1/campaigns?status=nonsense', { headers: owner })).json();
+  assert.ok((bogus.campaigns || []).every(c => c.status === 'active'), 'unknown statuses fall back to active');
 }, { timeout: 20000 });
+
+t('scoped rewards: leaderboards never leak across projects, and delete guards hold', async () => {
+  // A completion in one project must never appear in another project's sum.
+  const octra = (await pool.query(`SELECT id FROM projects WHERE slug = 'staging-demo-octra-builders'`)).rows[0];
+  const nebula = (await pool.query(`SELECT id FROM projects WHERE slug = 'staging-demo-nebula-ai'`)).rows[0];
+  assert.ok(octra && nebula, 'both seeded projects exist');
+
+  // Every quest-scoped reward row carries the full scope chain.
+  const scope = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM xp_events x
+     JOIN quests q ON q.id = x.quest_id JOIN campaigns c ON c.id = q.campaign_id
+     WHERE x.source_type = 'quest' AND (x.project_id IS NULL OR x.campaign_id IS NULL
+       OR x.project_id <> c.project_id OR x.campaign_id <> q.campaign_id)`);
+  assert.equal(scope.rows[0].n, 0, 'awarded xp rows carry the correct project/campaign/quest scope');
+
+  const pscope = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM points_events e
+     JOIN quests q ON q.id = e.quest_id JOIN campaigns c ON c.id = q.campaign_id
+     WHERE e.source_type = 'quest' AND (e.project_id IS NULL OR e.project_id <> c.project_id)`);
+  assert.equal(pscope.rows[0].n, 0, 'awarded points rows carry the correct project scope');
+
+  // Isolation by sum: the Octra board sums only Octra-tagged rows.
+  const octraSum = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::int AS xp FROM xp_events WHERE project_id = $1`, [octra.id]);
+  const nebulaSum = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0)::int AS xp FROM xp_events WHERE project_id = $1`, [nebula.id]);
+  assert.ok(octraSum.rows[0].xp > 0 && nebulaSum.rows[0].xp > 0, 'both projects hold scoped XP');
+  const mixed = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM xp_events e JOIN quests q ON q.id = e.quest_id
+     JOIN campaigns c ON c.id = q.campaign_id
+     WHERE e.project_id = $1 AND c.project_id <> $1`, [octra.id]);
+  assert.equal(mixed.rows[0].n, 0, "no Octra row belongs to another project's quest");
+
+  // Completing a Nebula quest does not move the Octra board.
+  const nebulaQuest = (await pool.query(
+    `SELECT q.id FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+     WHERE c.project_id = $1 AND q.status = 'active' ORDER BY q.id LIMIT 1`, [nebula.id])).rows[0];
+  const u3 = (await pool.query(`SELECT id FROM users WHERE username = 'staging-demo-user-3'`)).rows[0];
+  await pool.query('DELETE FROM quest_completions WHERE quest_id = $1 AND user_id = $2', [nebulaQuest.id, u3.id]);
+  const tasks = await pool.query('SELECT id FROM quest_tasks WHERE quest_id = $1', [nebulaQuest.id]);
+  for (const task of tasks.rows) {
+    await pool.query(
+      `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, proof_url, status, reviewer_id, reviewed_at)
+       VALUES ($1, $2, $3, 'manual', 'https://example.com/ok', 'verified', $3, NOW())`,
+      [task.id, nebulaQuest.id, u3.id]);
+  }
+  const before = (await pool.query('SELECT COALESCE(SUM(amount),0)::int AS xp FROM xp_events WHERE project_id = $1', [octra.id])).rows[0].xp;
+  const { completeQuest } = require('../src/reward');
+  const done = await completeQuest(nebulaQuest.id, u3.id);
+  assert.equal(done.completed, true, 'the Nebula quest must complete');
+  const after = (await pool.query('SELECT COALESCE(SUM(amount),0)::int AS xp FROM xp_events WHERE project_id = $1', [octra.id])).rows[0].xp;
+  assert.equal(before, after, 'a completion in project B never moves project A\'s sum');
+  const nb = await pool.query(
+    `SELECT project_id, campaign_id, quest_id FROM quest_completions WHERE quest_id = $1 AND user_id = $2`,
+    [nebulaQuest.id, u3.id]);
+  assert.equal(nb.rows[0].project_id, nebula.id, 'the completion is stamped with its project');
+
+  // Delete guards: a quest with completions is archived, never deleted.
+  const ownerToken = (u, id) => jwt.sign({ id, username: u, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' });
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const owner = { 'x-usernode-token': ownerToken('staging-demo-user-1', 900001), 'content-type': 'application/json' };
+  // A quest that already has a completion in the seed.
+  const doneQuest = (await pool.query('SELECT quest_id FROM quest_completions LIMIT 1')).rows[0].quest_id;
+  const del = await fetch(base + `/api/v1/quests/${doneQuest}`, { method: 'DELETE', headers: owner });
+  assert.equal(del.status, 200);
+  const delBody = await del.json();
+  assert.equal(delBody.archived, true, 'a quest with completions is archived, not deleted');
+  const stillThere = await pool.query('SELECT status FROM quests WHERE id = $1', [doneQuest]);
+  assert.equal(stillThere.rows[0].status, 'archived');
+
+  // Membership endpoints reject a non-manager and accept the owner.
+  const plain = { 'x-usernode-token': ownerToken('staging-demo-plain-m', 777777001), 'content-type': 'application/json' };
+  const deniedMembers = await fetch(base + `/api/v1/projects/${octra.id}/members`, { headers: plain });
+  assert.equal(deniedMembers.status, 403, 'a non-member cannot read the roster');
+  const okMembers = await fetch(base + `/api/v1/projects/${octra.id}/members`, { headers: owner });
+  assert.equal(okMembers.status, 200);
+  const roster = await okMembers.json();
+  assert.ok(roster.members.some(m => m.role === 'admin'), 'the seeded admin membership is visible');
+  // A bogus role is refused.
+  const badRole = await fetch(base + `/api/v1/projects/${octra.id}/members`, {
+    method: 'POST', headers: owner, body: JSON.stringify({ username: 'staging-demo-user-1', role: 'superuser' }),
+  });
+  assert.equal(badRole.status, 400);
+
+  // Scoped leaderboard endpoint returns a ranking per scope.
+  const plb = await fetch(base + `/api/v1/projects/${octra.id}/leaderboard?metric=xp`, { headers: owner });
+  assert.equal(plb.status, 200);
+  const plbBody = await plb.json();
+  assert.equal(plbBody.scope, 'project');
+  assert.ok(plbBody.entries.length > 0);
+  assert.ok(plbBody.entries.some(e => /^staging-demo-user/.test(e.username)),
+    'the seeded demo users appear on the Octra project board');
+  // Narrowing by another project's campaign is refused, not silently ignored.
+  const camp = (await pool.query('SELECT c.id FROM campaigns c WHERE c.project_id = $1 LIMIT 1', [nebula.id])).rows[0];
+  const cross = await fetch(base + `/api/v1/projects/${octra.id}/leaderboard?campaign=${camp.id}`, { headers: owner });
+  assert.equal(cross.status, 404, 'a campaign from another project cannot narrow this board');
+}, { timeout: 30000 });
+
+t('project ownership: create assigns owner, cross-project ids are refused, delete guard', async () => {
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const run = String(Date.now()).slice(-7);
+  const tokenFor = (username, id) => jwt.sign(
+    { id, username, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  const h = (name, id) => ({ 'x-usernode-token': tokenFor(name, id), 'content-type': 'application/json' });
+  const ownerA = h('staging-demo-owner-a-' + run, 810000000 + Number(run));
+  const ownerC = h('staging-demo-owner-c-' + run, 820000000 + Number(run));
+  const manager = h('staging-demo-manager-' + run, 830000000 + Number(run));
+  const helper = h('staging-demo-helper-' + run, 840000000 + Number(run));
+  const nobody = h('staging-demo-nobody-' + run, 850000000 + Number(run));
+
+  // Register the identities so they resolve against the local users table.
+  for (const auth of [ownerA, ownerC, manager, helper, nobody]) {
+    assert.equal((await fetch(base + '/api/v1/users/me', { headers: auth })).status, 200);
+  }
+  const uidOf = async (name) => (await pool.query('SELECT id FROM users WHERE username = $1', [name])).rows[0].id;
+
+  // --- Ownership on create: the creator is owner and gets an owner row. ---
+  const projA = (await (await fetch(base + '/api/v1/projects', {
+    method: 'POST', headers: ownerA, body: JSON.stringify({ name: 'Ownership Test Alpha ' + run }),
+  })).json()).project;
+  const projB = (await (await fetch(base + '/api/v1/projects', {
+    method: 'POST', headers: ownerA, body: JSON.stringify({ name: 'Ownership Test Beta ' + run }),
+  })).json()).project;
+  const projC = (await (await fetch(base + '/api/v1/projects', {
+    method: 'POST', headers: ownerC, body: JSON.stringify({ name: 'Ownership Test Gamma ' + run }),
+  })).json()).project;
+  assert.ok(projA && projB && projC, 'projects created');
+  const ownerAId = await uidOf('staging-demo-owner-a-' + run);
+  const ownerRow = await pool.query('SELECT owner_user_id FROM projects WHERE id = $1', [projA.id]);
+  assert.equal(Number(ownerRow.rows[0].owner_user_id), ownerAId, 'owner_user_id is the creator');
+  const ownerMember = await pool.query(
+    'SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2', [projA.id, ownerAId]);
+  assert.equal(ownerMember.rows[0].role, 'owner', 'the creator gets a project_members owner row');
+
+  // A campaign + quest in project B, the target of the cross-project attempts.
+  const campB = (await (await fetch(base + `/api/v1/projects/${projB.id}/campaigns`, {
+    method: 'POST', headers: ownerA, body: JSON.stringify({ name: 'Beta Campaign ' + run, status: 'active' }),
+  })).json()).campaign;
+  const questB = (await (await fetch(base + `/api/v1/campaigns/${campB.id}/quests`, {
+    method: 'POST', headers: ownerA,
+    body: JSON.stringify({ title: 'Beta Quest ' + run, xp_reward: 10, tasks: [{ type: 'manual', title: 'Do it' }] }),
+  })).json()).quest;
+  assert.ok(campB && questB, 'campaign and quest created in project B');
+
+  // Manager belongs to project C only.
+  const added = await fetch(base + `/api/v1/projects/${projC.id}/members`, {
+    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'staging-demo-manager-' + run, role: 'admin' }),
+  });
+  assert.equal(added.status, 200);
+  assert.equal((await fetch(base + `/api/v1/projects/${projC.id}/members`, { headers: manager })).status, 200,
+    'the manager can manage project C');
+
+  // --- Cross-project refusal: a manager of C cannot touch B, whatever the id. ---
+  const crossPatch = await fetch(base + `/api/v1/campaigns/${campB.id}`, {
+    method: 'PATCH', headers: manager, body: JSON.stringify({ name: 'hijack', project_id: projC.id }),
+  });
+  assert.equal(crossPatch.status, 403, 'a non-owner manager cannot edit another project\'s campaign');
+  const crossQuest = await fetch(base + `/api/v1/quests/${questB.id}`, {
+    method: 'PATCH', headers: manager, body: JSON.stringify({ title: 'hijack' }),
+  });
+  assert.equal(crossQuest.status, 403, 'a non-owner manager cannot edit another project\'s quest');
+  const crossDelete = await fetch(base + `/api/v1/quests/${questB.id}`, { method: 'DELETE', headers: manager });
+  assert.equal(crossDelete.status, 403, 'a non-owner manager cannot delete another project\'s quest');
+  const crossCreate = await fetch(base + `/api/v1/projects/${projA.id}/campaigns`, {
+    method: 'POST', headers: manager, body: JSON.stringify({ name: 'sneak' }),
+  });
+  assert.equal(crossCreate.status, 403, 'a non-owner manager cannot create in another project');
+  // The id in the body cannot move the resource either.
+  const bodySwap = await fetch(base + `/api/v1/campaigns/${campB.id}`, {
+    method: 'PATCH', headers: ownerA, body: JSON.stringify({ name: 'ok-swap', project_id: projC.id }),
+  });
+  const swapped = await (await bodySwap.json()).campaign;
+  assert.equal(swapped.project_id, projB.id, 'the server ignores a project_id supplied in the body');
+
+  // --- A stranger is refused everywhere. ---
+  for (const [method, path] of [
+    ['GET', `/api/v1/projects/${projA.id}/members`],
+    ['GET', `/api/v1/projects/${projA.id}/deletion-preview`],
+    ['POST', `/api/v1/projects/${projA.id}/campaigns`],
+    ['PATCH', `/api/v1/campaigns/${campB.id}`],
+    ['DELETE', `/api/v1/quests/${questB.id}`],
+    ['DELETE', `/api/v1/projects/${projA.id}`],
+  ]) {
+    const res = await fetch(base + path, { method, headers: nobody, body: method === 'GET' ? undefined : '{}' });
+    assert.equal(res.status, 403, `a non-member gets 403 on ${method} ${path}`);
+  }
+
+  // --- Role defaults: admin without a grant cannot delete; the owner can grant. ---
+  const deniedDelete = await fetch(base + `/api/v1/projects/${projC.id}`, { method: 'DELETE', headers: manager });
+  assert.equal(deniedDelete.status, 403, 'a project admin cannot delete the project by default');
+  // Only the owner may hand out the flag: another admin cannot self-escalate.
+  const helperId = await uidOf('staging-demo-helper-' + run);
+  await fetch(base + `/api/v1/projects/${projC.id}/members`, {
+    method: 'POST', headers: ownerC, body: JSON.stringify({ username: 'staging-demo-helper-' + run, role: 'admin' }),
+  });
+  const escalate = await fetch(base + `/api/v1/projects/${projC.id}/members/${helperId}`, {
+    method: 'PATCH', headers: manager, body: JSON.stringify({ role: 'admin', permissions: { delete_project: true } }),
+  });
+  assert.equal(escalate.status, 403, 'only the owner may grant delete_project');
+  const managerId = await uidOf('staging-demo-manager-' + run);
+  const grant = await fetch(base + `/api/v1/projects/${projC.id}/members/${managerId}`, {
+    method: 'PATCH', headers: ownerC, body: JSON.stringify({ role: 'admin', permissions: { delete_project: true } }),
+  });
+  assert.equal(grant.status, 200, 'the owner can grant delete_project');
+  const allowedDelete = await fetch(base + `/api/v1/projects/${projC.id}`, { method: 'DELETE', headers: manager });
+  assert.equal(allowedDelete.status, 200, 'with the grant, the admin can archive the project');
+  const cAfter = await pool.query('SELECT status, deleted_at FROM projects WHERE id = $1', [projC.id]);
+  assert.equal(cAfter.rows[0].status, 'archived');
+  assert.ok(cAfter.rows[0].deleted_at, 'a soft delete stamps deleted_at');
+  // Restore: the owner can bring it back.
+  const restore = await fetch(base + `/api/v1/projects/${projC.id}`, {
+    method: 'PATCH', headers: ownerC, body: JSON.stringify({ status: 'active' }),
+  });
+  assert.equal(restore.status, 200);
+  const restored = await (await restore.json()).project;
+  assert.equal(restored.status, 'active');
+  assert.equal(restored.deleted_at, null, 'restoring clears the soft-delete mark');
+
+  // --- Delete safety on project B. ---
+  const preview = await fetch(base + `/api/v1/projects/${projB.id}/deletion-preview`, { headers: ownerA });
+  assert.equal(preview.status, 200);
+  const counts = (await preview.json()).counts;
+  assert.ok(counts.campaigns >= 1 && counts.quests >= 1 && counts.tasks >= 1, 'the preview counts the children');
+
+  const soft = await fetch(base + `/api/v1/projects/${projB.id}`, { method: 'DELETE', headers: ownerA });
+  assert.equal(soft.status, 200);
+  assert.equal((await soft.json()).archived, true);
+  const stillThere = await pool.query('SELECT status FROM projects WHERE id = $1', [projB.id]);
+  assert.equal(stillThere.rows[0].status, 'archived', 'a soft delete keeps the row');
+  const childrenKept = await pool.query('SELECT COUNT(*)::int AS n FROM campaigns WHERE project_id = $1', [projB.id]);
+  assert.ok(childrenKept.rows[0].n >= 1, 'a soft delete keeps the children');
+  const dir = await (await fetch(base + '/api/v1/projects/directory', { headers: ownerA })).json();
+  assert.ok(!dir.projects.some(x => x.id === projB.id), 'an archived project leaves the directory');
+  assert.equal((await fetch(base + `/api/v1/projects/${projB.slug}`, { headers: nobody })).status, 404,
+    'an archived project is not publicly reachable');
+  assert.equal((await fetch(base + `/api/v1/projects/${projB.slug}`, { headers: ownerA })).status, 200,
+    'its owner can still open an archived project');
+  // Restore, then hard delete.
+  assert.equal((await fetch(base + `/api/v1/projects/${projB.id}`, {
+    method: 'PATCH', headers: ownerA, body: JSON.stringify({ status: 'active' }),
+  })).status, 200);
+  const hard = await fetch(base + `/api/v1/projects/${projB.id}?mode=hard`, { method: 'DELETE', headers: ownerA });
+  assert.equal(hard.status, 200);
+  assert.equal((await hard.json()).mode, 'hard');
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM projects WHERE id = $1', [projB.id])).rows[0].n, 0,
+    'a hard delete removes the project row');
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM campaigns WHERE project_id = $1', [projB.id])).rows[0].n, 0,
+    'a hard delete cascades to campaigns');
+
+  // --- Project settings: edit + visibility round-trip. ---
+  const settings = await fetch(base + `/api/v1/projects/${projA.id}`, {
+    method: 'PATCH', headers: ownerA,
+    body: JSON.stringify({ description: 'updated', visibility: 'unlisted', logo_url: 'https://example.com/l.png' }),
+  });
+  assert.equal(settings.status, 200);
+  const sProject = (await settings.json()).project;
+  assert.equal(sProject.visibility, 'unlisted');
+  assert.equal(sProject.logo_url, 'https://example.com/l.png');
+}, { timeout: 40000 });
+
 
 after(async () => {
   if (httpServer) await new Promise(resolve => httpServer.close(resolve));

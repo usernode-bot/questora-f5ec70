@@ -51,7 +51,7 @@ router.post('/tasks/:id/submit', async (req, res) => {
   if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
   const task = t.rows[0];
   const quest = await pool.query('SELECT id, status FROM quests WHERE id = $1', [task.quest_id]);
-  if (!quest.rows.length || quest.rows[0].status !== 'published') {
+  if (!quest.rows.length || quest.rows[0].status !== 'active') {
     return res.status(400).json({ error: 'This quest is not open for submissions' });
   }
   const done = await pool.query('SELECT 1 FROM quest_completions WHERE quest_id = $1 AND user_id = $2', [task.quest_id, uid]);
@@ -169,8 +169,8 @@ router.post('/quests/:id/quiz', async (req, res) => {
 // (completions drive real participation; joining tracks interest).
 router.post('/campaigns/:id/join', async (req, res) => {
   const uid = userId(req);
-  const c = await pool.query('SELECT id FROM campaigns WHERE id = $1 AND status = $2', [req.params.id, 'live']);
-  if (!c.rows.length) return res.status(400).json({ error: 'This campaign is not live' });
+  const c = await pool.query('SELECT id FROM campaigns WHERE id = $1 AND status = $2', [req.params.id, 'active']);
+  if (!c.rows.length) return res.status(400).json({ error: 'This campaign is not active' });
   const campaignId = Number(req.params.id);
   const cur = await pool.query(
     `SELECT notify->'joined_campaigns' AS j FROM user_settings WHERE user_id = $1`, [uid]);
