@@ -444,7 +444,8 @@ async function seed() {
   const qJoin = await pool.query(`SELECT id FROM quest_tasks WHERE quest_id = $1 AND type = 'social'`, [q2]);
   await pool.query(
     `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, status)
-     VALUES ($1, $2, $3, 'social', 'pending')`,
+     SELECT $1, $2, $3, 'social', 'pending'
+     WHERE NOT EXISTS (SELECT 1 FROM task_submissions WHERE task_id = $1 AND user_id = $3)`,
     [qJoin.rows[0].id, q2, u4]
   );
   // User 6 has a rejected submission with a reason.
@@ -452,13 +453,15 @@ async function seed() {
   const qQuiz = await pool.query(`SELECT id FROM quest_tasks WHERE quest_id = $1 AND type = 'quiz'`, [q3]);
   await pool.query(
     `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, proof_data, status, review_note, reviewed_at)
-     VALUES ($1, $2, $3, 'quiz', $4, 'rejected', $5, NOW())`,
+     SELECT $1, $2, $3, 'quiz', $4, 'rejected', $5, NOW()
+     WHERE NOT EXISTS (SELECT 1 FROM task_submissions WHERE task_id = $1 AND user_id = $3)`,
     [qQuiz.rows[0].id, q3, u6, JSON.stringify({ answers: [0, 1, 2] }), 'Score 33% (needs 80%). Retake the quiz to try again.']
   );
   await pool.query(
-    `INSERT INTO notifications (user_id, type, title, body, link)
-     VALUES ($1, 'submission_rejected', 'Submission rejected', $2, $3)`,
-    [u6, 'Your quiz score was below the pass threshold. You can retake it.', '/quest/' + q3]
+    `INSERT INTO notifications (user_id, type, title, body, link, dedupe_key)
+     VALUES ($1, 'submission_rejected', 'Submission rejected', $2, $3, $4)
+     ON CONFLICT (dedupe_key) DO NOTHING`,
+    [u6, 'Your quiz score was below the pass threshold. You can retake it.', '/quest/' + q3, 'seed:submission-rejected:user-6']
   );
 
   // Referrals (Phase 2): one qualified (user 3 finished 3 quests via
@@ -475,9 +478,10 @@ async function seed() {
        VALUES ($1, 100, 'referral', $2, $3) ON CONFLICT (source_type, source_id, user_id) DO NOTHING`,
       [userIds['staging-demo-user-1'], refQualified.rows[0].id, seasonId]);
     await pool.query(
-      `INSERT INTO notifications (user_id, type, title, body)
-       VALUES ($1, 'referral_qualified', 'Invite qualified', $2)`,
-      [userIds['staging-demo-user-1'], '@staging-demo-user-3 finished 3 quests. +100 XP.']);
+      `INSERT INTO notifications (user_id, type, title, body, dedupe_key)
+       VALUES ($1, 'referral_qualified', 'Invite qualified', $2, $3)
+       ON CONFLICT (dedupe_key) DO NOTHING`,
+      [userIds['staging-demo-user-1'], '@staging-demo-user-3 finished 3 quests. +100 XP.', 'seed:referral-qualified:user-1']);
   }
   await pool.query(
     `INSERT INTO referrals (referrer_user_id, referee_user_id, code, status)

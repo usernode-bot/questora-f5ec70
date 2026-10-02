@@ -101,13 +101,17 @@ async function checkQualification(client, refereeUserId) {
     [r.id]);
   const referrer = await client.query('SELECT username FROM users WHERE id = $1', [r.referrer_user_id]);
   await client.query(
-    `INSERT INTO notifications (user_id, type, title, body)
-     VALUES ($1, 'referral_qualified', 'Invite qualified', $2)`,
-    [r.referrer_user_id, `@${(referrer.rows[0] || {}).username || 'someone'} finished ${cfg.qualification_quests} quests. +${cfg.xp_reward} XP.`]);
+    `INSERT INTO notifications (user_id, type, title, body, dedupe_key)
+     VALUES ($1, 'referral_qualified', 'Invite qualified', $2, $3)
+     ON CONFLICT (dedupe_key) DO NOTHING`,
+    [r.referrer_user_id, `@${(referrer.rows[0] || {}).username || 'someone'} finished ${cfg.qualification_quests} quests. +${cfg.xp_reward} XP.`,
+      'referral:' + r.id + ':' + r.referrer_user_id]);
   await client.query(
-    `INSERT INTO notifications (user_id, type, title, body)
-     VALUES ($1, 'referral_qualified', 'Invite bonus sent', $2)`,
-    [refereeUserId, `You completed ${cfg.qualification_quests} quests and your inviter earned their bonus.`]);
+    `INSERT INTO notifications (user_id, type, title, body, dedupe_key)
+     VALUES ($1, 'referral_qualified', 'Invite bonus sent', $2, $3)
+     ON CONFLICT (dedupe_key) DO NOTHING`,
+    [refereeUserId, `You completed ${cfg.qualification_quests} quests and your inviter earned their bonus.`,
+      'referral-bonus:' + r.id + ':' + refereeUserId]);
   return { qualified: true, referral_id: r.id };
 }
 

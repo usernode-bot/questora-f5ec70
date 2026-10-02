@@ -91,80 +91,6 @@ async function viewCampaigns(params) {
   body.replaceChildren(grid);
 }
 
-// ---------- campaign ----------
-async function viewCampaign(slug) {
-  const wrap = el('<div class="animate-pulse space-y-4"><div class="h-32 rounded-2xl bg-zinc-900"></div><div class="h-6 w-1/2 rounded bg-zinc-900"></div></div>');
-  mount(wrap);
-  let data;
-  try { data = await window.QuestoraAPI.api.get('/api/v1/campaigns/' + encodeURIComponent(slug)); }
-  catch (err) {
-    mount(errorCard(err.message));
-    return;
-  }
-  const c = data.campaign;
-  const completedCount = data.quests.filter(q => q.completed).length;
-  const node = el(`
-    <div>
-      <div class="rounded-2xl bg-gradient-to-b from-violet-600/20 to-transparent border border-zinc-800 p-6 mb-6">
-        <div class="flex items-center gap-2 mb-2 text-sm text-zinc-400">
-          <span class="w-5 h-5 rounded-full bg-violet-600/30 inline-block"></span>
-          <a href="/p/${escapeHtml(c.project_slug)}" class="hover:text-violet-300">${escapeHtml(c.project_name)}</a>
-          ${statePill(c.status)}
-        </div>
-        <h1 class="text-2xl font-bold mb-2">${escapeHtml(c.name)}</h1>
-        <p class="text-sm text-zinc-300 mb-4 max-w-2xl">${escapeHtml(c.description || '')}</p>
-        <div class="flex flex-wrap gap-2 text-xs">
-          ${badgePill('+' + data.total_xp + ' XP')}
-          ${data.total_points ? badgePill('+' + data.total_points + ' points') : ''}
-          ${badgePill(data.participants + ' participants')}
-          ${c.ends_at ? `<span class="inline-block text-xs px-2.5 py-1 rounded-full bg-zinc-800 text-zinc-400">${timeLeft(c.ends_at)}</span>` : ''}
-        </div>
-        <div class="join-slot mt-4"></div>
-      </div>
-      <h2 class="text-sm font-medium text-zinc-500 mb-2 px-1">Quests ${completedCount ? `<span class="text-violet-300">${completedCount}/${data.quests.length} done</span>` : ''}</h2>
-      <div class="quest-list space-y-3"></div>
-    </div>`);
-  mount(node);
-
-  // Join button: the server only accepts joins on live campaigns.
-  if (data.joined === false && c.status === 'active') {
-    const joinBtn = el('<button class="join font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Join campaign</button>');
-    joinBtn.addEventListener('click', async () => {
-      joinBtn.disabled = true; joinBtn.textContent = 'Joining…';
-      try {
-        await window.QuestoraAPI.api.post(`/api/v1/campaigns/${c.id}/join`, {});
-        toast('You joined the campaign');
-        viewCampaign(slug);
-      } catch (err) { toast(err.message, true); joinBtn.disabled = false; joinBtn.textContent = 'Join campaign'; }
-    });
-    node.querySelector('.join-slot').appendChild(joinBtn);
-  } else if (data.joined === true) {
-    node.querySelector('.join-slot').appendChild(el('<span class="inline-block text-xs px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-300">Joined</span>'));
-  }
-
-  const list = node.querySelector('.quest-list');
-  for (const q of data.quests) {
-    // Circle state: done, locked, or open. The server decides; the UI only
-    // renders what it sent.
-    const circle = q.completed
-      ? '<span class="task-circle w-6 h-6 rounded-full border-2 border-emerald-400 bg-emerald-400/10 text-emerald-300 shrink-0 flex items-center justify-center text-xs">✓</span>'
-      : q.locked
-        ? '<span class="task-circle w-6 h-6 rounded-full border-2 border-zinc-700 bg-zinc-800/50 text-zinc-500 shrink-0 flex items-center justify-center text-xs">🔒</span>'
-        : '<span class="task-circle w-6 h-6 rounded-full border-2 border-zinc-700 shrink-0 flex items-center justify-center"></span>';
-    const row = el(`
-      <a href="/quest/${q.id}" class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 hover:border-violet-500/40 transition-colors p-4 ${q.locked && !q.completed ? 'opacity-60' : ''}">
-        ${circle}
-        <span class="min-w-0">
-          <span class="block font-medium ${q.is_required ? 'text-zinc-100' : 'text-zinc-400'}">${escapeHtml(q.title)}${q.is_required ? '' : ' <span class="text-xs text-zinc-600">(optional)</span>'}</span>
-          <span class="block text-sm text-zinc-500 truncate">${escapeHtml(q.description || '')}</span>
-          ${q.locked && !q.completed ? `<span class="lock-reason block text-xs text-amber-300 mt-1">${escapeHtml(q.locked_reason || 'Locked')}</span>` : ''}
-        </span>
-        <span class="ml-auto text-sm text-violet-300 font-medium shrink-0">+${q.xp_reward} XP</span>
-      </a>`);
-    list.appendChild(row);
-  }
-}
-
 // ---------- quest ----------
 const TASK_LABEL = {
   wallet_connect: 'Connect wallet',
@@ -353,7 +279,9 @@ async function viewQuest(id) {
     if (t.type === 'social') {
       const cfg = t.config || {};
       const b = el('<button class="visit w-full md:w-auto font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white">Visit and confirm</button>');
-      const link = el(`<a href="${escapeHtml(cfg.url || '#')}" target="_blank" rel="noopener" class="block mt-2 text-sm text-violet-300 hover:underline">Open link in a new tab</a>`);
+      const link = cfg.url
+        ? el(`<a href="${escapeHtml(cfg.url)}" target="_blank" rel="noopener" class="block mt-2 text-sm text-violet-300 hover:underline">Open link in a new tab</a>`)
+        : null;
       b.addEventListener('click', async () => {
         b.disabled = true; b.textContent = 'Sending…';
         try {
@@ -362,7 +290,7 @@ async function viewQuest(id) {
           refreshStates();
         } catch (err) { toast(err.message, true); b.disabled = false; b.textContent = 'Visit and confirm'; }
       });
-      holder.appendChild(b); holder.appendChild(link);
+      holder.appendChild(b); if (link) holder.appendChild(link);
       return;
     }
     if (t.type === 'quiz') {
@@ -631,7 +559,7 @@ async function viewProfile(username, params) {
   }
   node.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
   const initialTab = params.get('tab');
-  show(['projects', 'badges', 'credentials', 'reputation', 'achievements', 'wallets'].includes(initialTab) ? initialTab : 'activity');
+  show(['activity', 'projects', 'badges', 'credentials', 'reputation', 'achievements', 'wallets'].includes(initialTab) ? initialTab : 'activity');
 
   // Own profile: the invite block (Phase 2 referrals).
   const meData = await loadMe();
@@ -799,139 +727,6 @@ async function viewCreate() {
 }
 
 // ---------- project (owner view) ----------
-async function viewProject(slug, params) {
-  params = params || new URLSearchParams();
-  const wrap = el('<div class="animate-pulse space-y-3"><div class="h-24 rounded-2xl bg-zinc-900"></div></div>');
-  mount(wrap);
-  let data;
-  try { data = await window.QuestoraAPI.api.get('/api/v1/projects/' + encodeURIComponent(slug)); }
-  catch (err) { mount(errorCard(err.message)); return; }
-  const p = data.project;
-  const node = el(`
-    <div>
-      <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6 mb-6">
-        <h1 class="text-2xl font-bold mb-1">${escapeHtml(p.name)}</h1>
-        <p class="text-sm text-zinc-400 mb-3 max-w-2xl">${escapeHtml(p.description || '')}</p>
-        <div class="flex flex-wrap gap-2">${badgePill(data.campaigns.length + ' campaigns')}</div>
-      </div>
-      <div class="tabs flex gap-2 mb-4">
-        <button data-tab="campaigns" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Campaigns</button>
-        <button data-tab="points" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Points</button>
-        <button data-tab="review" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Review queue</button>
-        <button data-tab="analytics" class="tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium">Analytics</button>
-      </div>
-      <div class="tab-body"></div>
-    </div>`);
-  mount(node);
-  const body = node.querySelector('.tab-body');
-
-  async function show(tab) {
-    node.querySelectorAll('.tab').forEach(b => {
-      const on = b.dataset.tab === tab;
-      b.className = 'tab px-4 py-2 min-h-[44px] rounded-full text-sm font-medium ' + (on ? 'bg-violet-600 text-white' : 'bg-zinc-800/70 text-zinc-400');
-    });
-    body.replaceChildren();
-    if (tab === 'points') {
-      body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading points…</p>'));
-      let lb;
-      try { lb = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/leaderboard`); }
-      catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
-      body.replaceChildren();
-      if (!lb.entries.length) {
-        body.appendChild(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400 mb-1">No points earned yet.</p><p class="text-sm text-zinc-600">Complete quests from this project's campaigns to appear on its board.</p></div>`));
-        return;
-      }
-      if (lb.system && lb.system.name) {
-        body.appendChild(el(`<p class="text-xs text-zinc-600 mb-2 px-1">${escapeHtml(lb.system.name)}</p>`));
-      }
-      const list = el('<div class="space-y-2"></div>');
-      lb.entries.forEach((e, i) => {
-        list.appendChild(el(`
-          <a href="/u/${encodeURIComponent(e.username)}" class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
-            <span class="w-8 text-center font-bold ${i === 0 ? 'text-violet-300' : 'text-zinc-500'}">${i + 1}</span>
-            <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(e.display_name || e.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(e.username)}</span></span>
-            <span class="ml-auto font-mono text-violet-300">${e.score.toLocaleString()}</span>
-          </a>`));
-      });
-      body.appendChild(list);
-      return;
-    }
-    if (tab === 'campaigns') {
-      if (!data.campaigns.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">No campaigns yet. Create one from the Create page.</p>')); return; }
-      const grid = el('<div class="grid md:grid-cols-3 gap-4"></div>');
-      for (const c of data.campaigns) {
-        grid.appendChild(campaignCard({ ...c, project_name: p.name, total_xp: 0, participants: 0, quest_count: Number(c.quest_count) }));
-      }
-      body.appendChild(grid);
-    } else if (tab === 'review') {
-      body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading queue…</p>'));
-      let rev;
-      try { rev = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/review`); }
-      catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
-      body.replaceChildren();
-      if (!rev.submissions.length) { body.appendChild(el('<p class="text-sm text-zinc-600 px-1">Nothing waiting for review. All clear.</p>')); return; }
-      const list = el('<div class="space-y-3"></div>');
-      for (const s of rev.submissions) {
-        const row = el(`
-          <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-            <div class="flex items-center gap-2 mb-1">
-              <span class="text-sm font-medium">@${escapeHtml(s.username)}</span>
-              <span class="text-xs text-zinc-600">· ${escapeHtml(s.task_title || s.task_type)} · ${escapeHtml(s.quest_title)}</span>
-            </div>
-            ${s.proof_url ? `<a href="${escapeHtml(s.proof_url)}" target="_blank" rel="noopener" class="text-sm text-violet-300 break-all hover:underline">${escapeHtml(s.proof_url)}</a>` : ''}
-            ${s.proof_data && s.proof_data.text ? `<p class="text-sm text-zinc-300 mt-1">${escapeHtml(s.proof_data.text)}</p>` : ''}
-            <div class="flex gap-2 mt-3">
-              <button class="approve text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white">Approve</button>
-              <button class="reject text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-200">Reject</button>
-            </div>
-            <div class="reject-reason mt-2"></div>
-          </div>`);
-        row.querySelector('.approve').addEventListener('click', async () => {
-          try { await window.QuestoraAPI.api.post(`/api/v1/submissions/${s.id}/review`, { decision: 'verified' }); toast('Approved'); show('review'); }
-          catch (err) { toast(err.message, true); }
-        });
-        row.querySelector('.reject').addEventListener('click', () => {
-          const zone = row.querySelector('.reject-reason');
-          if (zone.querySelector('input')) return;
-          const input = el('<input class="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 text-sm placeholder:text-zinc-600 focus:outline-none focus:border-violet-500" placeholder="Reason (required)">');
-          const confirm = el('<button class="mt-2 text-sm font-medium px-4 py-2 min-h-[44px] rounded-lg bg-red-600 hover:bg-red-500 text-white">Confirm reject</button>');
-          confirm.addEventListener('click', async () => {
-            const reason = input.value.trim();
-            if (!reason) return toast('A reason is required', true);
-            try { await window.QuestoraAPI.api.post(`/api/v1/submissions/${s.id}/review`, { decision: 'rejected', reason }); toast('Rejected'); show('review'); }
-            catch (err) { toast(err.message, true); }
-          });
-          zone.appendChild(input); zone.appendChild(confirm);
-        });
-        list.appendChild(row);
-      }
-      body.appendChild(list);
-    } else {
-      body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading analytics…</p>'));
-      let an;
-      try { an = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/analytics`); }
-      catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
-      body.replaceChildren();
-      const stats = el(`
-        <div class="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
-          <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4"><p class="text-xs text-zinc-500">Participants</p><p class="text-xl font-bold">${an.participants}</p></div>
-          <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4"><p class="text-xs text-zinc-500">XP distributed</p><p class="text-xl font-bold text-violet-300">${an.xp_distributed.toLocaleString()}</p></div>
-          <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4"><p class="text-xs text-zinc-500">Quests</p><p class="text-xl font-bold">${an.quests.length}</p></div>
-        </div>`);
-      body.appendChild(stats);
-      const list = el('<div class="space-y-2"></div>');
-      for (const q of an.quests) {
-        const rate = q.submissions ? Math.round((q.completions / q.submissions) * 100) : 0;
-        list.appendChild(el(`<div class="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3"><span class="text-sm">${escapeHtml(q.title)}</span><span class="text-sm text-zinc-400">${q.completions} completed · ${rate}% conversion</span></div>`));
-      }
-      body.appendChild(list);
-    }
-  }
-  node.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => show(b.dataset.tab)));
-  const startTab = params.get('tab');
-  show(['campaigns', 'points', 'review', 'analytics'].includes(startTab) ? startTab : 'campaigns');
-}
-
 // ---------- projects directory ----------
 async function viewProjects() {
   const wrap = el('<div></div>');
@@ -1001,7 +796,7 @@ async function viewProjectOverview(slug, params, legacyTab) {
           <div class="shrink-0">
             ${data.can_manage
               ? `<a href="/dashboard/projects/${encodeURIComponent(p.slug)}" class="inline-block font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Manage</a>`
-              : `<a href="#campaigns" data-jump="campaigns" class="inline-block font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Explore campaigns</a>`}
+              : `<button type="button" data-jump="campaigns" class="inline-block font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Explore campaigns</button>`}
           </div>
         </div>
       </div>
@@ -1164,7 +959,7 @@ async function viewCampaignDetail(projectSlug, campaignSlug) {
   const pct = totalQuests ? Math.round((completedCount / totalQuests) * 100) : 0;
   const node = el(`
     <div>
-      ${breadcrumb([{ label: 'Projects', href: '/projects' }, { label: c.project_name, href: '/projects/' + encodeURIComponent(pSlug) }, { label: c.name }])}
+      ${breadcrumb([{ label: 'Projects', href: '/projects' }].concat(pSlug ? [{ label: c.project_name, href: '/projects/' + encodeURIComponent(pSlug) }] : []).concat([{ label: c.name }]))}
       <div class="rounded-2xl border border-zinc-800 bg-gradient-to-b from-violet-600/20 to-transparent p-6 mb-4">
         <div class="flex items-center gap-2 mb-2 text-sm text-zinc-400">
           ${statePill(c.status)}
@@ -1469,7 +1264,7 @@ async function viewDashboard(slug, section, params) {
     sidebar.appendChild(el(`<a href="${base}${seg ? '/' + seg : ''}" class="shrink-0 px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium ${active ? 'bg-violet-600 text-white' : 'bg-zinc-900 text-zinc-400 hover:text-white'}">${escapeHtml(label)}</a>`));
   }
 
-  const ctx = { p, data, stats, base, isCreator, perms, reload: () => viewDashboard(slug, section, params) };
+  const ctx = { p, data, stats, base, isCreator, perms, params, reload: () => viewDashboard(slug, section, params) };
   // A section the viewer cannot reach falls back to the overview rather than
   // rendering a management surface the routes would reject anyway.
   const sectionPerm = (DASH_SECTIONS.find(([seg]) => seg === section || (seg === 'campaigns' && section.startsWith('campaigns/')) || (seg === 'tasks' && section.startsWith('tasks/'))));
@@ -1478,7 +1273,11 @@ async function viewDashboard(slug, section, params) {
   if (section && !allowed) return renderDashOverview(sectionEl, ctx);
   if (section === 'campaigns') return renderDashCampaigns(sectionEl, ctx);
   if (section.startsWith('campaigns/')) return renderDashCampaignQuests(sectionEl, ctx, section.slice('campaigns/'.length));
-  if (section === 'quests') return renderDashQuests(sectionEl, ctx);
+  if (section === 'quests') {
+    const nw = params.get('new');
+    if (nw === 'quest' || nw === 'task') return renderDashNewChooser(sectionEl, ctx, nw);
+    return renderDashQuests(sectionEl, ctx);
+  }
   if (section.startsWith('tasks/')) return renderDashTaskEditor(sectionEl, ctx, decodeURIComponent(section.slice('tasks/'.length)));
   if (section === 'participants' || section === 'leaderboard') return renderDashLeaderboard(sectionEl, ctx, section);
   if (section === 'rewards') return renderDashRewards(sectionEl, ctx);
@@ -1541,6 +1340,10 @@ function renderDashCampaigns(sectionEl, ctx) {
     } catch (err) { toast(err.message, true); }
   });
   sectionEl.appendChild(create);
+  if (ctx.params && ctx.params.get('new') === 'campaign') {
+    const nameInput = create.querySelector('.c-name');
+    if (nameInput) nameInput.focus();
+  }
 
   const controls = el(`
     <div class="flex flex-wrap gap-2 items-center mb-3">
@@ -1701,6 +1504,10 @@ function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
     } catch (err) { toast(err.message, true); }
   });
   sectionEl.appendChild(create);
+  if (ctx.params && ctx.params.get('new') === 'quest') {
+    const titleInput = create.querySelector('.q-title');
+    if (titleInput) titleInput.focus();
+  }
 
   const controls = el(`
     <div class="flex flex-wrap gap-2 items-center mb-3">
@@ -1846,6 +1653,61 @@ function promptEditQuest(row, q, save) {
 }
 
 // Flat quest table across the whole project.
+// The Create menu lands here: pick the campaign (and, for a task, the quest)
+// that the real builder below edits. It reuses the existing create surfaces
+// rather than duplicating them.
+function renderDashNewChooser(sectionEl, ctx, mode) {
+  const { data, base } = ctx;
+  const campaigns = data.campaigns || [];
+  const isTask = mode === 'task';
+  sectionEl.appendChild(el(`
+    <div class="mb-4">
+      ${breadcrumb([{ label: 'Quests', href: base + '/quests' }, { label: isTask ? 'New task' : 'New quest' }])}
+      <h2 class="text-lg font-bold">${isTask ? 'Add a task' : 'Create a quest'}</h2>
+      <p class="text-sm text-zinc-500">${isTask ? 'Pick the campaign and quest to configure.' : 'Pick the campaign to add the quest to.'}</p>
+    </div>`));
+  if (!campaigns.length) {
+    sectionEl.appendChild(el(emptyState('This project has no campaigns yet. Create a campaign first.', 'Create campaign', base + '/campaigns?new=campaign')));
+    return;
+  }
+  const form = el(`
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 max-w-xl space-y-3">
+      <div>
+        <label class="block text-xs text-zinc-500 mb-1">Campaign</label>
+        <select class="nc-campaign w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none"></select>
+      </div>
+      <div class="nc-quest-wrap hidden">
+        <label class="block text-xs text-zinc-500 mb-1">Quest</label>
+        <select class="nc-quest w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none"></select>
+      </div>
+      <button class="nc-go font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">${isTask ? 'Open task editor' : 'Continue'}</button>
+    </div>`);
+  const cSel = form.querySelector('.nc-campaign');
+  for (const c of campaigns) cSel.appendChild(el(`<option value="${c.id}">${escapeHtml(c.name)}</option>`));
+  const qWrap = form.querySelector('.nc-quest-wrap');
+  const qSel = form.querySelector('.nc-quest');
+  function fillQuests() {
+    const c = campaigns.find(x => String(x.id) === cSel.value);
+    qSel.replaceChildren();
+    for (const q of ((c && c.quests) || [])) qSel.appendChild(el(`<option value="${q.id}">${escapeHtml(q.title)}</option>`));
+    qWrap.classList.toggle('hidden', !isTask);
+    form.querySelector('.nc-go').disabled = isTask && !qSel.options.length;
+  }
+  cSel.addEventListener('change', fillQuests);
+  fillQuests();
+  form.querySelector('.nc-go').addEventListener('click', () => {
+    const c = campaigns.find(x => String(x.id) === cSel.value);
+    if (!c) return;
+    if (isTask) {
+      if (!qSel.value) { toast('This campaign has no quests yet', true); return; }
+      window.QuestoraNav.go(base + '/tasks/' + encodeURIComponent(qSel.value));
+    } else {
+      window.QuestoraNav.go(base + '/campaigns/' + encodeURIComponent(c.slug) + '?new=quest');
+    }
+  });
+  sectionEl.appendChild(form);
+}
+
 function renderDashQuests(sectionEl, ctx) {
   const { p, data } = ctx;
   sectionEl.appendChild(el('<h2 class="text-lg font-bold mb-1">Quests</h2><p class="text-sm text-zinc-500 mb-4">Every quest in this project.</p>'));
@@ -2389,11 +2251,12 @@ async function viewNotifications() {
     body.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400">Nothing here yet.</p><p class="text-sm text-zinc-600 mt-1">Complete quests and follow campaigns to hear about it here.</p></div>'));
   } else {
     for (const n of data.notifications) {
-      body.appendChild(el(`
-        <a href="${escapeHtml(n.link || '#')}" class="block rounded-xl border ${n.read_at ? 'border-zinc-800' : 'border-violet-500/40'} bg-zinc-900/60 px-4 py-3">
+      const inner = `
           <p class="text-sm font-medium">${escapeHtml(n.title)}</p>
-          <p class="text-sm text-zinc-400">${escapeHtml(n.body || '')}</p>
-        </a>`));
+          <p class="text-sm text-zinc-400">${escapeHtml(n.body || '')}</p>`;
+      const cls = 'block rounded-xl border ' + (n.read_at ? 'border-zinc-800' : 'border-violet-500/40') + ' bg-zinc-900/60 px-4 py-3';
+      if (n.link) body.appendChild(el(`<a href="${escapeHtml(n.link)}" class="${cls}">${inner}</a>`));
+      else body.appendChild(el(`<div class="${cls}">${inner}</div>`));
     }
   }
   wrap.querySelector('.prefs').addEventListener('click', async () => {
@@ -2418,7 +2281,149 @@ async function viewNotifications() {
     });
     wrap.appendChild(panel);
   });
-  window.QuestoraAPI.api.post('/api/v1/notifications/read').catch(() => {});
+}
+
+// ---------- account settings ----------
+async function viewSettings() {
+  const wrap = el('<div></div>');
+  mount(wrap);
+  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">Account Settings</h1><p class="text-sm text-zinc-500 mb-5">Your profile, notifications and theme.</p></div>'));
+  const body = el('<div class="space-y-4 max-w-2xl"></div>');
+  wrap.appendChild(body);
+  body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading settings…</p>'));
+
+  let meData, prefsData;
+  try {
+    const both = await Promise.all([
+      window.QuestoraAPI.api.get('/api/v1/users/me'),
+      window.QuestoraAPI.api.get('/api/v1/notifications/prefs'),
+    ]);
+    meData = both[0]; prefsData = both[1];
+  } catch (err) {
+    body.replaceChildren(el(`<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">${escapeHtml(err.message)}</p><button class="retry mt-2 text-sm text-violet-400 font-medium">Try again</button></div>`));
+    body.querySelector('.retry').addEventListener('click', viewSettings);
+    return;
+  }
+  body.replaceChildren();
+  const u = meData.user || {};
+
+  const profile = el(`
+    <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+      <h2 class="font-semibold mb-3">Profile</h2>
+      <label class="block text-xs text-zinc-500 mb-1" for="s-name">Display name</label>
+      <input id="s-name" class="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-violet-500" value="${escapeHtml(u.display_name || '')}">
+      <label class="block text-xs text-zinc-500 mb-1 mt-3" for="s-avatar">Avatar URL</label>
+      <input id="s-avatar" class="w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-violet-500" value="${escapeHtml(u.avatar_url || '')}" placeholder="https://example.com/avatar.png">
+      <button class="p-save mt-4 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Save profile</button>
+    </section>`);
+  profile.querySelector('.p-save').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await window.QuestoraAPI.api.patch('/api/v1/users/me', {
+        display_name: profile.querySelector('#s-name').value.trim(),
+        avatar_url: profile.querySelector('#s-avatar').value.trim() || null,
+      });
+      toast('Profile saved');
+      if (window.QuestoraNav && window.QuestoraNav.invalidateSession) window.QuestoraNav.invalidateSession();
+    } catch (err) { toast(err.message, true); }
+    finally { btn.disabled = false; }
+  });
+  body.appendChild(profile);
+
+  const kinds = [['quest_completed', 'Quest completed'], ['badge_earned', 'Badge earned'], ['level_up', 'Level up'], ['submission_rejected', 'Submission rejected'], ['campaign_completed', 'Campaign completed'], ['credential_earned', 'Credential issued'], ['referral_qualified', 'Invite qualified']];
+  const muted = (prefsData.prefs && prefsData.prefs.muted) || [];
+  const notif = el(`
+    <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+      <h2 class="font-semibold mb-1">Notifications</h2>
+      <p class="text-xs text-zinc-500 mb-3">Turn off the kinds you do not want to hear about.</p>
+      <div class="k-list space-y-2"></div>
+      <button class="n-save mt-4 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Save notifications</button>
+    </section>`);
+  const klist = notif.querySelector('.k-list');
+  for (const [k, label] of kinds) {
+    klist.appendChild(el(`<label class="flex items-center gap-3 rounded-lg border border-zinc-800 px-4 py-3 min-h-[44px] cursor-pointer"><input type="checkbox" data-kind="${k}" class="accent-violet-500" ${muted.includes(k) ? '' : 'checked'}><span class="text-sm">${label}</span></label>`));
+  }
+  notif.querySelector('.n-save').addEventListener('click', async (e) => {
+    const btn = e.currentTarget; btn.disabled = true;
+    const nowMuted = [];
+    notif.querySelectorAll('input[data-kind]').forEach(i => { if (!i.checked) nowMuted.push(i.dataset.kind); });
+    try { await window.QuestoraAPI.api.patch('/api/v1/notifications/prefs', { muted: nowMuted }); toast('Preferences saved'); }
+    catch (err) { toast(err.message, true); }
+    finally { btn.disabled = false; }
+  });
+  body.appendChild(notif);
+
+  const current = window.QuestoraTheme.mode();
+  const theme = el(`
+    <section class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
+      <h2 class="font-semibold mb-1">Theme</h2>
+      <p class="text-xs text-zinc-500 mb-3">Applies on this device right away.</p>
+      <div class="t-list flex flex-wrap gap-2"></div>
+    </section>`);
+  const tlist = theme.querySelector('.t-list');
+  const modes = [['light', 'Light'], ['dark', 'Dark'], ['system', 'System']];
+  for (const [mode, label] of modes) {
+    const on = current === mode;
+    const b = el(`<button type="button" data-mode="${mode}" class="text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg ${on ? 'bg-violet-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200'}">${label}</button>`);
+    b.addEventListener('click', () => {
+      window.QuestoraTheme.set(mode);
+      if (window.QuestoraNav && window.QuestoraNav.themeChanged) window.QuestoraNav.themeChanged();
+      tlist.querySelectorAll('button').forEach(x => {
+        x.className = 'text-sm font-medium px-4 py-2.5 min-h-[44px] rounded-lg ' + (x.dataset.mode === mode ? 'bg-violet-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200');
+      });
+      window.QuestoraAPI.api.patch('/api/v1/users/me', { settings: { theme: mode } }).catch(() => {});
+    });
+    tlist.appendChild(b);
+  }
+  body.appendChild(theme);
+}
+
+// ---------- my projects ----------
+async function viewMyProjects() {
+  const wrap = el('<div></div>');
+  mount(wrap);
+  wrap.appendChild(el('<div><h1 class="text-2xl font-bold mb-1">My Projects</h1><p class="text-sm text-zinc-500 mb-5">Projects you created or help with.</p></div>'));
+  const body = el('<div class="space-y-2"></div>');
+  wrap.appendChild(body);
+  body.appendChild(el('<p class="text-sm text-zinc-500 animate-pulse">Loading your projects…</p>'));
+  let data;
+  try { data = await window.QuestoraAPI.api.get('/api/v1/projects'); }
+  catch (err) { body.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  body.replaceChildren();
+  const rows = data.projects || [];
+  if (!rows.length) {
+    body.appendChild(el(emptyState('You are not part of any project yet.', 'Create a project', '/create')));
+    return;
+  }
+  const ROLE_LABEL = { creator: 'Creator', admin: 'Admin', moderator: 'Moderator' };
+  for (const p of rows) {
+    const roleLabel = ROLE_LABEL[p.viewer_role] || 'Member';
+    const canManage = p.viewer_role === 'creator' || p.viewer_role === 'admin';
+    const members = Number(p.members || 0);
+    body.appendChild(el(`
+      <div class="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
+        <a href="/projects/${encodeURIComponent(p.slug)}" class="min-w-0 flex-1">
+          <span class="block font-medium truncate">${escapeHtml(p.name)}</span>
+          <span class="block text-xs text-zinc-600 truncate">${members} ${members === 1 ? 'member' : 'members'} · ${escapeHtml(p.status || '')}</span>
+        </a>
+        ${statePill(roleLabel)}
+        ${canManage ? `<a href="/dashboard/projects/${encodeURIComponent(p.slug)}" class="shrink-0 text-xs text-violet-300">Dashboard</a>` : ''}
+      </div>`));
+  }
+}
+
+// ---------- not found ----------
+async function viewNotFound() {
+  const wrap = el('<div></div>');
+  mount(wrap);
+  wrap.appendChild(el(`
+    <div class="max-w-lg mx-auto text-center py-16">
+      <p class="text-5xl font-bold text-violet-400 mb-3">404</p>
+      <h1 class="text-xl font-bold mb-1">Page not found</h1>
+      <p class="text-sm text-zinc-500 mb-5">That page does not exist, or it moved. Check the link and try again.</p>
+      <a href="/" class="inline-block font-medium px-5 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Back to Explore</a>
+    </div>`));
 }
 
 // ---------- search (Phase 2) ----------
@@ -2707,8 +2712,9 @@ async function viewAdmin() {
   load();
 }
 
-window.QV = { viewDiscover, viewCampaigns, viewCampaign, viewQuest, viewProfile, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe,
-  viewProjects, viewProjectOverview, viewProjectCampaigns, viewProjectQuests, viewCampaignDetail, viewQuestDetail, viewScopedLeaderboard, viewDashboard, resolveCampaignPath };
+window.QV = { viewDiscover, viewCampaigns, viewQuest, viewProfile, viewCreate, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe,
+  viewProjects, viewProjectOverview, viewProjectCampaigns, viewProjectQuests, viewCampaignDetail, viewQuestDetail, viewScopedLeaderboard, viewDashboard, resolveCampaignPath,
+  viewSettings, viewMyProjects, viewNotFound };
 
 bindQUI();
 return window.QV;

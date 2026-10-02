@@ -30,11 +30,19 @@ t('schema + seed + reward flow', async () => {
   const { seed } = require('../src/seed');
   await seed();
 
-  // Seed idempotency: a second run must not duplicate quests.
-  const before = await pool.query('SELECT COUNT(*)::int AS n FROM quests');
+  // Seed idempotency: a second run must not duplicate quests, and must not
+  // re-insert the demo notifications or review-queue submissions either
+  // (they used to grow on every boot).
+  const counts = async () => (await pool.query(
+    `SELECT (SELECT COUNT(*)::int FROM quests) AS quests,
+            (SELECT COUNT(*)::int FROM notifications) AS notifications,
+            (SELECT COUNT(*)::int FROM task_submissions) AS submissions`)).rows[0];
+  const before = await counts();
   await seed();
-  const after = await pool.query('SELECT COUNT(*)::int AS n FROM quests');
-  assert.equal(before.rows[0].n, after.rows[0].n, 'seed must be idempotent');
+  const after = await counts();
+  assert.equal(before.quests, after.quests, 'seed must not duplicate quests');
+  assert.equal(before.notifications, after.notifications, 'seed must not duplicate notifications');
+  assert.equal(before.submissions, after.submissions, 'seed must not duplicate task submissions');
 
   // Seeded leaderboard state exists and belongs only to demo users.
   const lb = await pool.query(
@@ -1288,6 +1296,66 @@ t('participant quest route returns on-chain config without leaking RPC URLs', as
   const raw = JSON.stringify(body);
   assert.ok(!raw.includes('ethereum-sepolia-rpc.publicnode.com'), 'no primary RPC URL leaks');
   assert.ok(!raw.includes('rpc.sepolia.org'), 'no backup RPC URL leaks');
+}, { timeout: 30000 });
+
+t('notifications, project roles and create idempotency', async () => {
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const uid = 820000000 + Math.floor(Math.random() * 70000000);
+  const token = jwt.sign({ id: uid, username: 'staging-demo-nav-' + (Date.now() % 100000000), pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' });
+  const auth = { 'x-usernode-token': token, 'content-type': 'application/json' };
+
+  // A create with the same Idempotency-Key returns the first row, not a second.
+  const key = 'nav-test-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
+  const created = await fetch(base + '/api/v1/projects', {
+    method: 'POST', headers: { ...auth, 'Idempotency-Key': key },
+    body: JSON.stringify({ name: 'Staging demo nav project' }),
+  });
+  assert.equal(created.status, 200);
+  const first = (await created.json()).project;
+  const retried = await fetch(base + '/api/v1/projects', {
+    method: 'POST', headers: { ...auth, 'Idempotency-Key': key },
+    body: JSON.stringify({ name: 'Staging demo nav project' }),
+  });
+  assert.equal(retried.status, 200);
+  const second = await retried.json();
+  assert.equal(second.project.id, first.id, 'the retried create must not insert a second project');
+  assert.equal(second.idempotent, true);
+  const projCount = await pool.query('SELECT COUNT(*)::int AS n FROM projects WHERE idempotency_key = $1', [key]);
+  assert.equal(projCount.rows[0].n, 1);
+  // The caller is the Creator of the project they just made, and the
+  // /my-projects screen learns that from GET /projects' viewer_role.
+  const mine = await (await fetch(base + '/api/v1/projects', { headers: auth })).json();
+  const row = mine.projects.find(p => p.id === first.id);
+  assert.equal(row.viewer_role, 'creator');
+
+  // Per-item read marks the caller's own notification, and only their own.
+  const parsed = jwt.decode(token);
+  const owner = (await pool.query('SELECT id FROM users WHERE usernode_id = $1', [String(parsed.id)])).rows[0];
+  const note = await pool.query(
+    `INSERT INTO notifications (user_id, type, title, body) VALUES ($1, 'nav_test', 'Nav test', 'body') RETURNING id`,
+    [owner.id]);
+  const otherNote = await pool.query(
+    `INSERT INTO notifications (user_id, type, title, body)
+     SELECT id, 'nav_test', 'Nav test other', 'body' FROM users WHERE username = 'staging-demo-user-1' RETURNING id`);
+  const readOne = await (await fetch(base + '/api/v1/notifications/' + note.rows[0].id + '/read', {
+    method: 'POST', headers: { 'x-usernode-token': auth['x-usernode-token'] },
+  })).json();
+  assert.equal(readOne.updated, 1, 'the first read marks the row read');
+  const readAgain = await (await fetch(base + '/api/v1/notifications/' + note.rows[0].id + '/read', {
+    method: 'POST', headers: { 'x-usernode-token': auth['x-usernode-token'] },
+  })).json();
+  assert.equal(readAgain.updated, 0, 'a second read is a no-op, not an error');
+  const readForeign = await (await fetch(base + '/api/v1/notifications/' + otherNote.rows[0].id + '/read', {
+    method: 'POST', headers: { 'x-usernode-token': auth['x-usernode-token'] },
+  })).json();
+  assert.equal(readForeign.updated, 0, "another user's notification cannot be marked read");
 }, { timeout: 30000 });
 
 after(async () => {

@@ -189,8 +189,22 @@ function questTypeLabelFromTasks(tasks) {
   return map[types[0]] || 'Submission';
 }
 
+// A client-supplied key that makes a create idempotent: a retried submit with
+// the same key returns the row it already created instead of a second one.
+function clientKey(req) {
+  const raw = req.get('Idempotency-Key') || (req.body && req.body.idempotency_key);
+  if (!raw) return null;
+  const key = String(raw).trim().slice(0, 200);
+  return key || null;
+}
+
 // ---- projects ----
 router.post('/projects', async (req, res) => {
+  const idemKey = clientKey(req);
+  if (idemKey) {
+    const dup = await pool.query('SELECT * FROM projects WHERE idempotency_key = $1', [idemKey]);
+    if (dup.rows.length) return res.json({ project: dup.rows[0], idempotent: true });
+  }
   const { name, description, logo_url, website, social_links } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'A project name is required' });
   if (website && !validUrl(website)) return res.status(400).json({ error: 'The website must start with http or https' });
@@ -202,11 +216,11 @@ router.post('/projects', async (req, res) => {
   try {
     await client.query('BEGIN');
     const p = await client.query(
-      `INSERT INTO projects (slug, creator_id, name, description, logo_url, website, social_links, visibility, banner_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      `INSERT INTO projects (slug, creator_id, name, description, logo_url, website, social_links, visibility, banner_url, idempotency_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [slug, owner, String(name).trim(), description || null, logo_url || null, website || null,
         social_links && typeof social_links === 'object' ? social_links : {},
-        req.body.visibility === 'unlisted' ? 'unlisted' : 'public', req.body.banner_url || null]
+        req.body.visibility === 'unlisted' ? 'unlisted' : 'public', req.body.banner_url || null, idemKey]
     );
     // Every project gets its own points system (Phase 2), so its quests
     // feed a project leaderboard as well as the global one.
@@ -225,8 +239,14 @@ router.post('/projects', async (req, res) => {
 });
 
 router.get('/projects', async (req, res) => {
+  // The caller's role on each project travels with the row so a client can
+  // label it ("Creator" or the member role) without a second read.
   const { rows } = await pool.query(
-    `SELECT p.*, (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) AS members
+    `SELECT p.*, (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id) AS members,
+            CASE WHEN p.creator_id = $1 THEN 'creator'
+                 ELSE (SELECT pm.role FROM project_members pm
+                        WHERE pm.project_id = p.id AND pm.user_id = $1 AND pm.status = 'active' LIMIT 1)
+            END AS viewer_role
      FROM projects p
      WHERE p.creator_id = $1
         OR EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = $1 AND pm.status = 'active')
@@ -541,6 +561,11 @@ router.post('/projects/:id/campaigns', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
   if (!(await rbac.requireProjectPermission(req, res, p.id, 'campaign.manage'))) return;
+  const idemKey = clientKey(req);
+  if (idemKey) {
+    const dup = await pool.query('SELECT * FROM campaigns WHERE idempotency_key = $1', [idemKey]);
+    if (dup.rows.length) return res.json({ campaign: dup.rows[0], idempotent: true });
+  }
   const { name, description, banner_url, category, chains, starts_at, ends_at, status, featured,
     visibility, rules, leaderboard_config } = req.body || {};
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'A campaign name is required' });
@@ -552,13 +577,13 @@ router.post('/projects/:id/campaigns', async (req, res) => {
   if (dup.rows.length) slug = slug + '-' + randomId(4);
   const { rows } = await pool.query(
     `INSERT INTO campaigns (project_id, slug, name, description, banner_url, category, chains, starts_at,
-                            ends_at, status, featured, visibility, rules, leaderboard_config)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+                            ends_at, status, featured, visibility, rules, leaderboard_config, idempotency_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
     [p.id, slug, String(name).trim(), description || null, banner_url || null, category || null,
       Array.isArray(chains) ? chains : [],
       starts_at || null, ends_at || null, st, !!featured,
       visibility === 'unlisted' ? 'unlisted' : 'public', rules || null,
-      leaderboard_config && typeof leaderboard_config === 'object' ? leaderboard_config : {}]
+      leaderboard_config && typeof leaderboard_config === 'object' ? leaderboard_config : {}, idemKey]
   );
   res.json({ campaign: rows[0] });
 });
@@ -570,7 +595,7 @@ router.patch('/campaigns/:id', async (req, res) => {
   const c = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = c.rows[0];
-  // Project RBAC, or a platform admin acting through the admin panel.
+  // Project RBAC only. A platform admin gets no project permission here.
   if (!(await rbac.requireProjectPermission(req, res, campaign.project_id, 'campaign.manage'))) return;
   const allowed = {};
   for (const k of ['name', 'description', 'banner_url', 'category', 'starts_at', 'ends_at', 'featured', 'rules']) {
@@ -689,6 +714,11 @@ router.post('/campaigns/:id/quests', async (req, res) => {
   if (!c.rows.length) return res.status(404).json({ error: 'Campaign not found' });
   const campaign = c.rows[0];
   if (!(await rbac.requireProjectPermission(req, res, campaign.project_id, 'quest.manage'))) return;
+  const idemKey = clientKey(req);
+  if (idemKey) {
+    const dup = await pool.query('SELECT * FROM quests WHERE idempotency_key = $1', [idemKey]);
+    if (dup.rows.length) return res.json({ quest: dup.rows[0], idempotent: true });
+  }
   const { title, description, instructions, is_required, xp_reward, points_reward, tasks, badge_id } = req.body || {};
   if (!title || !String(title).trim()) return res.status(400).json({ error: 'A quest title is required' });
   const client = await pool.connect();
@@ -702,8 +732,8 @@ router.post('/campaigns/:id/quests', async (req, res) => {
     const q = await client.query(
       `INSERT INTO quests (campaign_id, slug, title, description, instructions, image_url, quest_type,
                            sort_order, is_required, xp_reward, points_reward, starts_at, ends_at, status,
-                           visibility, max_participants, completion_limit)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING *`,
+                           visibility, max_participants, completion_limit, idempotency_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING *`,
       [campaign.id, slug, String(title).trim(), description || null, instructions || null,
         req.body.image_url || null, req.body.quest_type || null,
         ord.rows[0].n, is_required === undefined ? true : !!is_required,
@@ -711,7 +741,7 @@ router.post('/campaigns/:id/quests', async (req, res) => {
         req.body.starts_at || null, req.body.ends_at || null, st,
         req.body.visibility === 'unlisted' ? 'unlisted' : 'public',
         req.body.max_participants ? Math.max(1, parseInt(req.body.max_participants, 10) || 1) : null,
-        Math.max(1, parseInt(req.body.completion_limit, 10) || 1)]
+        Math.max(1, parseInt(req.body.completion_limit, 10) || 1), idemKey]
     );
     const questId = q.rows[0].id;
     if (!q.rows[0].quest_type) {
@@ -937,11 +967,12 @@ router.post('/submissions/:id/review', async (req, res) => {
   if (decision === 'rejected') {
     const quest = await pool.query('SELECT title FROM quests WHERE id = $1', [sub.quest_id]);
     await pool.query(
-      `INSERT INTO notifications (user_id, type, title, body, link)
-       VALUES ($1, 'submission_rejected', $2, $3, $4)`,
+      `INSERT INTO notifications (user_id, type, title, body, link, dedupe_key)
+       VALUES ($1, 'submission_rejected', $2, $3, $4, $5)
+       ON CONFLICT (dedupe_key) DO NOTHING`,
       [sub.user_id, 'Submission rejected',
         quest.rows[0] ? `Your submission for "${quest.rows[0].title}" was rejected. ${reason}` : 'Your submission was rejected.',
-        '/quest/' + sub.quest_id]
+        '/quest/' + sub.quest_id, 'submission-rejected:' + sub.id]
     );
     // Reputation (Phase 3): rejections are visible on the profile's
     // itemized reputation panel; idempotent per submission.
@@ -1277,6 +1308,11 @@ router.post('/quests/:id/tasks', async (req, res) => {
      WHERE ${isNum ? 'q.id = $1' : 'q.slug = $1'} LIMIT 1`, [req.params.id]);
   if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
   if (!(await rbac.requireProjectPermission(req, res, q.rows[0].project_id, 'task.manage'))) return;
+  const idemKey = clientKey(req);
+  if (idemKey) {
+    const dup = await pool.query('SELECT * FROM quest_tasks WHERE idempotency_key = $1', [idemKey]);
+    if (dup.rows.length) return res.json({ task: dup.rows[0], idempotent: true });
+  }
   const b = req.body || {};
   const cfgErr = validateTaskConfig(b.type, b.config || {});
   if (cfgErr) return res.status(400).json({ error: cfgErr });
@@ -1292,15 +1328,15 @@ router.post('/quests/:id/tasks', async (req, res) => {
     const ins = await client.query(
       `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required,
                                 project_id, campaign_id, xp_reward, completion_mode, max_completions,
-                                attempt_limit, cooldown_seconds)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+                                attempt_limit, cooldown_seconds, idempotency_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [q.rows[0].id, b.type, String(b.title || 'Task').slice(0, 255), JSON.stringify(b.config || {}),
         ord.rows[0].n, verification, ['url_proof', 'manual', 'social'].includes(b.type),
         q.rows[0].project_id, q.rows[0].campaign_id, Math.max(0, parseInt(b.xp_reward, 10) || 0),
         ['one_time', 'daily', 'weekly', 'monthly'].includes(b.completion_mode) ? b.completion_mode : 'one_time',
         Math.max(1, parseInt(b.max_completions, 10) || 1),
         b.attempt_limit ? Math.max(1, parseInt(b.attempt_limit, 10)) : null,
-        Math.max(0, parseInt(b.cooldown_seconds, 10) || 0)]);
+        Math.max(0, parseInt(b.cooldown_seconds, 10) || 0), idemKey]);
     const ver = await client.query(
       `INSERT INTO task_versions (task_id, version, config, created_by) VALUES ($1, 1, $2, $3) RETURNING id`,
       [ins.rows[0].id, JSON.stringify(b.config || {}), userId(req)]);

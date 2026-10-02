@@ -86,6 +86,10 @@
       get: function () {
         try { return localStorage.getItem(KEY) || null; } catch (e) { return null; }
       },
+      // 'light' | 'dark' | 'system'. 'system' is the no-override branch.
+      mode: function () {
+        try { return localStorage.getItem(KEY) || 'system'; } catch (e) { return 'system'; }
+      },
       set: function (t) {
         try {
           if (t === 'dark' || t === 'light') localStorage.setItem(KEY, t);
@@ -103,16 +107,26 @@
     <div class="max-w-6xl mx-auto px-6 h-14 flex items-center gap-6">
       <a href="/" class="flex items-center gap-2 font-bold text-lg text-violet-400">Questora</a>
       <nav class="flex items-center gap-1 text-sm" id="desktop-nav"></nav>
-      <div class="ml-auto flex items-center gap-3">
-        <button id="theme-btn" class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Toggle light or dark theme">
-          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path></svg>
-        </button>
-        <button id="notif-btn" class="relative p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Notifications">
-          <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 0 0-6 6c0 2.1-.6 3.6-1.3 4.6-.3.5 0 1.4.7 1.4h13.2c.7 0 1-.9.7-1.4C16.6 11.6 16 10.1 16 8a6 6 0 0 0-6-6ZM8 16a2 2 0 1 0 4 0H8Z"/></svg>
-          <span id="notif-badge" class="hidden absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-violet-600 text-white text-[10px] font-bold flex items-center justify-center"></span>
-        </button>
-        <a id="connect-wallet-desktop" href="/me?tab=wallets" class="text-sm font-medium px-3 py-2 rounded-lg border border-violet-500/40 text-violet-200 hover:bg-violet-600/20">Connect wallet</a>
-        <a id="nav-profile-desktop" href="/me" class="text-sm text-zinc-300 hover:text-white">Profile</a>
+      <div class="ml-auto flex items-center gap-2">
+        <div class="relative" id="theme-holder">
+          <button id="theme-btn" class="p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Theme" aria-haspopup="menu" aria-expanded="false"></button>
+        </div>
+        <div class="relative" id="notif-holder-desktop">
+          <button id="notif-btn" class="relative p-2 rounded-lg hover:bg-zinc-800 text-zinc-400" aria-label="Notifications" aria-haspopup="menu" aria-expanded="false">
+            <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 0 0-6 6c0 2.1-.6 3.6-1.3 4.6-.3.5 0 1.4.7 1.4h13.2c.7 0 1-.9.7-1.4C16.6 11.6 16 10.1 16 8a6 6 0 0 0-6-6ZM8 16a2 2 0 1 0 4 0H8Z"/></svg>
+            <span id="notif-badge" class="hidden absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-violet-600 text-white text-[10px] font-bold flex items-center justify-center"></span>
+          </button>
+        </div>
+        <div class="relative" id="wallet-holder">
+          <button id="wallet-btn" class="text-sm font-medium px-3 py-2 rounded-lg border border-violet-500/40 text-violet-200 hover:bg-violet-600/20" aria-haspopup="menu" aria-expanded="false">
+            <span id="wallet-label">Connect wallet</span>
+          </button>
+        </div>
+        <div class="relative" id="avatar-holder-desktop">
+          <button id="avatar-btn" class="flex items-center gap-2 p-1 rounded-full hover:bg-zinc-800" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">
+            <span id="avatar-initials" class="w-8 h-8 rounded-full bg-violet-600/30 text-violet-200 text-xs font-bold flex items-center justify-center">?</span>
+          </button>
+        </div>
       </div>
     </div>
   </header>
@@ -120,25 +134,27 @@
   <!-- Mobile top bar -->
   <header class="md:hidden sticky top-0 z-40 bg-zinc-950/90 backdrop-blur border-b border-zinc-800">
     <div class="px-4 h-12 flex items-center justify-between">
+      <div class="relative" id="menu-holder">
+        <button id="menu-btn" class="p-2 rounded-lg active:bg-zinc-800 text-zinc-300 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Menu" aria-haspopup="menu" aria-expanded="false">
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+        </button>
+      </div>
       <a href="/" class="font-bold text-violet-400">Questora</a>
       <div class="flex items-center gap-1">
-        <button id="theme-btn-mobile" class="p-2 rounded-lg active:bg-zinc-800 text-zinc-400 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Toggle light or dark theme">
-          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path></svg>
-        </button>
-        <button id="notif-btn-mobile" class="relative p-2 rounded-lg active:bg-zinc-800 text-zinc-400 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Notifications">
-        <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 0 0-6 6c0 2.1-.6 3.6-1.3 4.6-.3.5 0 1.4.7 1.4h13.2c.7 0 1-.9.7-1.4C16.6 11.6 16 10.1 16 8a6 6 0 0 0-6-6ZM8 16a2 2 0 1 0 4 0H8Z"/></svg>
-        <span id="notif-badge-mobile" class="hidden absolute top-1 right-1 min-w-[16px] h-[16px] px-0.5 rounded-full bg-violet-600 text-white text-[9px] font-bold flex items-center justify-center"></span>
-      </button>
+        <div class="relative" id="notif-holder-mobile">
+          <button id="notif-btn-mobile" class="relative p-2 rounded-lg active:bg-zinc-800 text-zinc-400 min-w-[44px] min-h-[44px] flex items-center justify-center" aria-label="Notifications" aria-haspopup="menu" aria-expanded="false">
+            <svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M10 2a6 6 0 0 0-6 6c0 2.1-.6 3.6-1.3 4.6-.3.5 0 1.4.7 1.4h13.2c.7 0 1-.9.7-1.4C16.6 11.6 16 10.1 16 8a6 6 0 0 0-6-6ZM8 16a2 2 0 1 0 4 0H8Z"/></svg>
+            <span id="notif-badge-mobile" class="hidden absolute top-1 right-1 min-w-[16px] h-[16px] px-0.5 rounded-full bg-violet-600 text-white text-[9px] font-bold flex items-center justify-center"></span>
+          </button>
+        </div>
+        <div class="relative" id="avatar-holder-mobile">
+          <button id="avatar-btn-mobile" class="w-9 h-9 rounded-full bg-violet-600/30 text-violet-200 text-xs font-bold flex items-center justify-center" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">?</button>
+        </div>
       </div>
     </div>
   </header>
 
   <main id="app" class="max-w-6xl mx-auto px-4 md:px-6 pt-4 md:pt-20 pb-24 md:pb-12" style="padding-bottom:calc(6rem + var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px)))"></main>
-
-  <!-- Mobile bottom nav -->
-  <nav id="bottom-nav" class="md:hidden fixed bottom-0 inset-x-0 z-40 bg-zinc-950/95 backdrop-blur border-t border-zinc-800" style="padding-bottom:var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px))">
-    <div class="flex justify-around h-16" id="bottom-nav-items"></div>
-  </nav>
 
   <div id="toast-holder"></div>
 
@@ -148,6 +164,7 @@
   <script src="/wallets/connectors.js"></script>
   <script src="/wallets/manager.js"></script>
   <script src="/wallets/ui.js"></script>
+  <script src="/nav-menu.js"></script>
   <script src="/views.js"></script>
   <script src="/app.js"></script>
 </body>

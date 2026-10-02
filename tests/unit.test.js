@@ -566,3 +566,35 @@ test('all RPC endpoints down is RPC_UNAVAILABLE, never a user failure', async ()
   assert.equal(status.classify(r.status).storedStatus, 'pending');
   assert.equal(status.classify(r.status).isUserFailure, false);
 });
+
+// ---- Navigation audit: Create menu permissions and orphan cleanup ----
+const navMenu = require('../public/nav-menu.js');
+
+test('Create menu offers Project, but the project-scoped actions only when the user manages a project', () => {
+  const none = navMenu.createMenuItems([]);
+  assert.equal(none.project.href, '/create');
+  assert.equal(none.items.length, 0, 'a user with no manageable project gets no campaign/quest/task action');
+  assert.match(none.hint, /Create a project first/);
+
+  const one = navMenu.createMenuItems([{ slug: 'octra', name: 'Octra' }]);
+  assert.deepEqual(one.items.map((i) => i.key), ['campaign', 'quest', 'task']);
+  for (const it of one.items) assert.match(it.href, /^\/dashboard\/projects\/octra\//);
+  assert.equal(one.needsPicker, false);
+
+  const two = navMenu.createMenuItems([{ slug: 'a', name: 'A' }, { slug: 'b', name: 'B' }]);
+  assert.equal(two.needsPicker, true, 'two manageable projects force a picker');
+});
+
+test('the orphan duplicate page components are no longer exported', () => {
+  // views.js is a browser bundle (it touches window), so read the export
+  // list as text: viewCampaign/viewProject must be gone from it.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'views.js'), 'utf8');
+  const start = src.indexOf('window.QV = {');
+  const exportLine = src.slice(start, src.indexOf('};', start) + 2);
+  assert.ok(start >= 0 && exportLine, 'views.js must still export its view map');
+  assert.ok(!/\bviewCampaign\b/.test(exportLine), 'viewCampaign must not be exported');
+  assert.ok(!/\bviewProject\b(?!Overview|Campaigns|Quests)/.test(exportLine), 'viewProject must not be exported');
+  assert.ok(/viewNotFound/.test(exportLine), 'the not-found view must be exported');
+});

@@ -176,11 +176,15 @@ function pager(page, hasMore, makeHref) {
   return holder;
 }
 
-// Empty state with a plain next step.
+// Empty state with a plain next step. An action without a real destination
+// renders as inert text, never a dead "#" link.
 function emptyState(text, actionLabel, actionHref) {
-  const action = actionLabel
-    ? `<a href="${escapeHtml(actionHref || '#')}" class="inline-block mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">${escapeHtml(actionLabel)}</a>`
-    : '';
+  let action = '';
+  if (actionLabel) {
+    action = actionHref
+      ? `<a href="${escapeHtml(actionHref)}" class="inline-block mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">${escapeHtml(actionLabel)}</a>`
+      : `<span class="inline-block mt-3 font-medium text-zinc-400 text-sm">${escapeHtml(actionLabel)}</span>`;
+  }
   return `<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center">
     <p class="text-zinc-400">${escapeHtml(text)}</p>${action}</div>`;
 }
