@@ -1,6 +1,6 @@
 window.QV = (function () {
 'use strict';
-var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, statCard, pager, emptyState, permissionList, dangerZone;
+var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, statCard, pager, emptyState, dangerZone;
 // Resolve the orchestrator's helpers at call time: app.js loads after this
 // file, so a bind-time capture would freeze the fallbacks.
 var mount, errorCard, Render;
@@ -8,7 +8,7 @@ function bindRender() {
   mount = function (n) { var R = window.QV && window.QV.Render; return R && R.mount ? R.mount(n) : app().replaceChildren(n); };
   errorCard = function (m) { var R = window.QV && window.QV.Render; return R && R.errorCard ? R.errorCard(m) : el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-6"><p class="text-zinc-300">' + escapeHtml(m) + '</p></div>'); };
 }
-function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; permissionList = q.permissionList; dangerZone = q.dangerZone; }
+function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; dangerZone = q.dangerZone; }
 bindQUI();
 bindRender();
 // View renderers. Each returns a DocumentFragment-ish element appended by
@@ -659,137 +659,6 @@ async function viewProfile(username, params) {
       inviteSlot.appendChild(card);
     }
   }
-}
-
-// ---------- teams ----------
-async function viewTeams(params) {
-  const wrap = el('<div></div>');
-  mount(wrap);
-  wrap.appendChild(el('<h1 class="text-2xl font-bold mb-4">Teams</h1>'));
-  const mySlot = el('<div class="mb-6"></div>');
-  const boardSlot = el('<div></div>');
-  wrap.appendChild(mySlot);
-  wrap.appendChild(boardSlot);
-  const meData = await loadMe();
-
-  async function refresh() {
-    // My team card (or the create/join forms when not in one).
-    let mine = null;
-    try { mine = await window.QuestoraAPI.api.get('/api/v1/teams/mine'); }
-    catch { mine = null; }
-    mySlot.replaceChildren();
-    if (mine && mine.team) {
-      const t = mine.team;
-      const isOwner = meData && meData.user && t.owner_user_id === meData.user.id;
-      const card = el(`
-        <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
-          <div class="flex items-start justify-between gap-3 mb-3">
-            <div class="min-w-0">
-              <h2 class="font-semibold truncate">${escapeHtml(t.name)}</h2>
-              ${t.tagline ? `<p class="text-sm text-zinc-500 truncate">${escapeHtml(t.tagline)}</p>` : ''}
-            </div>
-            ${isOwner ? statePill('active') : ''}
-          </div>
-          <div class="rounded-xl bg-zinc-800/60 px-4 py-3 mb-4 flex items-center justify-between gap-2">
-            <div class="min-w-0"><span class="block text-xs text-zinc-500">Join code</span>
-            <span class="font-mono text-sm text-zinc-200">${escapeHtml(t.join_code)}</span></div>
-            <button class="copy shrink-0 font-medium px-3 py-2 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Copy code</button>
-          </div>
-          <div class="members space-y-2 mb-4"></div>
-          <div class="actions flex gap-2"></div>
-        </div>`);
-      card.querySelector('.copy').addEventListener('click', async () => {
-        try { await navigator.clipboard.writeText(t.join_code); toast('Join code copied'); }
-        catch { toast('Could not copy the code'); }
-      });
-      const members = card.querySelector('.members');
-      for (const m of (mine.members || [])) {
-        members.appendChild(el(`
-          <a href="/u/${encodeURIComponent(m.username)}" class="flex items-center justify-between rounded-xl border border-zinc-800 px-4 py-3">
-            <span class="min-w-0"><span class="block text-sm font-medium truncate">${escapeHtml(m.display_name || m.username)}${m.role === 'owner' ? ' <span class="text-xs text-violet-300">owner</span>' : ''}</span>
-            <span class="block text-xs text-zinc-600">@${escapeHtml(m.username)}</span></span>
-            <span class="font-mono text-sm text-violet-300">${Number(m.xp).toLocaleString()} XP</span>
-          </a>`));
-      }
-      const actions = card.querySelector('.actions');
-      const act = (label, fn, cls) => {
-        const b = el(`<button class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg text-sm ${cls || 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300'}">${escapeHtml(label)}</button>`);
-        b.addEventListener('click', async () => {
-          try { await fn(); await refresh(); }
-          catch (err) { toast(err.message || 'Something went wrong'); }
-        });
-        return b;
-      };
-      if (isOwner) {
-        actions.appendChild(act('Disband team', async () => {
-          await window.QuestoraAPI.api.post('/api/v1/teams/disband', {});
-          toast('Team disbanded');
-        }, 'bg-red-600/90 hover:bg-red-500 text-white'));
-      } else {
-        actions.appendChild(act('Leave team', async () => {
-          await window.QuestoraAPI.api.post('/api/v1/teams/leave', {});
-          toast('You left the team');
-        }));
-      }
-      mySlot.appendChild(card);
-    } else {
-      const forms = el(`
-        <div class="grid md:grid-cols-2 gap-3 mb-1">
-          <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
-            <h2 class="font-semibold mb-1">Create a team</h2>
-            <p class="text-sm text-zinc-500 mb-3">One team per account.</p>
-            <input placeholder="Team name" class="t-name w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none mb-2">
-            <input placeholder="Tagline (optional)" class="t-tagline w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm text-zinc-200 focus:outline-none mb-3">
-            <button class="create font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm w-full">Create team</button>
-          </div>
-          <div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
-            <h2 class="font-semibold mb-1">Join with a code</h2>
-            <p class="text-sm text-zinc-500 mb-3">Ask a team owner for their join code.</p>
-            <input placeholder="Join code" class="t-code w-full rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm font-mono text-zinc-200 focus:outline-none mb-3">
-            <button class="join font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm w-full">Join team</button>
-          </div>
-        </div>`);
-      const val = sel => { const n = forms.querySelector(sel); return n ? n.value.trim() : ''; };
-      forms.querySelector('.create').addEventListener('click', async () => {
-        try {
-          await window.QuestoraAPI.api.post('/api/v1/teams', { name: val('.t-name'), tagline: val('.t-tagline') || undefined });
-          toast('Team created');
-          await refresh();
-        } catch (err) { toast(err.message || 'Could not create the team'); }
-      });
-      forms.querySelector('.join').addEventListener('click', async () => {
-        try {
-          await window.QuestoraAPI.api.post('/api/v1/teams/join', { code: val('.t-code') });
-          toast('You joined the team');
-          await refresh();
-        } catch (err) { toast(err.message || 'Could not join'); }
-      });
-      mySlot.appendChild(forms);
-    }
-
-    // Team board.
-    let board = { teams: [] };
-    try { board = await window.QuestoraAPI.api.get('/api/v1/teams'); }
-    catch { board = { teams: [] }; }
-    boardSlot.replaceChildren();
-    boardSlot.appendChild(el('<h2 class="font-semibold mb-3">All teams</h2>'));
-    if (!board.teams.length) {
-      boardSlot.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400 mb-1">No teams yet.</p><p class="text-sm text-zinc-600">Create one above to start the board.</p></div>'));
-      return;
-    }
-    const list = el('<div class="space-y-2"></div>');
-    board.teams.forEach((t, i) => {
-      list.appendChild(el(`
-        <div class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3">
-          <span class="w-8 text-center font-bold ${i === 0 ? 'text-violet-300' : 'text-zinc-500'}">${i + 1}</span>
-          <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(t.name)}</span>
-          <span class="block text-xs text-zinc-600">${t.members} member${t.members === 1 ? '' : 's'}${t.tagline ? ' · ' + escapeHtml(t.tagline) : ''}</span></span>
-          <span class="ml-auto font-mono text-violet-300">${Number(t.xp).toLocaleString()} XP</span>
-        </div>`));
-    });
-    boardSlot.appendChild(list);
-  }
-  await refresh();
 }
 
 // ---------- create wizard ----------
@@ -1498,16 +1367,18 @@ async function viewScopedLeaderboard(opts) {
 // ---------- project admin dashboard ----------
 // A management shell for one project: sidebar + management tables. Every
 // section re-navigates (the URL is the state), so it loads like any view.
-const PROJECT_ACTIONS = ['manage', 'review', 'edit', 'view_analytics', 'publish', 'delete_project'];
+// Each dashboard section names the permission the viewer must hold for it to
+// appear. The permission set comes from the server payload, so the sidebar is
+// gated by the same matrix the routes enforce rather than a role name.
 const DASH_SECTIONS = [
-  ['', 'Overview'],
-  ['campaigns', 'Campaigns'],
-  ['quests', 'Quests'],
-  ['participants', 'Participants'],
-  ['leaderboard', 'Leaderboard'],
-  ['rewards', 'Rewards'],
-  ['analytics', 'Analytics'],
-  ['settings', 'Settings'],
+  ['', 'Overview', 'analytics.view'],
+  ['campaigns', 'Campaigns', 'campaign.manage'],
+  ['quests', 'Quests', 'quest.manage'],
+  ['participants', 'Participants', 'participants.view'],
+  ['leaderboard', 'Leaderboard', 'leaderboard.view'],
+  ['rewards', 'Rewards', 'rewards.manage'],
+  ['analytics', 'Analytics', 'analytics.view'],
+  ['settings', 'Settings', 'project.edit'],
 ];
 
 // A native dropdown for a row's actions: one button, a menu of verbs.
@@ -1554,11 +1425,16 @@ async function viewDashboard(slug, section, params) {
   try { data = await loadProjectView(slug); }
   catch (err) { mount(errorCard(err.message)); return; }
   const p = data.project;
-  if (!data.can_manage) {
+  const perms = data.permissions || {};
+  const isCreator = !!data.is_creator;
+  // Any project role opens the dashboard; which sections appear is decided per
+  // permission below. A viewer with no role on the project sees none.
+  const canDashboard = perms['analytics.view'] || perms['campaign.manage'] || perms['access.manage'];
+  if (!canDashboard) {
     wrap.replaceChildren(el(`
       <div>
         ${breadcrumb([{ label: 'Projects', href: '/projects' }, projectCrumb(p), { label: 'Dashboard' }])}
-        ${emptyState("You don't have access to manage this project. Ask the project owner for an admin role.", 'Explore campaigns', `/projects/${encodeURIComponent(p.slug)}`)}
+        ${emptyState("You don't have access to this project's dashboard. Ask the project creator for an admin or moderator role.", 'Explore campaigns', `/projects/${encodeURIComponent(p.slug)}`)}
       </div>`));
     return;
   }
@@ -1587,12 +1463,19 @@ async function viewDashboard(slug, section, params) {
   const sidebar = node.querySelector('.sidebar');
   const sectionEl = node.querySelector('.section');
   const base = '/dashboard/projects/' + encodeURIComponent(p.slug);
-  for (const [seg, label] of DASH_SECTIONS) {
+  for (const [seg, label, perm] of DASH_SECTIONS) {
+    if (!perms[perm]) continue;
     const active = (seg === section) || (seg === 'campaigns' && section.startsWith('campaigns/'));
     sidebar.appendChild(el(`<a href="${base}${seg ? '/' + seg : ''}" class="shrink-0 px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium ${active ? 'bg-violet-600 text-white' : 'bg-zinc-900 text-zinc-400 hover:text-white'}">${escapeHtml(label)}</a>`));
   }
 
-  const ctx = { p, data, stats, base, reload: () => viewDashboard(slug, section, params) };
+  const ctx = { p, data, stats, base, isCreator, perms, reload: () => viewDashboard(slug, section, params) };
+  // A section the viewer cannot reach falls back to the overview rather than
+  // rendering a management surface the routes would reject anyway.
+  const sectionPerm = (DASH_SECTIONS.find(([seg]) => seg === section || (seg === 'campaigns' && section.startsWith('campaigns/')) || (seg === 'tasks' && section.startsWith('tasks/'))));
+  const required = sectionPerm ? sectionPerm[2] : null;
+  const allowed = required ? !!perms[required] : true;
+  if (section && !allowed) return renderDashOverview(sectionEl, ctx);
   if (section === 'campaigns') return renderDashCampaigns(sectionEl, ctx);
   if (section.startsWith('campaigns/')) return renderDashCampaignQuests(sectionEl, ctx, section.slice('campaigns/'.length));
   if (section === 'quests') return renderDashQuests(sectionEl, ctx);
@@ -2330,8 +2213,8 @@ async function renderDashSettings(sectionEl, ctx) {
     } catch (err) { toast(err.message, true); }
   });
   sectionEl.appendChild(form);
-  await renderMembers(sectionEl, ctx);
-  if (data && data.can_delete) renderDangerZone(sectionEl, ctx);
+  if (ctx.perms['access.manage']) await renderMembers(sectionEl, ctx);
+  if (ctx.isCreator) renderDangerZone(sectionEl, ctx);
 }
 
 // social_links <-> a simple "label | url" textarea, so the editor stays
@@ -2353,72 +2236,112 @@ function textToLinks(text) {
 
 async function renderMembers(sectionEl, ctx) {
   const { p, data } = ctx;
-  const isOwner = !!(data && data.is_owner);
-  const canGrantDelete = !!(data && data.can_delete) && isOwner;
   const card = el(`
     <div class="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 max-w-xl mb-5">
-      <h2 class="font-semibold mb-1">Ownership and roles</h2>
-      <p class="text-xs text-zinc-600 mb-3">Owner, admin, editor, reviewer and analyst each see a different part of this dashboard. Tick an ability to grant it, untick to withhold it. Deleting the project is owner-only unless the owner grants it.</p>
+      <h2 class="font-semibold mb-1">Project Access</h2>
+      <p class="text-xs text-zinc-600 mb-3">The Creator runs this project. Admins manage campaigns, quests, tasks, verification and rewards. Moderators review submissions and moderate participants. Each role applies to this project only. Only the Creator can change access.</p>
       <div class="members space-y-2 mb-3"></div>
       <div class="flex flex-col sm:flex-row gap-2">
         <input class="m-user flex-1 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm placeholder:text-zinc-600 focus:outline-none" placeholder="Username">
         <select class="m-role rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
-          <option value="admin">Admin</option><option value="editor">Editor</option><option value="reviewer">Reviewer</option><option value="analyst">Analyst</option>
+          <option value="admin">Admin</option><option value="moderator">Moderator</option>
         </select>
         <button class="m-add shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm">Add member</button>
       </div>
+      <div class="audit mt-4"></div>
     </div>`);
   sectionEl.appendChild(card);
   const holder = card.querySelector('.members');
   card.querySelector('.m-add').addEventListener('click', async () => {
     const username = card.querySelector('.m-user').value.trim();
     if (!username) return toast('A username is required', true);
-    try { await window.QuestoraAPI.api.post(`/api/v1/projects/${p.id}/members`, { username, role: card.querySelector('.m-role').value }); toast('Member added'); renderMembers(sectionEl, ctx); }
-    catch (err) { toast(err.message, true); }
+    const role = card.querySelector('.m-role').value;
+    try {
+      await window.QuestoraAPI.api.post(`/api/v1/projects/${p.id}/members`, { username, role });
+      toast(role === 'admin' ? 'Admin added' : 'Moderator added');
+      card.querySelector('.m-user').value = '';
+      renderMembers(sectionEl, ctx);
+    } catch (err) { toast(err.message, true); }
   });
-  holder.replaceChildren(el('<p class="text-sm text-zinc-600">Loading members\u2026</p>'));
-  let members;
-  try { members = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/members`); }
+  holder.replaceChildren(el('<p class="text-sm text-zinc-600">Loading access\u2026</p>'));
+  let roster;
+  try { roster = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/members`); }
   catch (err) { holder.replaceChildren(el(`<p class="text-sm text-red-400">${escapeHtml(err.message)}</p>`)); return; }
   holder.replaceChildren();
-  for (const m of members.members) {
-    const owner = m.role === 'owner';
+
+  // The Creator always sits at the top and has no membership row.
+  const creator = roster.creator;
+  if (creator) {
+    holder.appendChild(el(`
+      <div class="rounded-lg border border-zinc-800 px-3 py-2">
+        <div class="flex items-center gap-2">
+          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(creator.display_name || creator.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(creator.username)} \u00b7 Creator</span></span>
+          <span class="shrink-0 text-xs px-2 py-1 rounded-full bg-violet-600/20 text-violet-300">Creator</span>
+        </div>
+      </div>`));
+  }
+  const members = (roster.members || []);
+  if (!members.length) {
+    holder.appendChild(el('<p class="text-sm text-zinc-600">No admins or moderators yet. Add one below.</p>'));
+  }
+  for (const m of members) {
     const row = el(`
       <div class="rounded-lg border border-zinc-800 px-3 py-2">
         <div class="flex items-center gap-2">
-          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(m.display_name || m.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(m.username)}${owner ? ' \u00b7 Project Owner' : ''}</span></span>
-          <select class="role rounded-lg bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-xs focus:outline-none" ${owner ? 'disabled' : ''}>
-            ${['owner', 'admin', 'editor', 'reviewer', 'analyst'].map(r => `<option value="${r}" ${m.role === r ? 'selected' : ''}>${r}</option>`).join('')}
+          <span class="min-w-0 flex-1"><span class="block text-sm font-medium truncate">${escapeHtml(m.display_name || m.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(m.username)} \u00b7 ${m.role === 'admin' ? 'Admin' : 'Moderator'}</span></span>
+          <select class="role rounded-lg bg-zinc-800 border border-zinc-700 px-2 py-1.5 text-xs focus:outline-none" aria-label="Role for ${escapeHtml(m.username)}">
+            <option value="admin" ${m.role === 'admin' ? 'selected' : ''}>Admin</option>
+            <option value="moderator" ${m.role === 'moderator' ? 'selected' : ''}>Moderator</option>
           </select>
-          ${owner ? '' : '<button class="remove text-xs px-2 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-300">Remove</button>'}
+          <button class="remove text-xs px-2 py-2 min-h-[36px] rounded-lg bg-zinc-800 hover:bg-red-600 text-zinc-300">Remove</button>
         </div>
-        <div class="mt-2"></div>
       </div>`);
-    const permHolder = row.querySelector('.mt-2');
-    const perms = permissionList(PROJECT_ACTIONS, m.permissions, owner || !canGrantDelete);
-    permHolder.appendChild(perms);
-    perms.addEventListener('change', async () => {
-      const next = {};
-      perms.querySelectorAll('.perm-toggle').forEach((cb) => { next[cb.dataset.action] = cb.checked; });
+    row.querySelector('.role').addEventListener('change', async (e) => {
+      const role = e.target.value;
       try {
-        await window.QuestoraAPI.api.patch(`/api/v1/projects/${p.id}/members/${m.user_id}`,
-          { role: owner ? 'owner' : row.querySelector('.role').value, permissions: next });
-        toast('Permissions updated');
+        await window.QuestoraAPI.api.patch(`/api/v1/projects/${p.id}/members/${m.user_id}`, { role });
+        toast('Role updated');
+        renderMembers(sectionEl, ctx);
       } catch (err) { toast(err.message, true); renderMembers(sectionEl, ctx); }
     });
-    const sel = row.querySelector('.role');
-    if (sel && !sel.disabled) sel.addEventListener('change', async () => {
-      try { await window.QuestoraAPI.api.patch(`/api/v1/projects/${p.id}/members/${m.user_id}`, { role: sel.value }); toast('Role updated'); }
-      catch (err) { toast(err.message, true); }
-    });
-    const rm = row.querySelector('.remove');
-    if (rm) rm.addEventListener('click', async () => {
-      try { await window.QuestoraAPI.api.del(`/api/v1/projects/${p.id}/members/${m.user_id}`); toast('Member removed'); renderMembers(sectionEl, ctx); }
-      catch (err) { toast(err.message, true); }
+    row.querySelector('.remove').addEventListener('click', async () => {
+      try {
+        await window.QuestoraAPI.api.del(`/api/v1/projects/${p.id}/members/${m.user_id}`);
+        toast('Member removed');
+        renderMembers(sectionEl, ctx);
+      } catch (err) { toast(err.message, true); }
     });
     holder.appendChild(row);
   }
+
+  const auditHolder = card.querySelector('.audit');
+  auditHolder.replaceChildren(el('<p class="text-xs text-zinc-600">Loading access history\u2026</p>'));
+  let audit;
+  try { audit = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/audit`); }
+  catch (err) { auditHolder.replaceChildren(el(`<p class="text-xs text-red-400">${escapeHtml(err.message)}</p>`)); return; }
+  auditHolder.replaceChildren(el('<h3 class="text-xs font-medium text-zinc-500 mb-1">Access history</h3>'));
+  const entries = audit.entries || [];
+  if (!entries.length) {
+    auditHolder.appendChild(el('<p class="text-xs text-zinc-600">No access changes recorded yet.</p>'));
+  } else {
+    const list = el('<div class="space-y-1"></div>');
+    for (const e of entries) {
+      const label = AUDIT_LABELS[e.action] || e.action.replace(/_/g, ' ').toLowerCase();
+      const who = e.actor ? '@' + e.actor : 'Someone';
+      const when = new Date(e.created_at).toLocaleString();
+      list.appendChild(el(`<div class="text-xs text-zinc-500"><span class="text-zinc-300">${escapeHtml(who)}</span> ${escapeHtml(label)} <span class="text-zinc-600">\u00b7 ${escapeHtml(when)}</span></div>`));
+    }
+    auditHolder.appendChild(list);
+  }
 }
+
+const AUDIT_LABELS = {
+  ADMIN_ADDED: 'added an admin',
+  ADMIN_REMOVED: 'removed an admin',
+  MODERATOR_ADDED: 'added a moderator',
+  MODERATOR_REMOVED: 'removed a moderator',
+  ROLE_CHANGED: 'changed a member role',
+};
 
 // Two-step destructive delete. The preview loads the exact resources a hard
 // delete would remove, and the default action archives instead.
@@ -2784,7 +2707,7 @@ async function viewAdmin() {
   load();
 }
 
-window.QV = { viewDiscover, viewCampaigns, viewCampaign, viewQuest, viewProfile, viewTeams, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe,
+window.QV = { viewDiscover, viewCampaigns, viewCampaign, viewQuest, viewProfile, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe,
   viewProjects, viewProjectOverview, viewProjectCampaigns, viewProjectQuests, viewCampaignDetail, viewQuestDetail, viewScopedLeaderboard, viewDashboard, resolveCampaignPath };
 
 bindQUI();

@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS social_accounts (
 CREATE TABLE IF NOT EXISTS projects (
   id SERIAL PRIMARY KEY,
   slug VARCHAR(100) UNIQUE NOT NULL,
-  owner_user_id INTEGER NOT NULL REFERENCES users(id),
+  creator_id INTEGER NOT NULL REFERENCES users(id),
   name VARCHAR(255) NOT NULL,
   description TEXT,
   logo_url TEXT,
@@ -86,10 +86,14 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 CREATE TABLE IF NOT EXISTS project_members (
+  id BIGSERIAL PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role VARCHAR(20) NOT NULL DEFAULT 'owner',
-  PRIMARY KEY (project_id, user_id)
+  role VARCHAR(20) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT project_members_project_user_key UNIQUE (project_id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS campaigns (
@@ -339,6 +343,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   before JSONB,
   after JSONB,
   reason TEXT,
+  metadata JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS audit_logs_entity_idx ON audit_logs (entity_type, entity_id);
@@ -402,25 +407,6 @@ CREATE TABLE IF NOT EXISTS user_achievements (
   source_type VARCHAR(40),
   source_id INTEGER,
   PRIMARY KEY (user_id, achievement_id)
-);
-
-CREATE TABLE IF NOT EXISTS teams (
-  id SERIAL PRIMARY KEY,
-  slug VARCHAR(80) UNIQUE NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  tagline TEXT,
-  owner_user_id INTEGER NOT NULL REFERENCES users(id),
-  join_code VARCHAR(12) UNIQUE NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS teams_owner_idx ON teams (owner_user_id);
-
-CREATE TABLE IF NOT EXISTS team_members (
-  team_id INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role VARCHAR(20) NOT NULL DEFAULT 'member',
-  joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (team_id, user_id)
 );
 
 -- Universal on-chain task model. These tables are chain-neutral: a version
@@ -602,13 +588,58 @@ async function migrate() {
     await client.query('ALTER TABLE points_events ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL');
     await client.query('ALTER TABLE points_events ADD COLUMN IF NOT EXISTS campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL');
     await client.query('ALTER TABLE points_events ADD COLUMN IF NOT EXISTS quest_id INTEGER REFERENCES quests(id) ON DELETE SET NULL');
-    // Project Ownership: visibility + soft-delete state, and a per-member
-    // permission override map so a grant can extend (or withhold) a role's
-    // default abilities without inventing a new role.
+    // Project visibility + soft-delete state.
     await client.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS banner_url TEXT');
     await client.query("ALTER TABLE projects ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public'");
     await client.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ');
-    await client.query("ALTER TABLE project_members ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{}'");
+    // Project access: the Creator lives on the project row (creator_id), and a
+    // project member is only ever an Admin or a Moderator. owner_user_id is
+    // backfilled into creator_id one last time, then dropped along with the
+    // per-member permissions override map, so the new model is the only one.
+    await client.query('ALTER TABLE projects ADD COLUMN IF NOT EXISTS creator_id INTEGER REFERENCES users(id)');
+    await client.query(`DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'projects' AND column_name = 'owner_user_id') THEN
+          UPDATE projects SET creator_id = owner_user_id WHERE creator_id IS NULL;
+        END IF;
+      END $$`);
+    await client.query('ALTER TABLE projects ALTER COLUMN creator_id SET NOT NULL');
+    await client.query('ALTER TABLE projects DROP COLUMN IF EXISTS owner_user_id');
+    await client.query('ALTER TABLE project_members DROP COLUMN IF EXISTS permissions');
+    await client.query('ALTER TABLE project_members ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT \'active\'');
+    await client.query('ALTER TABLE project_members ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()');
+    await client.query('ALTER TABLE project_members ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()');
+    await client.query('ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT \'{}\'');
+    // project_members had a composite primary key (project_id, user_id); the
+    // brief wants a surrogate id plus a unique constraint. The whole reshape
+    // is guarded so a repeat boot is a clean no-op.
+    await client.query(`DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'project_members' AND column_name = 'id') THEN
+          ALTER TABLE project_members ADD COLUMN id BIGSERIAL;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_constraint
+                    WHERE conname = 'project_members_pkey'
+                      AND conrelid = 'project_members'::regclass
+                      AND pg_get_constraintdef(oid) LIKE '%project_id, user_id%') THEN
+          ALTER TABLE project_members DROP CONSTRAINT project_members_pkey;
+          ALTER TABLE project_members ADD PRIMARY KEY (id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                        WHERE conname = 'project_members_project_user_key'
+                          AND conrelid = 'project_members'::regclass) THEN
+          ALTER TABLE project_members ADD CONSTRAINT project_members_project_user_key
+            UNIQUE (project_id, user_id);
+        END IF;
+      END $$`);
+    // Least-privilege role vocabulary: a Creator is not a member row, and the
+    // granular legacy roles collapse down to Moderator so nobody keeps more
+    // than the new two-role model grants.
+    await client.query("DELETE FROM project_members WHERE role = 'owner'");
+    await client.query("UPDATE project_members SET role = 'moderator' WHERE role IN ('editor', 'reviewer', 'analyst')");
+    await client.query("UPDATE project_members SET role = 'admin' WHERE role = 'admin'");
     await client.query('CREATE INDEX IF NOT EXISTS projects_status_idx ON projects (status, deleted_at)');
     // Campaign / quest fields the multi-project spec adds.
     await client.query("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public'");

@@ -6,7 +6,6 @@
     { label: 'Explore', path: '/', match: /^\/$/ },
     { label: 'Projects', path: '/projects', match: /^\/projects/ },
     { label: 'Campaigns', path: '/campaigns', match: /^\/campaigns$/ },
-    { label: 'Teams', path: '/teams', match: /^\/teams/ },
     { label: 'Profile', path: '/me', match: /^\/(me|u\/)/ },
     { label: 'Create', path: '/create', match: /^\/create/ },
   ];
@@ -134,7 +133,6 @@
     [/^\/$/, (V) => V.viewDiscover()],
     [/^\/campaigns$/, (V, m, params) => V.viewCampaigns(params)],
     [/^\/projects$/, (V, m, params) => V.viewProjects(params)],
-    [/^\/teams$/, (V, m, params) => V.viewTeams(params)],
     [/^\/create$/, (V) => V.viewCreate()],
   ];
 

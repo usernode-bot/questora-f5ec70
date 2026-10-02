@@ -68,7 +68,6 @@ app.get('/favicon.ico', (_req, res) => res.status(204).end());
 app.use('/api/v1/wallets', require('./src/routes/wallets'));
 app.use('/api/v1', require('./src/routes/credentials'));
 app.use('/api/v1', require('./src/routes/referrals'));
-app.use('/api/v1', require('./src/routes/teams'));
 app.use('/api/v1', require('./src/routes/creator'));
 app.use('/api/v1', require('./src/routes/quests'));
 app.use('/api/v1', require('./src/routes/misc'));

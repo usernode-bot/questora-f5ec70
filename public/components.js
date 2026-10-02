@@ -185,25 +185,8 @@ function emptyState(text, actionLabel, actionHref) {
     <p class="text-zinc-400">${escapeHtml(text)}</p>${action}</div>`;
 }
 
-// Per-member ability toggles for the ownership roster. Each row is one
-// explicit override; leaving it alone falls back to the role's default.
-// lockDelete disables the one ability only the owner may hand out.
-function permissionList(actions, permissions, lockDelete) {
-  const perms = permissions || {};
-  const holder = el('<div class="flex flex-wrap gap-x-3 gap-y-1.5"></div>');
-  for (const a of actions) {
-    const granted = Object.prototype.hasOwnProperty.call(perms, a) ? !!perms[a] : null;
-    const locked = lockDelete && a === 'delete_project';
-    holder.appendChild(el(`<label class="flex items-center gap-1.5 text-[11px] text-zinc-400">
-      <input type="checkbox" class="perm-toggle accent-violet-500" data-action="${escapeHtml(a)}" ${granted === true ? 'checked' : ''} ${locked ? 'disabled' : ''}>
-      <span>${escapeHtml(a.replace(/_/g, ' '))}</span>
-    </label>`));
-  }
-  return holder;
-}
-
-// The project deletion card: two steps, archive-first. Only rendered for a
-// caller that holds delete_project.
+// The project deletion card: two steps, archive-first. Only rendered for the
+// project's Creator.
 function dangerZone() {
   return el(`<div class="rounded-xl border border-red-900/60 bg-red-950/20 p-4 max-w-xl">
     <h2 class="font-semibold mb-1 text-red-300">Danger zone</h2>
@@ -220,6 +203,6 @@ function dangerZone() {
   </div>`);
 }
 
-return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState, permissionList, dangerZone };
+return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState, dangerZone };
 
 })();
