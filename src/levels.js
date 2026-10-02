@@ -39,9 +39,10 @@ async function maybeLevelUp(client, userId, previousXp, newXp) {
   const after = levelForXp(newXp, thr.rows.map(r => ({ level: r.level, min_xp: Number(r.min_xp) })));
   if (after > before) {
     await client.query(
-      `INSERT INTO notifications (user_id, type, title, body, link)
-       VALUES ($1, 'level_up', $2, $3, '/u/' || (SELECT username FROM users WHERE id = $1))`,
-      [userId, 'Level up!', `You reached level ${after}. Keep questing.`]
+      `INSERT INTO notifications (user_id, type, title, body, link, dedupe_key)
+       VALUES ($1, 'level_up', $2, $3, '/u/' || (SELECT username FROM users WHERE id = $1), $4)
+       ON CONFLICT (dedupe_key) DO NOTHING`,
+      [userId, 'Level up!', `You reached level ${after}. Keep questing.`, 'level:' + after + ':' + userId]
     );
   }
   return { leveledUp: after > before, level: after, previous: before };

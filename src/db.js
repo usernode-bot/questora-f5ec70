@@ -732,6 +732,25 @@ async function migrate() {
     await client.query('ALTER TABLE xp_events ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(200)');
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS xp_events_idempotency_key ON xp_events (idempotency_key)
        WHERE idempotency_key IS NOT NULL`);
+    // Creation idempotency: a double-submitted create carries the same
+    // client key and the unique index makes the second insert a no-op.
+    // Non-partial unique indexes: Postgres treats NULLs as distinct, so a
+    // nullable key still allows any number of unkeyed rows while an
+    // ON CONFLICT (idempotency_key) can name the index as its arbiter.
+    for (const t of ['projects', 'campaigns', 'quests', 'quest_tasks']) {
+      await client.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(200)`);
+      await client.query(`DROP INDEX IF EXISTS ${t}_idempotency_key`);
+      await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${t}_idempotency_key ON ${t} (idempotency_key)`);
+    }
+    // Notification dedupe: a generator stamps a stable key (type plus its
+    // subject), so a retried write cannot stack a second copy of the same
+    // notification. Rows written without a key are unaffected.
+    await client.query('ALTER TABLE notifications ADD COLUMN IF NOT EXISTS dedupe_key VARCHAR(200)');
+    // A plain unique index (NULLs are distinct in Postgres) so unkeyed rows,
+    // including every pre-existing one, never collide while a stamped key
+    // makes ON CONFLICT (dedupe_key) DO NOTHING work.
+    await client.query('DROP INDEX IF EXISTS notifications_dedupe_key');
+    await client.query('CREATE UNIQUE INDEX IF NOT EXISTS notifications_dedupe_key ON notifications (dedupe_key)');
     // Scope every task to its quest's project and campaign (idempotent).
     await client.query(`
       UPDATE quest_tasks t SET

@@ -86,9 +86,10 @@ async function awardBadge(client, userId, badgeId, sourceType, sourceId) {
   if (ins.rows.length) {
     const b = await client.query('SELECT name FROM badges WHERE id = $1', [badgeId]);
     await client.query(
-      `INSERT INTO notifications (user_id, type, title, body)
-       VALUES ($1, 'badge_earned', $2, $3)`,
-      [userId, 'Badge unlocked', b.rows[0] ? b.rows[0].name : '']
+      `INSERT INTO notifications (user_id, type, title, body, dedupe_key)
+       VALUES ($1, 'badge_earned', $2, $3, $4)
+       ON CONFLICT (dedupe_key) DO NOTHING`,
+      [userId, 'Badge unlocked', b.rows[0] ? b.rows[0].name : '', 'badge:' + badgeId + ':' + userId]
     );
   }
   return ins.rows.length > 0;
@@ -165,16 +166,19 @@ async function completeQuest(questId, userId) {
       );
       credentialId = cr.rows[0].id;
       await client.query(
-        `INSERT INTO notifications (user_id, type, title, body, link)
-         VALUES ($1, 'credential_earned', 'Credential issued', $2, $3)`,
-        [userId, `${credRew.rows[0].title} is on your profile.`, '/credentials/' + credentialId]
+        `INSERT INTO notifications (user_id, type, title, body, link, dedupe_key)
+         VALUES ($1, 'credential_earned', 'Credential issued', $2, $3, $4)
+         ON CONFLICT (dedupe_key) DO NOTHING`,
+        [userId, `${credRew.rows[0].title} is on your profile.`, '/credentials/' + credentialId,
+          'credential:' + credentialId]
       );
     }
 
     await client.query(
-      `INSERT INTO notifications (user_id, type, title, body)
-       VALUES ($1, 'quest_completed', $2, $3)`,
-      [userId, 'Quest completed', `${quest.title} verified. +${xpRes.awarded} XP.`]
+      `INSERT INTO notifications (user_id, type, title, body, dedupe_key)
+       VALUES ($1, 'quest_completed', $2, $3, $4)
+       ON CONFLICT (dedupe_key) DO NOTHING`,
+      [userId, 'Quest completed', `${quest.title} verified. +${xpRes.awarded} XP.`, 'quest:' + questId + ':' + userId]
     );
 
     // Campaign completion: all required quests done -> notify.
@@ -189,9 +193,11 @@ async function completeQuest(questId, userId) {
         [userId, quest.campaign_id]);
       if (!already.rows.length) {
         await client.query(
-          `INSERT INTO notifications (user_id, type, title, body)
-           VALUES ($1, 'campaign_completed', $2, $3)`,
-          [userId, 'Campaign completed', 'You finished every required quest. Nice work.']
+          `INSERT INTO notifications (user_id, type, title, body, dedupe_key)
+           VALUES ($1, 'campaign_completed', $2, $3, $4)
+           ON CONFLICT (dedupe_key) DO NOTHING`,
+          [userId, 'Campaign completed', 'You finished every required quest. Nice work.',
+            'campaign:' + quest.campaign_id + ':' + userId]
         );
       }
     }

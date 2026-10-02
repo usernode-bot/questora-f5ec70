@@ -39,9 +39,11 @@ async function evaluate(client, userId) {
     if (ins.rows.length) {
       unlocked.push({ key: a.key, name: a.name });
       await c.query(
-        `INSERT INTO notifications (user_id, type, title, body)
-         VALUES ($1, 'achievement_unlocked', $2, $3)`,
-        [userId, 'Achievement unlocked', `${a.name} is now on your profile.`]);
+        `INSERT INTO notifications (user_id, type, title, body, dedupe_key)
+         VALUES ($1, 'achievement_unlocked', $2, $3, $4)
+         ON CONFLICT (dedupe_key) DO NOTHING`,
+        [userId, 'Achievement unlocked', `${a.name} is now on your profile.`,
+          'achievement:' + a.id + ':' + userId]);
     }
   }
   return { unlocked };

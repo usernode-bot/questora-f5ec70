@@ -192,6 +192,16 @@ router.post('/notifications/read', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Mark one notification read. The row is resolved for this user only, so an
+// id swapped in the URL cannot touch someone else's notification.
+router.post('/notifications/:id/read', async (req, res) => {
+  const r = await pool.query(
+    `UPDATE notifications SET read_at = NOW()
+     WHERE id = $1 AND user_id = $2 AND read_at IS NULL RETURNING id`,
+    [req.params.id, userId(req)]);
+  res.json({ ok: true, id: Number(req.params.id), updated: r.rowCount });
+});
+
 router.get('/notifications/prefs', async (req, res) => {
   const s = await pool.query('SELECT notify FROM user_settings WHERE user_id = $1', [userId(req)]);
   res.json({ prefs: (s.rows[0] && s.rows[0].notify) || {} });

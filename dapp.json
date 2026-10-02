@@ -186,9 +186,15 @@
       ]
     },
     {
-      "name": "Header offers Connect wallet",
-      "path": "/",
-      "expectText": "Connect wallet"
+      "name": "Header account menu lists the profile destinations",
+      "path": "/?menu=account",
+      "expectText": "Account Settings",
+      "id": "nav.account-menu",
+      "visual": true,
+      "impact": [
+        "public/index.html",
+        "public/app.js"
+      ]
     },
     {
       "name": "Wallet chain picker is reachable",
@@ -216,6 +222,68 @@
         "public/**",
         "src/**"
       ]
+    },
+    {
+      "id": "nav.theme-menu",
+      "name": "Theme menu offers Light, Dark and System",
+      "path": "/?menu=theme",
+      "expectText": "System",
+      "visual": true,
+      "impact": [
+        "public/**"
+      ]
+    },
+    {
+      "id": "nav.notifications-panel",
+      "name": "Notification panel opens from the header bell",
+      "path": "/?menu=notifications",
+      "expectText": "View all",
+      "visual": true,
+      "impact": [
+        "public/index.html",
+        "public/app.js",
+        "src/routes/misc.js"
+      ]
+    },
+    {
+      "id": "nav.create-menu",
+      "name": "Create menu offers Project to a visitor with no project",
+      "path": "/?menu=create",
+      "expectText": "Project",
+      "visual": true,
+      "impact": [
+        "public/app.js"
+      ]
+    },
+    {
+      "name": "Account settings page renders",
+      "path": "/settings",
+      "expectText": "Account Settings"
+    },
+    {
+      "name": "My projects page renders an empty state",
+      "path": "/my-projects",
+      "expectText": "My Projects"
+    },
+    {
+      "name": "Unknown paths show the not-found view",
+      "path": "/definitely-not-a-page",
+      "expectText": "Page not found"
+    },
+    {
+      "name": "Legacy flat campaign link still resolves",
+      "path": "/campaigns/staging-demo-welcome-campaign",
+      "expectText": "Quests"
+    },
+    {
+      "name": "Legacy project alias still resolves",
+      "path": "/p/staging-demo-octra-builders",
+      "expectText": "Staging demo Octra Builders"
+    },
+    {
+      "name": "Header offers Connect wallet",
+      "path": "/",
+      "expectText": "Connect wallet"
     }
   ],
   "visibility": {
