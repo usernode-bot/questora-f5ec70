@@ -6,7 +6,6 @@
     { label: 'Explore', path: '/', match: /^\/$/ },
     { label: 'Projects', path: '/projects', match: /^\/projects/ },
     { label: 'Campaigns', path: '/campaigns', match: /^\/campaigns$/ },
-    { label: 'Leaderboard', path: '/leaderboard', match: /^\/leaderboard/ },
     { label: 'Teams', path: '/teams', match: /^\/teams/ },
     { label: 'Profile', path: '/me', match: /^\/(me|u\/)/ },
     { label: 'Create', path: '/create', match: /^\/create/ },
@@ -133,7 +132,6 @@
 
   const ROUTES = [
     [/^\/$/, (V) => V.viewDiscover()],
-    [/^\/leaderboard$/, (V, m, params) => V.viewLeaderboardHub(params)],
     [/^\/campaigns$/, (V, m, params) => V.viewCampaigns(params)],
     [/^\/projects$/, (V, m, params) => V.viewProjects(params)],
     [/^\/teams$/, (V, m, params) => V.viewTeams(params)],

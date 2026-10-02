@@ -574,84 +574,6 @@ async function viewProfile(username, params) {
   }
 }
 
-// ---------- leaderboard ----------
-async function viewLeaderboard(params) {
-  const by = params.get('by') === 'points' ? 'points' : 'xp';
-  const seasonParam = params.get('season') || '';
-  const wrap = el('<div></div>');
-  mount(wrap);
-  wrap.appendChild(el(`
-    <div class="flex items-center justify-between mb-4">
-      <h1 class="text-2xl font-bold">Leaderboard</h1>
-      <div class="flex gap-1 bg-zinc-900 rounded-full p-1 border border-zinc-800">
-        <a href="/leaderboard?by=xp${seasonParam ? '&season=' + encodeURIComponent(seasonParam) : ''}" class="px-4 py-1.5 rounded-full text-sm font-medium ${by === 'xp' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">XP</a>
-        <a href="/leaderboard?by=points" class="px-4 py-1.5 rounded-full text-sm font-medium ${by === 'points' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Points</a>
-      </div>
-    </div>`));
-  // Season picker (Phase 3): seasons only affect the XP board.
-  let seasonRow = null;
-  if (by === 'xp') {
-    try {
-      const s = await window.QuestoraAPI.api.get('/api/v1/seasons');
-      if (s.seasons.length) {
-        seasonRow = el('<div class="flex flex-wrap gap-2 mb-4"></div>');
-        const chip = (label, slug, on) => {
-          const href = slug ? `/leaderboard?by=xp&season=${encodeURIComponent(slug)}` : '/leaderboard?by=xp';
-          return el(`<a href="${href}" class="px-3 py-1.5 rounded-full text-xs font-medium border ${on ? 'bg-violet-600 border-violet-600 text-white' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}">${escapeHtml(label)}</a>`);
-        };
-        seasonRow.appendChild(chip('All time', '', !seasonParam));
-        for (const sn of s.seasons) {
-          const mult = sn.xp_multiplier ? ` · ${sn.xp_multiplier}x XP` : '';
-          seasonRow.appendChild(chip(sn.name + mult, sn.slug, seasonParam === sn.slug));
-        }
-        wrap.appendChild(seasonRow);
-      }
-    } catch { /* seasons list is optional chrome */ }
-  }
-  let data;
-  try {
-    data = await window.QuestoraAPI.api.get(
-      '/api/v1/leaderboard?by=' + by + (seasonParam ? '&season=' + encodeURIComponent(seasonParam) : ''));
-  }
-  catch (err) { wrap.appendChild(el(`<p class="text-zinc-400">${escapeHtml(err.message)}</p>`)); return; }
-  if (data.season) {
-    wrap.appendChild(el(`<p class="text-xs text-zinc-600 mb-3">Season board: only XP earned during ${escapeHtml(data.season.name)} counts. This season awards ${data.season.xp_multiplier}x XP.</p>`));
-  }
-  if (!data.entries.length) {
-    wrap.appendChild(el('<div class="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-8 text-center"><p class="text-zinc-400 mb-1">No entries yet.</p><p class="text-sm text-zinc-600">Complete a quest to appear here.</p></div>'));
-    return;
-  }
-  const list = el('<div class="space-y-2"></div>');
-  data.entries.forEach((e, i) => {
-    list.appendChild(el(`
-      <a href="/u/${encodeURIComponent(e.username)}" class="flex items-center gap-4 rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 hover:border-violet-500/40 transition-colors">
-        <span class="w-8 text-center font-bold ${i === 0 ? 'text-violet-300' : 'text-zinc-500'}">${i + 1}</span>
-        <span class="w-8 h-8 rounded-full bg-violet-600/30 flex items-center justify-center text-xs font-bold text-violet-200">${escapeHtml((e.display_name || e.username).slice(0, 2).toUpperCase())}</span>
-        <span class="min-w-0"><span class="block font-medium truncate">${escapeHtml(e.display_name || e.username)}</span><span class="block text-xs text-zinc-600">@${escapeHtml(e.username)}</span></span>
-        <span class="ml-auto font-mono text-violet-300">${e.score.toLocaleString()}</span>
-      </a>`));
-  });
-  wrap.appendChild(list);
-  // Pin my own row when the top 50 does not include me.
-  const meData = await loadMe();
-  if (meData && meData.user && !data.entries.some(e => e.username === meData.user.username)) {
-    try {
-      const mine = await window.QuestoraAPI.api.get('/api/v1/users/' + encodeURIComponent(meData.user.username));
-      const mu = mine.user || mine;
-      if (mine.leaderboard_rank) {
-        list.appendChild(el('<div class="flex items-center gap-4 px-4"><span class="text-xs text-zinc-600">···</span></div>'));
-        list.appendChild(el(`
-          <a href="/u/${encodeURIComponent(meData.user.username)}" class="flex items-center gap-4 rounded-xl border border-violet-500/40 bg-violet-600/10 px-4 py-3">
-            <span class="w-8 text-center font-bold text-violet-300">${mine.leaderboard_rank}</span>
-            <span class="w-8 h-8 rounded-full bg-violet-600/30 flex items-center justify-center text-xs font-bold text-violet-200">${escapeHtml((meData.user.display_name || meData.user.username).slice(0, 2).toUpperCase())}</span>
-            <span class="min-w-0"><span class="block font-medium truncate">You</span><span class="block text-xs text-zinc-600">@${escapeHtml(meData.user.username)}</span></span>
-            <span class="ml-auto font-mono text-violet-300">${(by === 'points' ? mu.points : mu.xp).toLocaleString()}</span>
-          </a>`));
-      }
-    } catch { /* pinning is optional chrome */ }
-  }
-}
-
 // ---------- teams ----------
 async function viewTeams(params) {
   const wrap = el('<div></div>');
@@ -1480,52 +1402,6 @@ async function viewScopedLeaderboard(opts) {
   }
   board.entries.forEach((e, i) => boardEl.appendChild(leaderboardRow(e, i)));
 }
-
-// ---------- leaderboard hub ----------
-async function viewLeaderboardHub(params) {
-  params = params || new URLSearchParams();
-  const by = params.get('by') === 'points' ? 'points' : 'xp';
-  const seasonParam = params.get('season') || '';
-  const wrap = el('<div></div>');
-  mount(wrap);
-  wrap.appendChild(el(`
-    <div>
-      <h1 class="text-2xl font-bold mb-1">Leaderboard</h1>
-      <p class="text-sm text-zinc-500 mb-4">Pick a project to see whose ranking it is, and how it got that way.</p>
-      <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-        <div class="flex gap-1 bg-zinc-900 rounded-full p-1 border border-zinc-800">
-          <a href="/leaderboard?by=xp${seasonParam ? '&season=' + encodeURIComponent(seasonParam) : ''}" class="px-4 py-1.5 rounded-full text-sm font-medium ${by === 'xp' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">XP</a>
-          <a href="/leaderboard?by=points" class="px-4 py-1.5 rounded-full text-sm font-medium ${by === 'points' ? 'bg-violet-600 text-white' : 'text-zinc-400'}">Points</a>
-        </div>
-        <a href="/projects" class="text-sm text-violet-300">Scoped leaderboards</a>
-      </div>
-    </div>`));
-  let seasonRow = null;
-  if (by === 'xp') {
-    try {
-      const s = await window.QuestoraAPI.api.get('/api/v1/seasons');
-      if (s.seasons.length) {
-        seasonRow = el('<div class="flex flex-wrap gap-2 mb-4"></div>');
-        const chip = (label, slug, on) => el(`<a href="${slug ? `/leaderboard?by=xp&season=${encodeURIComponent(slug)}` : '/leaderboard?by=xp'}" class="px-3 py-1.5 rounded-full text-xs font-medium border ${on ? 'bg-violet-600 border-violet-600 text-white' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}">${escapeHtml(label)}</a>`);
-        seasonRow.appendChild(chip('All time', '', !seasonParam));
-        for (const sn of s.seasons) seasonRow.appendChild(chip(sn.name + (sn.xp_multiplier ? ` \u00b7 ${sn.xp_multiplier}x XP` : ''), sn.slug, seasonParam === sn.slug));
-        wrap.appendChild(seasonRow);
-      }
-    } catch { /* seasons list is optional chrome */ }
-  }
-  let data;
-  try { data = await window.QuestoraAPI.api.get('/api/v1/leaderboard?by=' + by + (seasonParam ? '&season=' + encodeURIComponent(seasonParam) : '')); }
-  catch (err) { wrap.appendChild(el(`<p class="text-zinc-400">${escapeHtml(err.message)}</p>`)); return; }
-  if (data.season) wrap.appendChild(el(`<p class="text-xs text-zinc-600 mb-3">Season board: only XP earned during ${escapeHtml(data.season.name)} counts. This season awards ${data.season.xp_multiplier}x XP.</p>`));
-  if (!data.entries.length) {
-    wrap.appendChild(el(emptyState('No participants have earned points yet.')));
-    return;
-  }
-  const list = el('<div class="space-y-2"></div>');
-  data.entries.forEach((e, i) => list.appendChild(leaderboardRow(e, i)));
-  wrap.appendChild(list);
-}
-
 
 // ---------- project admin dashboard ----------
 // A management shell for one project: sidebar + management tables. Every
@@ -2557,8 +2433,8 @@ async function viewAdmin() {
   load();
 }
 
-window.QV = { viewDiscover, viewCampaigns, viewCampaign, viewQuest, viewProfile, viewLeaderboard, viewTeams, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe,
-  viewProjects, viewProjectOverview, viewProjectCampaigns, viewProjectQuests, viewCampaignDetail, viewQuestDetail, viewScopedLeaderboard, viewLeaderboardHub, viewDashboard, resolveCampaignPath };
+window.QV = { viewDiscover, viewCampaigns, viewCampaign, viewQuest, viewProfile, viewTeams, viewCreate, viewProject, viewNotifications, viewAdmin, viewSearch, viewJoin, viewCredential, loadMe,
+  viewProjects, viewProjectOverview, viewProjectCampaigns, viewProjectQuests, viewCampaignDetail, viewQuestDetail, viewScopedLeaderboard, viewDashboard, resolveCampaignPath };
 
 bindQUI();
 return window.QV;

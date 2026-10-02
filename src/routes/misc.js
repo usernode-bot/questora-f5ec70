@@ -178,39 +178,6 @@ router.get('/seasons', async (_req, res) => {
   res.json({ seasons: await seasons.list(pool) });
 });
 
-// ---- leaderboard ----
-router.get('/leaderboard', async (req, res) => {
-  const by = req.query.by === 'points' ? 'points' : 'xp';
-  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-  const limit = 50;
-  const offset = (page - 1) * limit;
-  if (by === 'points') {
-    const { rows } = await pool.query(
-      `SELECT u.username, u.display_name, u.avatar_url, SUM(pe.amount) AS score
-       FROM points_events pe JOIN users u ON u.id = pe.user_id
-       GROUP BY u.id ORDER BY score DESC LIMIT $1 OFFSET $2`, [limit, offset]);
-    return res.json({ by, entries: rows.map(r => ({ ...r, score: Number(r.score) })) });
-  }
-  // Seasonal board (Phase 3): when ?season= is given, sum only the XP
-  // events stamped with that season. Without it, the all-time board.
-  let season = null;
-  if (req.query.season) {
-    season = await seasons.find(req.query.season, pool);
-    if (!season) return res.status(400).json({ error: 'Unknown season' });
-  }
-  const { rows } = await pool.query(
-    `SELECT u.username, u.display_name, u.avatar_url, SUM(x.amount) AS score
-     FROM xp_events x JOIN users u ON u.id = x.user_id
-     WHERE ($1::int IS NULL OR x.season_id = $1)
-     GROUP BY u.id ORDER BY score DESC LIMIT $2 OFFSET $3`,
-    [season ? season.id : null, limit, offset]);
-  res.json({
-    by,
-    entries: rows.map(r => ({ ...r, score: Number(r.score) })),
-    season: season ? { id: season.id, slug: season.slug, name: season.name, xp_multiplier: Number(season.xp_multiplier) } : null,
-  });
-});
-
 // ---- notifications ----
 router.get('/notifications', async (req, res) => {
   const { rows } = await pool.query(

@@ -25,11 +25,6 @@
       "expectText": "Quests"
     },
     {
-      "name": "Leaderboard hub shows seeded users",
-      "path": "/leaderboard",
-      "expectText": "staging-demo-user-1"
-    },
-    {
       "name": "Seeded profile renders",
       "path": "/u/staging-demo-user-1",
       "expectText": "Staging demo user 1"
@@ -73,11 +68,6 @@
       "name": "Profile achievements tab renders",
       "path": "/u/staging-demo-user-1?tab=achievements",
       "expectText": "First Quest"
-    },
-    {
-      "name": "Seasonal leaderboard renders",
-      "path": "/leaderboard?season=staging-demo-season",
-      "expectText": "Staging demo Season"
     },
     {
       "name": "Teams page renders with seeded team",

@@ -19,7 +19,7 @@ verified server-side, and earn XP, points, badges and leaderboard position.
   transaction with UNIQUE constraints, so retries can never double-pay
 - **Levels** from admin-editable thresholds (never hardcoded)
 - **Profiles** at `/u/{username}` with badges, activity and rank
-- **Leaderboard** by XP or points
+- **Leaderboards** scoped to a project, campaign or quest
 - **Creator wizard** at `/create`: project, campaign, first quest
 - **Project dashboard**: participants, review queue (approve/reject with
   required reason), analytics
