@@ -250,7 +250,11 @@ test('address validation is per-chain', () => {
   assert.ok(!adapterFor('solana').validateAddress('not-base58-too-short'));
   assert.ok(adapterFor('sui').validateAddress('0x' + 'a'.repeat(64)));
   assert.ok(adapterFor('aptos').validateAddress('0x2'));
-  assert.ok(adapterFor('octra').validateAddress('oct1abcdefghijklmnopqrstuvwxyz'));
+  // 0xio addresses are "oct" + base58(sha256(publicKey)): 47 chars, no oct1 prefix.
+  const octKey = crypto.generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'der' }).slice(12);
+  const octAddr = 'oct' + require('../src/verify/bs58').encode(crypto.createHash('sha256').update(octKey).digest());
+  assert.ok(adapterFor('octra').validateAddress(octAddr), 'a real derived Octra address validates');
+  assert.ok(!adapterFor('octra').validateAddress('oct1abc'), 'a too-short body does not');
 });
 
 test('message builders: EVM lowercases, Ed25519 chains preserve the address', () => {
@@ -263,12 +267,63 @@ test('message builders: EVM lowercases, Ed25519 chains preserve the address', ()
   assert.equal(adapterFor('sui').normalizeAddress('0x2'), '0x' + '0'.repeat(63) + '2');
 });
 
-test('Ed25519 verification accepts the right key and rejects a wrong message', () => {
+// ---- key-bound verification (Sui, Aptos, Octra) ----------------------------
+const { blake2b } = require('../src/verify/blake2b');
+const MSG = 'Questora wallet verification\n\nAddress: ADDR\nNonce: n3';
+const newKey = () => {
   const kp = crypto.generateKeyPairSync('ed25519');
-  const raw = kp.publicKey.export({ type: 'spki', format: 'der' }).slice(12);
-  const msg = 'Questora wallet verification\n\nAddress: 0xabc\nNonce: n3';
+  return { kp, raw: kp.publicKey.export({ type: 'spki', format: 'der' }).slice(12) };
+};
+const uleb = (n) => { const o = []; do { let b = n & 0x7f; n >>>= 7; if (n) b |= 0x80; o.push(b); } while (n); return Buffer.from(o); };
+
+test('blake2b-256 matches the published vector, and blake2b-512 matches node', () => {
+  assert.equal(blake2b('abc', 32).toString('hex'), 'bddd813c634239723171ef3fee98579b94964e3bb1cb3e427262c8c068d52319');
+  const data = crypto.randomBytes(300);
+  assert.ok(blake2b(data, 64).equals(crypto.createHash('blake2b512').update(data).digest()));
+});
+
+test('Sui: serialized personal-message signature verifies only for the key-derived address', () => {
+  const { kp, raw } = newKey();
+  const address = '0x' + blake2b(Buffer.concat([Buffer.from([0]), raw]), 32).toString('hex');
+  const msg = MSG.replace('ADDR', address);
+  const bytes = Buffer.from(msg);
+  const digest = blake2b(Buffer.concat([Buffer.from([3, 0, 0]), uleb(bytes.length), bytes]), 32);
+  const sig = crypto.sign(null, digest, kp.privateKey);
+  const serialized = Buffer.concat([Buffer.from([0]), sig, raw]).toString('base64');
+  const sui = adapterFor('sui');
+  assert.ok(sui.verify({ address, message: msg, signature: serialized }));
+  assert.ok(!sui.verify({ address: '0x' + 'ab'.repeat(32), message: msg, signature: serialized }), 'a different address is refused');
+  assert.ok(!sui.verify({ address, message: msg + 'x', signature: serialized }), 'a tampered message is refused');
+  assert.ok(!sui.verify({ address, message: msg, signature: sig.toString('base64') }), 'a bare signature without the key is refused');
+});
+
+test('Aptos: the signing key must derive the account address', () => {
+  const { kp, raw } = newKey();
+  const address = '0x' + crypto.createHash('sha3-256').update(Buffer.concat([raw, Buffer.from([0])])).digest('hex');
+  const msg = 'APTOS\nmessage: ' + MSG.replace('ADDR', address);
   const sig = crypto.sign(null, Buffer.from(msg), kp.privateKey);
-  assert.ok(adapterFor('aptos').verify({ publicKey: raw, message: msg, signature: sig }));
-  assert.ok(!adapterFor('aptos').verify({ publicKey: raw, message: 'tampered', signature: sig }));
-  assert.ok(adapterFor('sui').verify({ publicKey: raw, message: msg, signature: sig }));
+  const aptos = adapterFor('aptos');
+  assert.ok(aptos.verify({ address, message: msg, signature: sig, publicKey: raw }));
+  assert.ok(!aptos.verify({ address: '0x' + '11'.repeat(32), message: msg, signature: sig, publicKey: raw }), 'someone else\'s address is refused');
+  assert.ok(!aptos.verify({ address, message: 'tampered', signature: sig, publicKey: raw }));
+});
+
+test('Octra: 0xio framed signature verifies for the key-derived address', () => {
+  const { kp, raw } = newKey();
+  const address = 'oct' + require('../src/verify/bs58').encode(crypto.createHash('sha256').update(raw).digest());
+  const msg = MSG.replace('ADDR', address);
+  const framed = `Octra Signed Message:\n${Buffer.byteLength(msg)}\n${msg}`;
+  const sig = crypto.sign(null, Buffer.from(framed), kp.privateKey).toString('base64');
+  const octra = adapterFor('octra');
+  assert.ok(octra.verify({ address, message: msg, signature: sig, publicKey: raw.toString('base64') }));
+  const unframed = crypto.sign(null, Buffer.from(msg), kp.privateKey).toString('base64');
+  assert.ok(!octra.verify({ address, message: msg, signature: unframed, publicKey: raw.toString('base64') }), 'a raw (unframed) signature is refused');
+  assert.ok(!octra.verify({ address: 'oct' + 'A'.repeat(44), message: msg, signature: sig, publicKey: raw.toString('base64') }), 'a key that does not derive the address is refused');
+});
+
+test('Solana still verifies a raw Ed25519 signature over the message', () => {
+  const { kp, raw } = newKey();
+  const address = require('../src/verify/bs58').encode(raw);
+  const sig = crypto.sign(null, Buffer.from(MSG), kp.privateKey);
+  assert.ok(adapterFor('solana').verify({ address, message: MSG, signature: sig.toString('base64') }));
 });

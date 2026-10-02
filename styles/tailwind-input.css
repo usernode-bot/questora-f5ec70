@@ -43,3 +43,10 @@ html.light .text-zinc-400 { color: #52525b; }
 html.light .text-zinc-500 { color: #71717a; }
 html.light .text-zinc-600 { color: #a1a1aa; }
 html.light .placeholder\:text-zinc-600::placeholder { color: #a1a1aa; }
+/* Wallet UI tints (public/wallets/ui.js). The accent text colours there are
+ * written for a dark surface; on the light theme they are darkened, scoped to
+ * the wallet UI so no existing screen changes. */
+html.light .wallet-ui .text-amber-100, html.light .wallet-ui .text-amber-300 { color: #92400e; }
+html.light .wallet-ui .text-red-200, html.light .wallet-ui .text-red-300 { color: #b91c1c; }
+html.light .wallet-ui .text-emerald-300 { color: #047857; }
+html.light .wallet-ui .text-sky-300 { color: #0369a1; }

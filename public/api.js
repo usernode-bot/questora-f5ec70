@@ -27,7 +27,11 @@
     });
     if (res.status === 401) throw new Error('You need to sign in through Homeroom');
     var data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    if (!res.ok) {
+      var err = new Error(data.error || 'Something went wrong');
+      err.code = data.code; err.status = res.status;
+      throw err;
+    }
     return data;
   }
 
@@ -57,15 +61,5 @@
     invalidate: clearCache,
   };
 
-  // EVM sign-message helper kept for the quest wallet_connect flow and as the
-  // EVM connector's signing primitive. Other chains live in wallets.js.
-  async function signMessage(address, message) {
-    if (window.ethereum) {
-      await window.ethereum.request({ method: 'eth_requestAccounts' });
-      return window.ethereum.request({ method: 'personal_sign', params: [message, address] });
-    }
-    throw new Error('No browser wallet found. Install MetaMask or open Questora in a wallet browser.');
-  }
-
-  window.QuestoraAPI = { api, signMessage, TOKEN };
+  window.QuestoraAPI = { api, TOKEN };
 })();
