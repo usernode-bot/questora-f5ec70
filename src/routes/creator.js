@@ -6,6 +6,7 @@ const { slugify, randomId, validUrl } = require('../util');
 const amount = require('../verify/amount');
 const { maskUrl } = require('../verify/evm/rpc-pool');
 const { adapterFor } = require('../verify/chain-adapter');
+const networkPresets = require('../network-presets');
 
 const router = express.Router();
 
@@ -1107,11 +1108,30 @@ function sanitizeNetworkRow(n, rpcs) {
   };
 }
 
+// The preset catalog. Public chain parameters only, so no permission needed
+// beyond being signed in.
+router.get('/network-presets', (req, res) => {
+  res.json({ presets: networkPresets.PRESETS });
+});
+
 router.post('/projects/:id/networks', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
   if (!(await rbac.requireProjectPermission(req, res, p.id, 'verification.manage'))) return;
-  const b = req.body || {};
+  let b = req.body || {};
+  // A preset supplies every field and its RPC endpoints; anything the creator
+  // sent explicitly overrides the preset's value.
+  let preset = null;
+  if (b.preset_id) {
+    preset = networkPresets.getPreset(String(b.preset_id));
+    if (!preset) return res.status(400).json({ error: 'Unknown network preset' });
+    const fromPreset = networkPresets.presetToNetworkFields(preset);
+    const overrides = {};
+    for (const k of Object.keys(fromPreset)) if (b[k] !== undefined && b[k] !== null && b[k] !== '') overrides[k] = b[k];
+    b = { ...fromPreset, ...overrides };
+    const dup = await pool.query('SELECT 1 FROM task_networks WHERE project_id = $1 AND name = $2', [p.id, b.name]);
+    if (dup.rows.length) return res.status(409).json({ error: 'This project already has a network named ' + b.name });
+  }
   if (!b.name || !String(b.name).trim()) return res.status(400).json({ error: 'A network name is required' });
   const ns = String(b.chain_namespace || 'eip155');
   if (!adapterFor(ns)) {
@@ -1132,8 +1152,24 @@ router.post('/projects/:id/networks', async (req, res) => {
         Number.isInteger(Number(b.native_decimals)) ? Number(b.native_decimals) : null,
         b.explorer_url || null, b.explorer_tx_url || null, b.explorer_address_url || null,
         !!b.is_testnet, b.finality_model || null, b.address_format || null]);
-    await audit(userId(req), 'network.create', 'network', rows[0].id, null, sanitizeNetworkRow(rows[0], []), null);
-    res.json({ network: sanitizeNetworkRow(rows[0], []) });
+    // Preset RPCs (or the creator's own list, when they typed one) become the
+    // network's endpoints: first is primary, the rest are backups in order.
+    const rpcUrls = preset
+      ? (Array.isArray(req.body.rpc_urls) ? req.body.rpc_urls.map(u => String(u).trim()).filter(Boolean) : preset.rpcs)
+      : [];
+    if (rpcUrls.some(u => !validUrl(u))) {
+      await pool.query('DELETE FROM task_networks WHERE id = $1', [rows[0].id]);
+      return res.status(400).json({ error: 'The RPC URL must start with http or https' });
+    }
+    const rpcRows = [];
+    for (let i = 0; i < rpcUrls.length; i++) {
+      const r = await pool.query(
+        `INSERT INTO task_rpcs (network_id, url, kind, priority, is_primary) VALUES ($1,$2,'https',$3,$4) RETURNING *`,
+        [rows[0].id, rpcUrls[i], i, i === 0]);
+      rpcRows.push(r.rows[0]);
+    }
+    await audit(userId(req), 'network.create', 'network', rows[0].id, null, sanitizeNetworkRow(rows[0], rpcRows), null);
+    res.json({ network: sanitizeNetworkRow(rows[0], rpcRows) });
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'This project already has a network with that chain id' });
     throw err;

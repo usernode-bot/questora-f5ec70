@@ -1358,6 +1358,81 @@ t('notifications, project roles and create idempotency', async () => {
   assert.equal(readForeign.updated, 0, "another user's notification cannot be marked read");
 }, { timeout: 30000 });
 
+t('network presets auto-load a network and its RPCs', async () => {
+  const db = require('../src/db');
+  pool = pool || db.pool;
+  await db.migrate();
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const uid = 830000000 + Math.floor(Math.random() * 60000000);
+  const token = jwt.sign({ id: uid, username: 'staging-demo-preset-' + (Date.now() % 100000000), pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' });
+  const auth = { 'x-usernode-token': token, 'content-type': 'application/json' };
+  const proj = (await (await fetch(base + '/api/v1/projects', {
+    method: 'POST', headers: auth, body: JSON.stringify({ name: 'Staging demo preset project' }) })).json()).project;
+
+  const list = await (await fetch(base + '/api/v1/network-presets', { headers: auth })).json();
+  assert.ok(list.presets.some((x) => x.id === 'base' && x.chainId === 8453));
+
+  // EVM: nothing but the preset id is needed.
+  const r1 = await fetch(base + `/api/v1/projects/${proj.id}/networks`, {
+    method: 'POST', headers: auth, body: JSON.stringify({ preset_id: 'base' }) });
+  assert.equal(r1.status, 200);
+  const base1 = (await r1.json()).network;
+  assert.equal(base1.chain_id, 8453);
+  assert.equal(base1.native_symbol, 'ETH');
+  assert.equal(base1.explorer_tx_url, 'https://basescan.org/tx/{tx}');
+  assert.equal(base1.is_testnet, false);
+  assert.equal(base1.rpcs.length, 2);
+  const stored = await pool.query('SELECT url, is_primary FROM task_rpcs WHERE network_id = $1 ORDER BY priority', [base1.id]);
+  assert.deepEqual(stored.rows.map((x) => x.url), ['https://mainnet.base.org', 'https://base-rpc.publicnode.com']);
+  assert.deepEqual(stored.rows.map((x) => x.is_primary), [true, false]);
+
+  // Adding the same preset twice is refused, not duplicated.
+  const dup = await fetch(base + `/api/v1/projects/${proj.id}/networks`, {
+    method: 'POST', headers: auth, body: JSON.stringify({ preset_id: 'base' }) });
+  assert.equal(dup.status, 409);
+
+  // A field sent explicitly overrides the preset; a custom RPC list replaces its RPCs.
+  const r2 = await fetch(base + `/api/v1/projects/${proj.id}/networks`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ preset_id: 'sepolia', name: 'My Sepolia', rpc_urls: ['https://rpc.sepolia.org'] }) });
+  const sep = (await r2.json()).network;
+  assert.equal(sep.name, 'My Sepolia');
+  assert.equal(sep.chain_id, 11155111);
+  assert.equal(sep.is_testnet, true);
+  assert.equal(sep.rpcs.length, 1);
+
+  // Non-EVM: no chain id, own address format, Solana RPC created.
+  const r3 = await fetch(base + `/api/v1/projects/${proj.id}/networks`, {
+    method: 'POST', headers: auth, body: JSON.stringify({ preset_id: 'solana' }) });
+  const sol = (await r3.json()).network;
+  assert.equal(sol.chain_namespace, 'solana');
+  assert.equal(sol.chain_id, null);
+  assert.equal(sol.native_decimals, 9);
+  assert.match(sol.address_format, /base58/);
+  assert.equal(sol.rpcs.length, 1);
+
+  // Octra has no published RPC: the network is created with none, nothing invented.
+  const r4 = await fetch(base + `/api/v1/projects/${proj.id}/networks`, {
+    method: 'POST', headers: auth, body: JSON.stringify({ preset_id: 'octra' }) });
+  const oct = (await r4.json()).network;
+  assert.equal(oct.chain_namespace, 'octra');
+  assert.equal(oct.native_symbol, 'OCT');
+  assert.equal(oct.chain_id, null);
+  assert.equal(oct.explorer_url, null);
+  assert.equal(oct.rpcs.length, 0);
+
+  const bad = await fetch(base + `/api/v1/projects/${proj.id}/networks`, {
+    method: 'POST', headers: auth, body: JSON.stringify({ preset_id: 'nope' }) });
+  assert.equal(bad.status, 400);
+}, { timeout: 30000 });
+
 after(async () => {
   if (httpServer) await new Promise(resolve => httpServer.close(resolve));
   if (pool) await pool.end();

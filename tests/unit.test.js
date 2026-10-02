@@ -746,3 +746,37 @@ test('the app markup has no raw palette colours left and status is never colour 
   assert.match(components, /var BTN_SECONDARY = '[^']*bg-surface-container[^']*border-line-strong/);
   assert.match(components, /var BTN_ICON = '[^']*text-icon-secondary[^']*hover:text-icon-primary/);
 });
+
+test('network presets: catalog shape, no keys, no guessed non-EVM fields', () => {
+  const { PRESETS, getPreset, presetToNetworkFields } = require('../src/network-presets');
+  const ids = PRESETS.map((x) => x.id);
+  assert.equal(new Set(ids).size, ids.length, 'preset ids are unique');
+  for (const pr of PRESETS) {
+    assert.ok(pr.name && pr.type && pr.namespace && pr.addressFormat && pr.wallets.length, pr.id + ' has the core fields');
+    assert.ok(pr.nativeToken.symbol, pr.id + ' has a native symbol');
+    for (const u of pr.rpcs) {
+      assert.match(u, /^https:\/\//, pr.id + ': https RPCs only');
+      assert.ok(!/[?@]|key|token/i.test(u), pr.id + ': no embedded credentials');
+    }
+    if (pr.type === 'EVM') {
+      assert.ok(Number.isInteger(pr.chainId) && pr.chainId > 0 && pr.rpcs.length, pr.id + ': EVM needs chain id and RPCs');
+      assert.equal(pr.namespace, 'eip155');
+    } else {
+      assert.equal(pr.chainId, null, pr.id + ': non-EVM presets carry no EVM chain id');
+    }
+  }
+  const eth = getPreset('ethereum');
+  assert.deepEqual([eth.chainId, eth.nativeToken.symbol, eth.rpcs[0]], [1, 'ETH', 'https://ethereum-rpc.publicnode.com']);
+  assert.equal(getPreset('polygon').nativeToken.symbol, 'POL');
+  assert.equal(getPreset('sepolia').isTestnet, true);
+  assert.equal(getPreset('solana').rpcs[0], 'https://api.mainnet-beta.solana.com');
+  assert.equal(getPreset('aptos').networkId, '1');
+  // Octra: docs publish no RPC, chain id or explorer, so they stay unset and flagged.
+  const octra = getPreset('octra');
+  assert.deepEqual(octra.rpcs, []);
+  assert.equal(octra.explorer.url, null);
+  assert.ok(octra.unverified.includes('rpcs'));
+  assert.equal(octra.nativeToken.symbol, 'OCT');
+  assert.equal(presetToNetworkFields(eth).chain_namespace, 'eip155');
+  assert.equal(getPreset('nope'), null);
+});

@@ -1763,6 +1763,13 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
       <div class="net-list space-y-2 mt-2"></div>
       <details class="mt-3">
         <summary class="cursor-pointer text-sm text-accent-text">Add a network</summary>
+        <div class="mt-3">
+          <label class="block text-xs text-content-secondary mb-1" for="n-preset">Network preset</label>
+          <select id="n-preset" class="n-preset w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
+            <option value="">Custom network</option>
+          </select>
+          <p class="n-preset-info text-xs text-content-secondary mt-2" aria-live="polite">Pick a preset to fill in the RPC, chain id, token and explorer. You can still edit any field.</p>
+        </div>
         <div class="grid sm:grid-cols-2 gap-2 mt-3">
           <input class="n-name rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Network name (e.g. Sepolia)">
           <select class="n-family rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
@@ -1784,8 +1791,46 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
     </div>`);
   sectionEl.appendChild(netPanel);
   const netList = netPanel.querySelector('.net-list');
+
+  // Preset picker: choosing one fills the form; the fields stay editable.
+  const presetSel = netPanel.querySelector('.n-preset');
+  const presetInfo = netPanel.querySelector('.n-preset-info');
+  let presets = [];
+  const q = (c) => netPanel.querySelector(c);
+  api.get('/api/v1/network-presets').then((d) => {
+    presets = d.presets || [];
+    for (const group of ['Mainnet', 'Testnet']) {
+      const og = document.createElement('optgroup');
+      og.label = group;
+      for (const pr of presets.filter((x) => x.isTestnet === (group === 'Testnet'))) {
+        const o = document.createElement('option');
+        o.value = pr.id; o.textContent = `${pr.name} (${pr.type})`;
+        og.appendChild(o);
+      }
+      presetSel.appendChild(og);
+    }
+  }).catch(() => { presetInfo.textContent = 'Presets could not be loaded. Enter the network details by hand.'; });
+  presetSel.addEventListener('change', () => {
+    const pr = presets.find((x) => x.id === presetSel.value);
+    if (!pr) { presetInfo.textContent = 'Enter the network details by hand.'; return; }
+    q('.n-name').value = pr.name;
+    q('.n-family').value = pr.namespace;
+    q('.n-chainid').value = pr.chainId === null ? '' : String(pr.chainId);
+    q('.n-symbol').value = pr.nativeToken.symbol;
+    q('.n-decimals').value = pr.nativeToken.decimals === null ? '' : String(pr.nativeToken.decimals);
+    q('.n-rpc').value = pr.rpcs[0] || '';
+    q('.n-tx').value = pr.explorer.txUrl || '';
+    q('.n-testnet').checked = pr.isTestnet;
+    const bits = [`${pr.isTestnet ? 'Testnet' : 'Mainnet'}`, `Address: ${pr.addressFormat}`, `Wallets: ${pr.wallets.join(', ')}`];
+    if (pr.rpcs.length > 1) bits.push(`${pr.rpcs.length} RPC endpoints are added (first is primary)`);
+    presetInfo.textContent = bits.join(' · ') + (pr.unverified.length
+      ? `. Not published by the official docs: ${pr.unverified.join(', ')}. Confirm with the official source.` : '.');
+  });
+
   netPanel.querySelector('.n-add').addEventListener('click', async () => {
+    const preset = presets.find((x) => x.id === presetSel.value) || null;
     const b = {
+      preset_id: preset ? preset.id : undefined,
       name: netPanel.querySelector('.n-name').value.trim(),
       chain_namespace: netPanel.querySelector('.n-family').value,
       chain_id: netPanel.querySelector('.n-chainid').value.trim() || null,
@@ -1796,9 +1841,15 @@ async function renderDashTaskEditor(sectionEl, ctx, questId) {
     };
     if (!b.name) return toast('A network name is required', true);
     try {
-      const r = await api.post(`/api/v1/projects/${p.id}/networks`, b);
       const rpcUrl = netPanel.querySelector('.n-rpc').value.trim();
-      if (rpcUrl) await api.post(`/api/v1/networks/${r.network.id}/rpcs`, { url: rpcUrl, is_primary: true });
+      if (preset) {
+        // Preset RPCs are created by the server; a different primary URL overrides them.
+        if (rpcUrl && rpcUrl !== preset.rpcs[0]) b.rpc_urls = [rpcUrl];
+        await api.post(`/api/v1/projects/${p.id}/networks`, b);
+      } else {
+        const r = await api.post(`/api/v1/projects/${p.id}/networks`, b);
+        if (rpcUrl) await api.post(`/api/v1/networks/${r.network.id}/rpcs`, { url: rpcUrl, is_primary: true });
+      }
       toast('Network added'); ctx.reload();
     } catch (err) { toast(err.message, true); }
   });
