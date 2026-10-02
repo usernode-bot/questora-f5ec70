@@ -233,3 +233,42 @@ test('quest slugs are unique per campaign via slugify', () => {
   assert.equal(util.slugify('Staging demo Vote on Proposal'), 'staging-demo-vote-on-proposal');
   assert.equal(util.slugify(''), '');
 });
+
+// Multi-chain wallet adapters (src/verify/wallet-chains.js).
+const crypto = require('node:crypto');
+const { adapterFor, chainChoices } = require('../src/verify/wallet-chains');
+
+test('chain registry exposes the five supported chains by label', () => {
+  const labels = chainChoices().map(c => c.label);
+  for (const l of ['EVM', 'Solana', 'Sui', 'Aptos', 'Octra']) assert.ok(labels.includes(l), 'missing ' + l);
+  assert.equal(adapterFor('dogecoin'), null, 'unknown chains are refused');
+});
+
+test('address validation is per-chain', () => {
+  assert.ok(adapterFor('eip155').validateAddress('0x' + 'a'.repeat(40)));
+  assert.ok(!adapterFor('eip155').validateAddress('0x' + 'a'.repeat(39)));
+  assert.ok(!adapterFor('solana').validateAddress('not-base58-too-short'));
+  assert.ok(adapterFor('sui').validateAddress('0x' + 'a'.repeat(64)));
+  assert.ok(adapterFor('aptos').validateAddress('0x2'));
+  assert.ok(adapterFor('octra').validateAddress('oct1abcdefghijklmnopqrstuvwxyz'));
+});
+
+test('message builders: EVM lowercases, Ed25519 chains preserve the address', () => {
+  const hex = '0xAbCdEf' + '0'.repeat(34);
+  const evmMsg = adapterFor('eip155').buildMessage('0x' + 'A'.repeat(40), 'n1');
+  assert.ok(evmMsg.includes('nonce: n1'.replace('nonce', 'Nonce')) || evmMsg.includes('n1'));
+  assert.ok(adapterFor('solana').buildMessage('CaSeSensitiveAddr1111111111111111111111', 'n2').includes('CaSeSensitiveAddr'));
+  assert.ok(adapterFor('eip155').normalizeAddress(hex) === hex.toLowerCase());
+  // Sui/Aptos left-pad an abbreviated 0x address to 64 hex.
+  assert.equal(adapterFor('sui').normalizeAddress('0x2'), '0x' + '0'.repeat(63) + '2');
+});
+
+test('Ed25519 verification accepts the right key and rejects a wrong message', () => {
+  const kp = crypto.generateKeyPairSync('ed25519');
+  const raw = kp.publicKey.export({ type: 'spki', format: 'der' }).slice(12);
+  const msg = 'Questora wallet verification\n\nAddress: 0xabc\nNonce: n3';
+  const sig = crypto.sign(null, Buffer.from(msg), kp.privateKey);
+  assert.ok(adapterFor('aptos').verify({ publicKey: raw, message: msg, signature: sig }));
+  assert.ok(!adapterFor('aptos').verify({ publicKey: raw, message: 'tampered', signature: sig }));
+  assert.ok(adapterFor('sui').verify({ publicKey: raw, message: msg, signature: sig }));
+});

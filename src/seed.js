@@ -498,6 +498,27 @@ async function seed() {
     }
   }
 
+  // Wallets (multi-chain link flow): fake, verified wallets per demo user so
+  // the Profile Wallets panel has rows to show. Distinct per user and chain,
+  // never a value any real account could hold.
+  const demoWallets = [
+    ['staging-demo-user-1', 'eip155', '0x000000000000000000000000000000000000d001', true],
+    ['staging-demo-user-1', 'solana', 'StaGingDemoSoL111111111111111111111111111', false],
+    ['staging-demo-user-1', 'sui', '0x000000000000000000000000000000000000000000000000000000000000d001', false],
+    ['staging-demo-user-1', 'aptos', '0x000000000000000000000000000000000000000000000000000000000000d002', false],
+    ['staging-demo-user-1', 'octra', 'oct1stagingdemo0000000000000000wallet', false],
+    ['staging-demo-user-2', 'eip155', '0x000000000000000000000000000000000000d002', true],
+    ['staging-demo-user-2', 'solana', 'StaGingDemoSoL222222222222222222222222222', false],
+  ];
+  for (const [uname, chain, address, primary] of demoWallets) {
+    if (!userIds[uname]) continue;
+    await pool.query(
+      `INSERT INTO wallets (user_id, address, chain_namespace, verified_at, is_primary)
+       VALUES ($1, $2, $3, NOW(), $4)
+       ON CONFLICT (address, chain_namespace) DO NOTHING`,
+      [userIds[uname], address, chain, primary]);
+  }
+
   console.log('[seed] staging demo data ready');
 }
 

@@ -36,8 +36,9 @@ CREATE TABLE IF NOT EXISTS user_settings (
 CREATE TABLE IF NOT EXISTS wallets (
   id SERIAL PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  address VARCHAR(64) NOT NULL,
+  address VARCHAR(128) NOT NULL,
   chain_namespace VARCHAR(32) NOT NULL DEFAULT 'eip155',
+  public_key TEXT,
   verified_at TIMESTAMPTZ,
   is_primary BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -48,7 +49,8 @@ CREATE INDEX IF NOT EXISTS wallets_user_idx ON wallets (user_id);
 CREATE TABLE IF NOT EXISTS wallet_challenges (
   id SERIAL PRIMARY KEY,
   nonce VARCHAR(128) UNIQUE NOT NULL,
-  wallet_address VARCHAR(64) NOT NULL,
+  wallet_address VARCHAR(128) NOT NULL,
+  chain_namespace VARCHAR(32) NOT NULL DEFAULT 'eip155',
   expires_at TIMESTAMPTZ NOT NULL,
   consumed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -412,6 +414,13 @@ async function migrate() {
     await client.query(SCHEMA);
     // Phase 2: stable per-user referral code for /join?ref= links.
     await client.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_code VARCHAR(20) UNIQUE');
+    // Multi-chain wallets: Sui/Aptos addresses are 0x + 64 hex (66 chars), so
+    // the address columns must hold more than 64; and Ed25519 chains need the
+    // signer's public key stored to verify later.
+    await client.query('ALTER TABLE wallets ALTER COLUMN address TYPE VARCHAR(128)');
+    await client.query('ALTER TABLE wallets ADD COLUMN IF NOT EXISTS public_key TEXT');
+    await client.query('ALTER TABLE wallet_challenges ALTER COLUMN wallet_address TYPE VARCHAR(128)');
+    await client.query("ALTER TABLE wallet_challenges ADD COLUMN IF NOT EXISTS chain_namespace VARCHAR(32) NOT NULL DEFAULT 'eip155'");
     // Phase 3: seasonal XP ledger stamps and normalized proof fingerprints.
     await client.query('ALTER TABLE xp_events ADD COLUMN IF NOT EXISTS season_id INTEGER REFERENCES seasons(id)');
     await client.query('ALTER TABLE task_submissions ADD COLUMN IF NOT EXISTS proof_hash VARCHAR(64)');
