@@ -21,7 +21,11 @@ const TASK_SCHEMAS = {
     },
   },
   url_proof: {
-    required: ['placeholder'],
+    // A proof submission has no builder-side configuration: the participant
+    // supplies the URL. The optional placeholder is only hint text for the
+    // submission input (seeded tasks set one), so it must never be required.
+    required: [],
+    optional: ['placeholder'],
     validate: () => null,
   },
   quiz: {

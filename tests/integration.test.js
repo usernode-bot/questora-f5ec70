@@ -1433,6 +1433,66 @@ t('network presets auto-load a network and its RPCs', async () => {
   assert.equal(bad.status, 400);
 }, { timeout: 30000 });
 
+t('create wizard: a url_proof task needs no builder-side placeholder', async () => {
+  // The create wizard and the dashboard quest builder both post a url_proof
+  // task as `{ type: 'url_proof', title: 'Task', config: {} }` (the participant
+  // supplies the URL at submit time). That used to be rejected with
+  // `Missing "placeholder"`, which broke "Publish campaign" on /create.
+  const db = require('../src/db');
+  pool = pool || db.pool;
+  await db.migrate();
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const uid = 850000000 + Math.floor(Math.random() * 60000000);
+  const token = jwt.sign(
+    { id: uid, username: 'staging-demo-urlproof-' + (Date.now() % 100000000), pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' });
+  const auth = { 'x-usernode-token': token, 'content-type': 'application/json' };
+
+  const proj = (await (await fetch(base + '/api/v1/projects', {
+    method: 'POST', headers: auth, body: JSON.stringify({ name: 'Staging demo url proof project' }) })).json()).project;
+  const camp = (await (await fetch(base + `/api/v1/projects/${proj.id}/campaigns`, {
+    method: 'POST', headers: auth, body: JSON.stringify({ name: 'Staging demo url proof campaign', status: 'active' }) })).json()).campaign;
+
+  const res = await fetch(base + `/api/v1/campaigns/${camp.id}/quests`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({
+      title: 'Staging demo proof quest', xp_reward: 0, points_reward: 0, status: 'active',
+      tasks: [{ type: 'url_proof', title: 'Task', config: {} }],
+    }),
+  });
+  assert.equal(res.status, 200, JSON.stringify(await res.clone().json().catch(() => ({}))));
+  const body = await res.json();
+  assert.ok(body.quest && body.quest.id, 'the quest must be created');
+
+  // The stored task is a working proof submission with no required config.
+  const task = await pool.query(
+    `SELECT type, config, verification_type, proof_required FROM quest_tasks WHERE quest_id = $1`,
+    [body.quest.id]);
+  assert.equal(task.rows.length, 1);
+  assert.equal(task.rows[0].type, 'url_proof');
+  assert.equal(task.rows[0].proof_required, true);
+  assert.deepEqual(task.rows[0].config, {});
+
+  // A placeholder is still accepted as an optional hint and preserved.
+  const hinted = await fetch(base + `/api/v1/campaigns/${camp.id}/quests`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({
+      title: 'Staging demo hinted proof quest', xp_reward: 0, status: 'active',
+      tasks: [{ type: 'url_proof', title: 'Task', config: { placeholder: 'https://your-work.example' } }],
+    }),
+  });
+  assert.equal(hinted.status, 200);
+  const hintedTask = await pool.query(
+    `SELECT config FROM quest_tasks WHERE quest_id = $1`, [(await hinted.json()).quest.id]);
+  assert.deepEqual(hintedTask.rows[0].config, { placeholder: 'https://your-work.example' });
+}, { timeout: 30000 });
+
 after(async () => {
   if (httpServer) await new Promise(resolve => httpServer.close(resolve));
   if (pool) await pool.end();

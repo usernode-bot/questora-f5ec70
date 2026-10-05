@@ -2090,8 +2090,8 @@ async function renderDashSettings(sectionEl, ctx) {
   const form = el(`
     <div class="rounded-xl border border-line bg-surface p-4 mb-5 max-w-xl">
       <h2 class="font-semibold mb-2">Project details</h2>
-      <input class="p-name w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.name)}" aria-label="Project name">
-      <textarea class="p-desc w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm mb-2 focus:outline-none" rows="2" aria-label="Description">${escapeHtml(p.description || '')}</textarea>
+      <input class="p-name w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.name)}" placeholder="Project name" aria-label="Project name">
+      <textarea class="p-desc w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm mb-2 focus:outline-none" rows="2" placeholder="What does your project do?" aria-label="Description">${escapeHtml(p.description || '')}</textarea>
       <input class="p-web w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.website || '')}" placeholder="Website" aria-label="Website">
       <input class="p-logo w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.logo_url || '')}" placeholder="Logo URL" aria-label="Logo URL">
       <input class="p-banner w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm mb-2 focus:outline-none" value="${escapeHtml(p.banner_url || '')}" placeholder="Banner URL" aria-label="Banner URL">
@@ -2357,7 +2357,7 @@ async function viewSettings() {
     <section class="rounded-2xl border border-line bg-surface p-5">
       <h2 class="font-semibold mb-3">Profile</h2>
       <label class="block text-xs text-content-secondary mb-1" for="s-name">Display name</label>
-      <input id="s-name" class="w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" value="${escapeHtml(u.display_name || '')}">
+      <input id="s-name" class="w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" placeholder="Display name" value="${escapeHtml(u.display_name || '')}">
       <label class="block text-xs text-content-secondary mb-1 mt-3" for="s-avatar">Avatar URL</label>
       <input id="s-avatar" class="w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" value="${escapeHtml(u.avatar_url || '')}" placeholder="https://example.com/avatar.png">
       <button class="p-save mt-4 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save profile</button>
