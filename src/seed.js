@@ -625,6 +625,35 @@ async function seed() {
     // by the (network, priority) pair above; nothing else to do here.
   }
 
+  // ---- Quest CRUD builder demo data ----
+  // A multi-task quest so the Task Builder's reorderable cards and its
+  // type-specific fields have real rows to render. It carries a badge reward
+  // and a credential so the editor's Rewards section pre-fills.
+  const qMulti = await upsertQuest(campWelcome, 'Staging demo Builder Sprint', {
+    description: 'Staging demo quest: three tasks of different types, for the quest builder.',
+    xp: 130, points: 65, sort_order: 6, badge_key: 'quest-master',
+  }, [
+    { type: 'social', title: 'Share the sprint', xp_reward: 30, config: { url: 'https://example.com/sprint', action: 'visit' } },
+    { type: 'quiz', title: 'Sprint quiz', xp_reward: 50, config: {
+      pass_score: 80,
+      questions: [
+        { q: 'Which task type checks a wallet automatically?', options: ['Quiz', 'Connect wallet', 'Manual'], answer: 1 },
+        { q: 'What do quests reward?', options: ['XP and points', 'Gas fees', 'Nothing'], answer: 0 },
+      ],
+    } },
+    { type: 'manual', title: 'Tell us what you shipped', xp_reward: 50, config: {} },
+  ]);
+  await pool.query(
+    `INSERT INTO rewards (quest_id, kind, config)
+     SELECT $1, 'credential', '{"title": "Staging demo Builder Sprint Credential"}'::jsonb
+     WHERE NOT EXISTS (SELECT 1 FROM rewards WHERE quest_id = $1 AND kind = 'credential')`,
+    [qMulti]);
+  // Enough participants on one quest to make "Most participants" sorting
+  // meaningful, from fake demo identities only.
+  for (const uname of ['staging-demo-user-2', 'staging-demo-user-3', 'staging-demo-user-5']) {
+    await completeQuest(qMulti, userIds[uname], 130, seasonId);
+  }
+
   console.log('[seed] staging demo data ready');
 }
 

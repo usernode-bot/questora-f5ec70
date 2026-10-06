@@ -226,6 +226,82 @@ function dangerZone() {
 
 
 
+// ---- confirmation dialog ---------------------------------------------------
+// One small modal for the destructive or state-changing verbs (publish,
+// duplicate, delete). Built from the same token classes as everything else.
+// It traps focus, closes on Escape or a backdrop click, and restores focus to
+// whatever was focused before. Returns a promise that resolves true when the
+// confirm button is chosen, false otherwise; onConfirm runs before it closes,
+// and an error from onConfirm keeps the dialog open.
+function confirmDialog(opts) {
+  opts = opts || {};
+  const title = opts.title || 'Are you sure?';
+  const body = opts.body || '';
+  const confirmLabel = opts.confirmLabel || 'Confirm';
+  const cancelLabel = opts.cancelLabel || 'Cancel';
+  const danger = !!opts.danger;
+  const prevFocus = document.activeElement;
+  const overlay = el(`
+    <div class="fixed inset-0 z-[70] flex items-end sm:items-center justify-center p-0 sm:p-4" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+      <div class="cd-backdrop absolute inset-0 bg-black/60"></div>
+      <div class="cd-panel relative w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl border border-line bg-surface p-5 shadow-lg">
+        <h2 class="font-semibold mb-1 text-content-primary">${escapeHtml(title)}</h2>
+        ${body ? `<p class="cd-body text-sm text-content-secondary mb-4">${body}</p>` : ''}
+        <div class="flex flex-wrap gap-2 justify-end">
+          <button type="button" class="cd-cancel ${BTN_SECONDARY}">${escapeHtml(cancelLabel)}</button>
+          <button type="button" class="cd-confirm font-medium px-4 py-2.5 min-h-[44px] rounded-lg text-sm ${danger ? 'bg-error hover:bg-error/90 text-error-bg' : 'bg-accent hover:bg-accent-hover text-accent-contrast'}">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>
+    </div>`);
+  const panel = overlay.querySelector('.cd-panel');
+  const confirmBtn = overlay.querySelector('.cd-confirm');
+  const cancelBtn = overlay.querySelector('.cd-cancel');
+  document.body.appendChild(overlay);
+  confirmBtn.focus();
+
+  let settled = false;
+  function close(result) {
+    if (settled) return;
+    settled = true;
+    document.removeEventListener('keydown', onKey, true);
+    overlay.remove();
+    if (prevFocus && typeof prevFocus.focus === 'function') { try { prevFocus.focus(); } catch (e) { /* gone */ } }
+    resolve(result);
+  }
+  let resolve;
+  const done = new Promise((r) => { resolve = r; });
+
+  async function onConfirmClick() {
+    if (settled) return;
+    confirmBtn.disabled = true;
+    const label = confirmBtn.textContent;
+    confirmBtn.textContent = 'Working…';
+    try {
+      if (opts.onConfirm) await opts.onConfirm();
+      close(true);
+    } catch (err) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = label;
+      if (typeof toast === 'function') toast(err.message || 'Something went wrong', true);
+    }
+  }
+  function onKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); return; }
+    if (e.key !== 'Tab') return;
+    // Trap focus inside the dialog.
+    const focusables = panel.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
+  document.addEventListener('keydown', onKey, true);
+  overlay.querySelector('.cd-backdrop').addEventListener('click', () => close(false));
+  cancelBtn.addEventListener('click', () => close(false));
+  confirmBtn.addEventListener('click', onConfirmClick);
+  return done;
+}
+
 // ---- buttons ---------------------------------------------------------------
 // One place for the button look, so header menus, dashboard actions and the
 // wallet UI share it. Whole class literals only: Tailwind reads these as text.
@@ -312,6 +388,6 @@ var NOTIF_KINDS = [
 // `icon` export is that factory rather than a call back into itself.
 var icon = (window.QUI && window.QUI.icon) ? window.QUI.icon : function () { return ''; };
 
-return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState, dangerZone, icon, tooltip, setTooltip, hideTooltip, notificationRow, NOTIF_KINDS, BTN_PRIMARY, BTN_SECONDARY, BTN_ICON };
+return { el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, scopeBanner, statCard, pager, emptyState, dangerZone, confirmDialog, icon, tooltip, setTooltip, hideTooltip, notificationRow, NOTIF_KINDS, BTN_PRIMARY, BTN_SECONDARY, BTN_ICON };
 
 })();

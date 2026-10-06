@@ -567,6 +567,74 @@ test('all RPC endpoints down is RPC_UNAVAILABLE, never a user failure', async ()
   assert.equal(status.classify(r.status).isUserFailure, false);
 });
 
+// ---- Quest CRUD builder helpers ----
+const questBuilder = require('../public/quest-builder.js');
+
+test('quest status maps to the three-word vocabulary without losing the honest word', () => {
+  assert.deepEqual(questBuilder.statusBucket('draft'), 'Draft');
+  assert.deepEqual(questBuilder.statusPill('draft'), 'Draft');
+  assert.deepEqual(questBuilder.statusBucket('active'), 'Published');
+  assert.deepEqual(questBuilder.statusPill('active'), 'Published');
+  // scheduled/paused/ended stay honest under the Published bucket.
+  for (const st of ['scheduled', 'paused', 'ended']) {
+    assert.equal(questBuilder.statusBucket(st), 'Published', st + ' buckets as Published');
+    assert.notEqual(questBuilder.statusPill(st), 'Published', st + ' keeps its own word');
+  }
+  assert.equal(questBuilder.statusBucket('archived'), 'Archived');
+  assert.equal(questBuilder.statusPill('archived'), 'Archived');
+});
+
+test('task type choices map to the six types the server verifies', () => {
+  const supported = new Set(['wallet_connect', 'social', 'url_proof', 'quiz', 'manual', 'on_chain']);
+  for (const c of questBuilder.TYPE_CHOICES) {
+    const m = questBuilder.taskTypeToConfig(c.key, {});
+    assert.ok(supported.has(m.type), c.key + ' maps to a supported server type');
+  }
+  // Connect Wallet, Visit Website, Complete Form and Custom Task are exact.
+  assert.deepEqual(questBuilder.taskTypeToConfig('wallet_connect', {}), { type: 'wallet_connect', config: {} });
+  assert.deepEqual(questBuilder.taskTypeToConfig('social', { url: 'https://x.example' }),
+    { type: 'social', config: { url: 'https://x.example', action: 'visit' } });
+  assert.deepEqual(questBuilder.taskTypeToConfig('custom_manual', {}), { type: 'manual', config: {} });
+  // On-chain variants are one type with different config.method.
+  const tx = questBuilder.taskTypeToConfig('on_chain_transaction', { network_id: '3', confirmations: '2' });
+  assert.equal(tx.type, 'on_chain');
+  assert.equal(tx.config.method, 'transaction');
+  assert.equal(tx.config.network_id, 3);
+  assert.equal(tx.config.confirmations, 2);
+  const contract = questBuilder.taskTypeToConfig('contract_interaction', { network_id: '3', contract: '0xabc' });
+  assert.equal(contract.config.method, 'transaction');
+  assert.equal(contract.config.contract, '0xabc');
+  const token = questBuilder.taskTypeToConfig('token_balance', { network_id: '4', token_id: '9', amount: '100', operator: 'gte' });
+  assert.equal(token.config.method, 'erc20_balance');
+  assert.equal(token.config.token_id, 9);
+  assert.deepEqual(token.config.requirement, { amount: '100', operator: 'gte' });
+  // Hold Token is the same balance check, named plainly (no NFT promise).
+  const hold = questBuilder.taskTypeToConfig('hold_token', { network_id: '4', token_id: '9', amount: '5' });
+  assert.equal(hold.config.method, 'erc20_balance');
+  // Every on-chain mapping carries a requirement only when an amount was given.
+  assert.equal(questBuilder.taskTypeToConfig('token_balance', { network_id: '4' }).config.requirement, null);
+});
+
+test('a stored task maps back to the builder choice it came from', () => {
+  assert.equal(questBuilder.choiceForTask({ type: 'on_chain', config: { method: 'transaction' } }), 'on_chain_transaction');
+  assert.equal(questBuilder.choiceForTask({ type: 'on_chain', config: { method: 'transaction', contract: '0x1' } }), 'contract_interaction');
+  assert.equal(questBuilder.choiceForTask({ type: 'on_chain', config: { method: 'erc20_balance' } }), 'token_balance');
+  assert.equal(questBuilder.choiceForTask({ type: 'social', config: {} }), 'social');
+  assert.equal(questBuilder.choiceForTask({ type: 'url_proof', config: {} }), 'url_proof');
+  assert.equal(questBuilder.choiceForTask({ type: 'manual', config: {} }), 'manual');
+});
+
+test('the duplicate title suffix is " Copy" with no parentheses', () => {
+  assert.equal(questBuilder.duplicateTitle('Connect Wallet'), 'Connect Wallet Copy');
+  assert.equal(questBuilder.duplicateTitle('  Spaced  '), 'Spaced Copy');
+});
+
+test('the task reorder payload orders ids to sort_order indices', () => {
+  assert.deepEqual(questBuilder.reorderSortOrders(['7', 4, 9]),
+    [{ id: 7, sort_order: 0 }, { id: 4, sort_order: 1 }, { id: 9, sort_order: 2 }]);
+  assert.deepEqual(questBuilder.reorderSortOrders([]), []);
+});
+
 // ---- Navigation audit: Create menu permissions and orphan cleanup ----
 const navMenu = require('../public/nav-menu.js');
 

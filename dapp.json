@@ -173,6 +173,18 @@
       "expectText": "Quests in Staging demo Octra Builders"
     },
     {
+      "id": "quests.status-vocabulary",
+      "name": "Project quests directory uses the simplified status wording",
+      "path": "/projects/staging-demo-octra-builders/quests",
+      "expectSelector": "a[href*='/quests/']",
+      "expectText": "Published",
+      "visual": true,
+      "impact": [
+        "public/views.js",
+        "public/quest-builder.js"
+      ]
+    },
+    {
       "id": "wallets.panel",
       "name": "Profile Wallets tab lists a linked wallet",
       "path": "/u/staging-demo-user-1?tab=wallets",

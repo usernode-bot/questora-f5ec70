@@ -314,10 +314,14 @@ router.get('/projects/:id', async (req, res) => {
      FROM campaigns c
      WHERE c.project_id = $1 AND (c.status <> 'draft' OR $2 = TRUE)
      ORDER BY c.created_at DESC`, [p.id, canSeePrivate]);
+  // The management rows read description, dates and a task count as well as
+  // the fields the public checklist uses. Every column here is already public
+  // on the quest page, so the wider projection leaks nothing.
   const quests = await pool.query(
-    `SELECT q.id, q.campaign_id, q.slug, q.title, q.quest_type, q.xp_reward, q.points_reward,
-            q.status, q.sort_order, q.starts_at, q.ends_at, q.is_required,
-            (SELECT COUNT(DISTINCT qc.user_id)::int FROM quest_completions qc WHERE qc.quest_id = q.id) AS participants
+    `SELECT q.id, q.campaign_id, q.slug, q.title, q.description, q.quest_type, q.xp_reward, q.points_reward,
+            q.status, q.sort_order, q.starts_at, q.ends_at, q.is_required, q.created_at, q.updated_at,
+            (SELECT COUNT(DISTINCT qc.user_id)::int FROM quest_completions qc WHERE qc.quest_id = q.id) AS participants,
+            (SELECT COUNT(*)::int FROM quest_tasks qt WHERE qt.quest_id = q.id) AS task_count
      FROM quests q JOIN campaigns c ON c.id = q.campaign_id
      WHERE c.project_id = $1 AND (q.status = 'active' OR $2 = TRUE)
      ORDER BY q.sort_order`, [p.id, canSeePrivate]);
@@ -737,8 +741,8 @@ router.post('/campaigns/:id/quests', async (req, res) => {
     const q = await client.query(
       `INSERT INTO quests (campaign_id, slug, title, description, instructions, image_url, quest_type,
                            sort_order, is_required, xp_reward, points_reward, starts_at, ends_at, status,
-                           visibility, max_participants, completion_limit, idempotency_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING *`,
+                           visibility, max_participants, completion_limit, idempotency_key, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW()) RETURNING *`,
       [campaign.id, slug, String(title).trim(), description || null, instructions || null,
         req.body.image_url || null, req.body.quest_type || null,
         ord.rows[0].n, is_required === undefined ? true : !!is_required,
@@ -834,16 +838,88 @@ router.patch('/quests/:id', async (req, res) => {
   }
   if (req.body.sort_order !== undefined) allowed.sort_order = parseInt(req.body.sort_order, 10) || 0;
   const sets = Object.keys(allowed);
-  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' });
-  const { rows } = await pool.query(
-    `UPDATE quests SET ${sets.map((s, i) => `${s} = $${i + 2}`).join(', ')} WHERE id = $1 RETURNING *`,
-    [q.rows[0].id, ...sets.map(s => allowed[s])]
-  );
-  await audit(userId(req), 'quest.update', 'quest', q.rows[0].id, q.rows[0], rows[0], req.body.reason || null);
-  res.json({ quest: rows[0] });
+  // Rewards and prerequisites are edited alongside the quest columns, so the
+  // edit screen has one save. A rewards-only save is legal on its own.
+  const managesRewards = req.body.badge_id !== undefined || req.body.credential_title !== undefined;
+  const setsPrereqs = req.body.requires_quests !== undefined || req.body.require_all !== undefined;
+  if (managesRewards && !(await rbac.can(q.rows[0].project_id, userId(req), 'rewards.manage'))) {
+    return res.status(403).json({ error: 'You do not have permission to manage this project' });
+  }
+  if (!sets.length && !managesRewards && !setsPrereqs) return res.status(400).json({ error: 'Nothing to update' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    let updated = q.rows[0];
+    if (sets.length) {
+      allowed.updated_at = new Date();
+      const keys = Object.keys(allowed);
+      const { rows } = await client.query(
+        `UPDATE quests SET ${keys.map((s, i) => `${s} = $${i + 2}`).join(', ')} WHERE id = $1 RETURNING *`,
+        [q.rows[0].id, ...keys.map(k => allowed[k])]
+      );
+      updated = rows[0];
+    }
+    if (managesRewards) {
+      // Badge reward: a single badge row keyed by badge_id, replaced or cleared.
+      await client.query(`DELETE FROM rewards WHERE quest_id = $1 AND kind = 'badge'`, [q.rows[0].id]);
+      if (req.body.badge_id) {
+        await client.query(`INSERT INTO rewards (quest_id, kind, config) VALUES ($1, 'badge', $2)`,
+          [q.rows[0].id, JSON.stringify({ badge_id: Number(req.body.badge_id) })]);
+      }
+      await client.query(`DELETE FROM rewards WHERE quest_id = $1 AND kind = 'credential'`, [q.rows[0].id]);
+      if (req.body.credential_title && String(req.body.credential_title).trim()) {
+        await client.query(`INSERT INTO rewards (quest_id, kind, config) VALUES ($1, 'credential', $2)`,
+          [q.rows[0].id, JSON.stringify({ title: String(req.body.credential_title).trim().slice(0, 255) })]);
+      }
+    }
+    if (setsPrereqs) {
+      const prereqs = (req.body.requires_quests || []).map(Number).filter(Number.isFinite);
+      const operator = req.body.require_all === false ? 'any' : 'all';
+      const existing = await client.query('SELECT id FROM quest_conditions WHERE quest_id = $1 LIMIT 1', [q.rows[0].id]);
+      if (existing.rows.length) {
+        await client.query('UPDATE quest_conditions SET operator = $2, config = $3 WHERE id = $1',
+          [existing.rows[0].id, operator, JSON.stringify(prereqs.length ? { requires_quests: prereqs } : {})]);
+      } else {
+        await client.query(`INSERT INTO quest_conditions (quest_id, operator, config) VALUES ($1, $2, $3)`,
+          [q.rows[0].id, operator, JSON.stringify(prereqs.length ? { requires_quests: prereqs } : {})]);
+      }
+    }
+    await client.query('COMMIT');
+    await audit(userId(req), 'quest.update', 'quest', q.rows[0].id, q.rows[0], updated, req.body.reason || null);
+    res.json({ quest: updated });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
-// Duplicate a quest as a draft at the end of its own campaign.
+// The quest editor's Rewards and Prerequisites prefill: the quest's reward
+// rows plus its condition config, gated on quest.manage.
+router.get('/quests/:id/rewards', async (req, res) => {
+  const q = await pool.query(
+    `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [req.params.id]);
+  if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
+  if (!(await rbac.requireProjectPermission(req, res, q.rows[0].project_id, 'quest.manage'))) return;
+  const rewards = await pool.query('SELECT id, kind, config FROM rewards WHERE quest_id = $1 ORDER BY id', [q.rows[0].id]);
+  const cond = await pool.query('SELECT operator, config FROM quest_conditions WHERE quest_id = $1 LIMIT 1', [q.rows[0].id]);
+  const badge = rewards.rows.find(r => r.kind === 'badge');
+  const credential = rewards.rows.find(r => r.kind === 'credential');
+  res.json({
+    rewards: rewards.rows,
+    badge_id: badge && badge.config ? badge.config.badge_id || null : null,
+    credential_title: credential && credential.config ? credential.config.title || null : null,
+    requires_quests: (cond.rows[0] && cond.rows[0].config && cond.rows[0].config.requires_quests) || [],
+    require_all: cond.rows[0] ? cond.rows[0].operator !== 'any' : true,
+  });
+});
+
+// Duplicate a quest as a draft at the end of its own campaign. The copy is a
+// full configuration copy: every quest column, each task with its reward and
+// completion settings and a fresh v1 version, plus the rewards and
+// prerequisite conditions. Participant, submission and analytics data is
+// never read.
 router.post('/quests/:id/duplicate', async (req, res) => {
   const q = await pool.query(
     `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE q.id = $1`, [req.params.id]);
@@ -860,22 +936,42 @@ router.post('/quests/:id/duplicate', async (req, res) => {
     const nq = await client.query(
       `INSERT INTO quests (campaign_id, slug, title, description, instructions, image_url, quest_type,
                            sort_order, is_required, xp_reward, points_reward, starts_at, ends_at, status,
-                           visibility, max_participants, completion_limit, max_completions)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'draft', $14, $15, $16, $17)
+                           visibility, max_participants, completion_limit, max_completions, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'draft', $14, $15, $16, $17, NOW())
        RETURNING *`,
-      [quest.campaign_id, slug, quest.title + ' (copy)', quest.description, quest.instructions,
+      [quest.campaign_id, slug, quest.title + ' Copy', quest.description, quest.instructions,
         quest.image_url, quest.quest_type, ord.rows[0].n, quest.is_required, quest.xp_reward,
         quest.points_reward, quest.starts_at, quest.ends_at, quest.visibility, quest.max_participants,
         quest.completion_limit, quest.max_completions]);
+    const newQuestId = nq.rows[0].id;
     const tasks = await client.query('SELECT * FROM quest_tasks WHERE quest_id = $1 ORDER BY sort_order', [quest.id]);
     for (const t of tasks.rows) {
-      await client.query(
-        `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [nq.rows[0].id, t.type, t.title, JSON.stringify(t.config || {}), t.sort_order, t.verification_type, t.proof_required]);
+      const ins = await client.query(
+        `INSERT INTO quest_tasks (quest_id, type, title, config, sort_order, verification_type, proof_required,
+                                  project_id, campaign_id, xp_reward, completion_mode, max_completions,
+                                  attempt_limit, cooldown_seconds)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
+        [newQuestId, t.type, t.title, JSON.stringify(t.config || {}), t.sort_order, t.verification_type,
+          t.proof_required, quest.project_id, quest.campaign_id, t.xp_reward, t.completion_mode,
+          t.max_completions, t.attempt_limit, t.cooldown_seconds]);
+      // A duplicated task needs its own v1 version so the engine always reads
+      // an active version, exactly as a freshly created task gets one.
+      const ver = await client.query(
+        `INSERT INTO task_versions (task_id, version, config, created_by) VALUES ($1, 1, $2, $3) RETURNING id`,
+        [ins.rows[0].id, JSON.stringify(t.config || {}), userId(req)]);
+      await client.query('UPDATE quest_tasks SET current_version_id = $2 WHERE id = $1', [ins.rows[0].id, ver.rows[0].id]);
     }
+    // Rewards and prerequisite conditions travel with the copy.
+    await client.query(
+      `INSERT INTO rewards (quest_id, kind, config, supply_cap, status)
+       SELECT $1, kind, config, supply_cap, status FROM rewards WHERE quest_id = $2`,
+      [newQuestId, quest.id]);
+    await client.query(
+      `INSERT INTO quest_conditions (quest_id, operator, config)
+       SELECT $1, operator, config FROM quest_conditions WHERE quest_id = $2`,
+      [newQuestId, quest.id]);
     await client.query('COMMIT');
-    await audit(userId(req), 'quest.duplicate', 'quest', nq.rows[0].id, null, nq.rows[0], null);
+    await audit(userId(req), 'quest.duplicate', 'quest', newQuestId, null, nq.rows[0], null);
     res.json({ quest: nq.rows[0] });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -1509,6 +1605,57 @@ router.post('/tasks/:id/publish', async (req, res) => {
   await pool.query(`UPDATE quests SET status = 'active' WHERE id = $1 AND status IN ('draft','scheduled')`, [task.quest_id]);
   await audit(userId(req), 'task.publish', 'task', task.id, null, { published: true }, null);
   res.json({ ok: true, published: true });
+});
+
+// Delete a task, unless it already produced participant data. Submissions and
+// completions are a participant's history, so a task that has any is refused
+// rather than silently destroying it.
+router.delete('/tasks/:id', async (req, res) => {
+  const t = await pool.query(
+    `SELECT t.*, c.project_id FROM quest_tasks t JOIN quests q ON q.id = t.quest_id
+     JOIN campaigns c ON c.id = q.campaign_id WHERE t.id = $1`, [req.params.id]);
+  if (!t.rows.length) return res.status(404).json({ error: 'Task not found' });
+  const task = t.rows[0];
+  if (!(await rbac.requireProjectPermission(req, res, task.project_id, 'task.manage'))) return;
+  const used = await pool.query(
+    `SELECT (SELECT COUNT(*)::int FROM task_submissions WHERE task_id = $1) AS submissions,
+            (SELECT COUNT(*)::int FROM task_completions WHERE task_id = $1) AS completions`,
+    [task.id]);
+  const n = used.rows[0].submissions + used.rows[0].completions;
+  if (n > 0) {
+    return res.status(409).json({ error: 'This task already has participant activity, so it cannot be deleted. Archive the quest instead.' });
+  }
+  await pool.query('DELETE FROM quest_tasks WHERE id = $1', [task.id]);
+  await audit(userId(req), 'task.delete', 'task', task.id, task, null, null);
+  res.json({ deleted: true });
+});
+
+// Reorder a quest's tasks: the body is the full ordered id list.
+router.post('/quests/:id/tasks/reorder', async (req, res) => {
+  const isNum = !isNaN(Number(req.params.id));
+  const q = await pool.query(
+    `SELECT q.*, c.project_id FROM quests q JOIN campaigns c ON c.id = q.campaign_id
+     WHERE ${isNum ? 'q.id = $1' : 'q.slug = $1'} LIMIT 1`, [req.params.id]);
+  if (!q.rows.length) return res.status(404).json({ error: 'Quest not found' });
+  if (!(await rbac.requireProjectPermission(req, res, q.rows[0].project_id, 'task.manage'))) return;
+  const order = Array.isArray(req.body.order) ? req.body.order.map(Number).filter(Number.isFinite) : [];
+  if (!order.length) return res.status(400).json({ error: 'An ordered list of task ids is required' });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (let i = 0; i < order.length; i++) {
+      await client.query(
+        'UPDATE quest_tasks SET sort_order = $2 WHERE id = $1 AND quest_id = $3',
+        [order[i], i, q.rows[0].id]);
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // Creator-facing task shape: only allow-listed on-chain config fields; never
