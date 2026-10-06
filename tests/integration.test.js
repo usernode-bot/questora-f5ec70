@@ -1610,6 +1610,56 @@ t('quest duplicate copies full task config, rewards and prereqs; task delete and
   assert.equal((await fetch(base + `/api/v1/tasks/${keepTaskId}`, { method: 'DELETE', headers: nobody })).status, 403);
 }, { timeout: 30000 });
 
+// The redesigned Quests dashboard is screenshot-reachable in staging through
+// a read-only ?demo=1 payload. The capture identity is never a project member,
+// so the demo project read must also carry the overview numbers the dashboard
+// would otherwise fetch from /overview. That route keeps enforcing
+// analytics.view: fixing the 403 must not open it to a non-member.
+t('staging demo project read is permission-widened and carries its own overview', async () => {
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const tokenFor = (username, id) => jwt.sign(
+    { id, username, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  const stranger = { 'x-usernode-token': tokenFor('staging-demo-stranger-' + (Date.now() % 100000000), 830000000) };
+
+  // The plain read is what a real non-member gets: no management permission,
+  // no embedded numbers.
+  const plainRes = await fetch(base + '/api/v1/projects/staging-demo-octra-builders', { headers: stranger });
+  assert.equal(plainRes.status, 200);
+  const plain = await plainRes.json();
+  assert.equal(plain.permissions['quest.manage'], false, 'a non-member holds no management permission');
+  assert.equal(plain.stats, undefined, 'the plain payload carries no overview numbers');
+  const projectId = plain.project.id;
+
+  // The demo read reports the management permissions and carries the overview
+  // numbers, so the dashboard needs no second, still-gated request.
+  const demoRes = await fetch(base + '/api/v1/projects/staging-demo-octra-builders?demo=1', { headers: stranger });
+  assert.equal(demoRes.status, 200);
+  const demo = await demoRes.json();
+  assert.equal(demo.permissions['quest.manage'], true, 'the demo read widens the management permission');
+  assert.ok(demo.stats && typeof demo.stats.quests === 'number', 'the demo read carries the overview stats');
+
+  // The write path still resolves the real role: a demo viewer cannot reorder.
+  const reorder = await fetch(base + '/api/v1/campaigns/1/quests/reorder', {
+    method: 'POST',
+    headers: { ...stranger, 'content-type': 'application/json' },
+    body: JSON.stringify({ order: [] }),
+  });
+  assert.equal(reorder.status, 403, 'the demo read must not grant writes');
+
+  // /overview stays gated for the same non-member; only the demo project read
+  // supplies the numbers.
+  assert.equal((await fetch(base + `/api/v1/projects/${projectId}/overview`, { headers: stranger })).status, 403,
+    'the overview endpoint still requires analytics.view');
+}, { timeout: 20000 });
+
 after(async () => {
   if (httpServer) await new Promise(resolve => httpServer.close(resolve));
   if (pool) await pool.end();

@@ -1238,8 +1238,15 @@ async function viewDashboard(slug, section, params) {
       </div>`));
     return;
   }
-  try { overview = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/overview`); }
-  catch { overview = { stats: {}, recent_activity: [] }; }
+  // The staging demo read (loadProjectView forwards ?demo=1) embeds the
+  // overview numbers, because /overview enforces analytics.view and would 403
+  // the non-member capture identity. Everyone else fetches it as before.
+  if (data.stats) {
+    overview = { stats: data.stats, recent_activity: data.recent_activity || [] };
+  } else {
+    try { overview = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/overview`); }
+    catch { overview = { stats: {}, recent_activity: [] }; }
+  }
   const stats = overview.stats || {};
 
   const node = el(`

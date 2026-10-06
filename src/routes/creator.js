@@ -287,6 +287,38 @@ async function loadProject(idOrSlug) {
   return rows[0] || null;
 }
 
+// True when a request explicitly asks for the staging-only, read-only demo
+// view. The before/after capture identity is never a project member, so this
+// flag lets the redesigned management screens be reached for a screenshot.
+// Production ignores it, and every write route re-derives the real role, so a
+// demo viewer still cannot change anything.
+function isDemoRead(req) {
+  return IS_STAGING && req.query.demo === '1';
+}
+
+// The dashboard's summary numbers. Readable by anyone holding analytics.view
+// (the overview route gates on it); the demo read returns the same shape for a
+// non-member so the demo project payload can carry it without a second,
+// still-gated request.
+async function projectStats(projectId) {
+  const stats = await pool.query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = $1 AND c.status = 'active') AS active_campaigns,
+       (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = $1) AS campaigns,
+       (SELECT COUNT(*)::int FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS quests,
+       (SELECT COUNT(*)::int FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1 AND q.status = 'active') AS active_quests,
+       (SELECT COUNT(DISTINCT qc.user_id)::int FROM quest_completions qc
+          JOIN quests q ON q.id = qc.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS participants,
+       (SELECT COUNT(*)::int FROM quest_completions qc
+          JOIN quests q ON q.id = qc.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS completions,
+       (SELECT COALESCE(SUM(x.amount), 0)::int FROM xp_events x WHERE x.project_id = $1) AS xp_distributed,
+       (SELECT COUNT(*)::int FROM task_submissions s
+          JOIN quests q ON q.id = s.quest_id JOIN campaigns c ON c.id = q.campaign_id
+          WHERE c.project_id = $1 AND s.status = 'pending') AS pending_review`,
+    [projectId]);
+  return stats.rows[0];
+}
+
 // Project overview payload: the project, its campaigns (each with the quests
 // a viewer may see) and whether this viewer can manage it. Readable without a
 // project role; the management surface is the dashboard, which is gated.
@@ -302,12 +334,10 @@ router.get('/projects/:id', async (req, res) => {
   for (const perm of rbac.PROJECT_PERMISSIONS) {
     permissions[perm] = rbac.resolvePermission({ isCreator, role: memberRole, permission: perm });
   }
-  // Staging-only, read-only demo: the before/after capture identity is never a
-  // project member, so without this the redesigned Quests manager is
-  // unreachable for a screenshot. It widens only what this GET reports, and
-  // only when explicitly asked for with ?demo=1; every write route re-derives
-  // the real role, so a demo viewer still cannot change anything.
-  if (IS_STAGING && req.query.demo === '1' && !permissions['quest.manage']) {
+  // The demo read reports management permissions for the management screens
+  // (see isDemoRead); every write route still resolves the real role.
+  const demo = isDemoRead(req) && !permissions['quest.manage'];
+  if (demo) {
     for (const perm of rbac.PROJECT_PERMISSIONS) permissions[perm] = true;
   }
   const canSeePrivate = permissions['project.view_private'];
@@ -337,6 +367,10 @@ router.get('/projects/:id', async (req, res) => {
      ORDER BY q.sort_order`, [p.id, canSeePrivate]);
   const byCampaign = {};
   for (const q of quests.rows) (byCampaign[q.campaign_id] = byCampaign[q.campaign_id] || []).push(q);
+  // A demo read carries the overview numbers the dashboard would otherwise
+  // fetch from /overview, which enforces analytics.view and would 403 the
+  // non-member capture identity. The plain payload never includes them.
+  const stats = demo ? await projectStats(p.id) : undefined;
   res.json({
     project: p,
     is_creator: isCreator,
@@ -344,6 +378,7 @@ router.get('/projects/:id', async (req, res) => {
     permissions,
     can_manage: permissions['campaign.manage'] || permissions['access.manage'],
     can_delete: permissions['project.delete'],
+    ...(demo ? { stats, recent_activity: [] } : {}),
     campaigns: campaigns.rows.map(c => ({ ...c, quests: byCampaign[c.id] || [] })),
   });
 });
@@ -1144,21 +1179,7 @@ router.get('/projects/:id/overview', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
   if (!(await rbac.requireProjectPermission(req, res, p.id, 'analytics.view'))) return;
-  const stats = await pool.query(
-    `SELECT
-       (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = $1 AND c.status = 'active') AS active_campaigns,
-       (SELECT COUNT(*)::int FROM campaigns c WHERE c.project_id = $1) AS campaigns,
-       (SELECT COUNT(*)::int FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS quests,
-       (SELECT COUNT(*)::int FROM quests q JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1 AND q.status = 'active') AS active_quests,
-       (SELECT COUNT(DISTINCT qc.user_id)::int FROM quest_completions qc
-          JOIN quests q ON q.id = qc.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS participants,
-       (SELECT COUNT(*)::int FROM quest_completions qc
-          JOIN quests q ON q.id = qc.quest_id JOIN campaigns c ON c.id = q.campaign_id WHERE c.project_id = $1) AS completions,
-       (SELECT COALESCE(SUM(x.amount), 0)::int FROM xp_events x WHERE x.project_id = $1) AS xp_distributed,
-       (SELECT COUNT(*)::int FROM task_submissions s
-          JOIN quests q ON q.id = s.quest_id JOIN campaigns c ON c.id = q.campaign_id
-          WHERE c.project_id = $1 AND s.status = 'pending') AS pending_review`,
-    [p.id]);
+  const stats = await projectStats(p.id);
   const activity = await pool.query(
     `SELECT qc.completed_at, u.username, q.title, c.name AS campaign_name
      FROM quest_completions qc
@@ -1167,7 +1188,7 @@ router.get('/projects/:id/overview', async (req, res) => {
      JOIN campaigns c ON c.id = q.campaign_id
      WHERE c.project_id = $1
      ORDER BY qc.completed_at DESC LIMIT 8`, [p.id]);
-  res.json({ project: p, stats: stats.rows[0], recent_activity: activity.rows });
+  res.json({ project: p, stats, recent_activity: activity.rows });
 });
 
 
