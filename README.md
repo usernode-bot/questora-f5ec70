@@ -7,7 +7,11 @@ verified server-side, and earn XP, points, badges and leaderboard position.
 
 ## What works
 
-- **Discover** featured, trending, new and ending-soon campaigns by category
+- **Discover** featured, trending, new and ending-soon campaigns by category.
+  The Explore screen (`/`) lists each project at most once across the whole
+  page: `GET /api/v1/discover` fills Featured, Trending, New and Ending soon
+  in order and skips any project already shown in an earlier section, so a
+  project with several active campaigns no longer repeats three or more times.
 - **Campaigns** group ordered quests with a progress checklist
 - **Five task types**: connect wallet (signature-verified), social link
   (visit and confirm), URL/proof submission, quiz (server-graded), manual

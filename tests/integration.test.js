@@ -1493,6 +1493,38 @@ t('create wizard: a url_proof task needs no builder-side placeholder', async () 
   assert.deepEqual(hintedTask.rows[0].config, { placeholder: 'https://your-work.example' });
 }, { timeout: 30000 });
 
+t('discover shows each project at most once across its sections', async () => {
+  const jwtLib = require('jsonwebtoken');
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const token = jwtLib.sign(
+    { id: 515151515, username: 'staging-demo-discover-1', pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  const res = await fetch(base + '/api/v1/discover', { headers: { 'x-usernode-token': token } });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  // The homepage renders Featured, Trending, New and Ending soon from four
+  // independently ordered queries. A project with several active campaigns
+  // used to appear once per campaign in every one of them, so the same
+  // project showed up three or more times on /.
+  const sections = [body.featured, body.trending, body.fresh, body.ending];
+  const slugs = sections.flat().map(c => c.project_slug);
+  assert.ok(slugs.length > 0, 'the seeded discover payload must carry campaigns');
+  assert.equal(new Set(slugs).size, slugs.length,
+    'a project may appear at most once across the whole discover payload');
+  for (const section of sections) {
+    const inSection = section.map(c => c.project_slug);
+    assert.equal(new Set(inSection).size, inSection.length,
+      'no project may repeat inside a single discover section');
+  }
+}, { timeout: 20000 });
+
 after(async () => {
   if (httpServer) await new Promise(resolve => httpServer.close(resolve));
   if (pool) await pool.end();

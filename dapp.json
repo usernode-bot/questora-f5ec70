@@ -27,6 +27,12 @@
       "expectText": "Explore"
     },
     {
+      "name": "Discover lists a seeded campaign after project dedupe",
+      "path": "/",
+      "expectSelector": "a[href=\"/campaigns/staging-demo-welcome-campaign\"]",
+      "expectText": "Staging demo Welcome Campaign"
+    },
+    {
       "name": "Hierarchical campaign page checklist",
       "path": "/projects/staging-demo-octra-builders/campaigns/staging-demo-welcome-campaign",
       "expectText": "Quests"
