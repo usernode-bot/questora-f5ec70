@@ -763,7 +763,11 @@ async function viewProjects() {
 // Loads a project and its campaigns; every hierarchical screen goes through
 // it so breadcrumb labels and scoping come from one place.
 async function loadProjectView(slug) {
-  const data = await window.QuestoraAPI.api.get('/api/v1/projects/' + encodeURIComponent(slug));
+  // The staging demo flag (read-only) rides along so a screenshot of the
+  // management surfaces can open without a project membership. It is inert in
+  // production: the server ignores it outside staging.
+  const demo = new URLSearchParams(window.location.search).get('demo');
+  const data = await window.QuestoraAPI.api.get('/api/v1/projects/' + encodeURIComponent(slug) + (demo ? '?demo=' + encodeURIComponent(demo) : ''));
   return data;
 }
 

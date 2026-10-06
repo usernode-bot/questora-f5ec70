@@ -10,6 +10,8 @@ const networkPresets = require('../network-presets');
 
 const router = express.Router();
 
+const IS_STAGING = process.env.USERNODE_ENV === 'staging';
+
 const TASK_SCHEMAS = {
   wallet_connect: { required: [], optional: [] },
   social: {
@@ -299,6 +301,14 @@ router.get('/projects/:id', async (req, res) => {
   const permissions = {};
   for (const perm of rbac.PROJECT_PERMISSIONS) {
     permissions[perm] = rbac.resolvePermission({ isCreator, role: memberRole, permission: perm });
+  }
+  // Staging-only, read-only demo: the before/after capture identity is never a
+  // project member, so without this the redesigned Quests manager is
+  // unreachable for a screenshot. It widens only what this GET reports, and
+  // only when explicitly asked for with ?demo=1; every write route re-derives
+  // the real role, so a demo viewer still cannot change anything.
+  if (IS_STAGING && req.query.demo === '1' && !permissions['quest.manage']) {
+    for (const perm of rbac.PROJECT_PERMISSIONS) permissions[perm] = true;
   }
   const canSeePrivate = permissions['project.view_private'];
   // An archived/soft-deleted project is not publicly reachable: only a viewer
