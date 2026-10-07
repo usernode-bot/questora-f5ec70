@@ -653,6 +653,7 @@ async function migrate() {
     await client.query("ALTER TABLE quests ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) NOT NULL DEFAULT 'public'");
     await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS max_participants INTEGER');
     await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS completion_limit INTEGER NOT NULL DEFAULT 1');
+    await client.query('ALTER TABLE quests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ');
     await client.query('ALTER TABLE quest_completions ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL');
     await client.query('ALTER TABLE quest_completions ADD COLUMN IF NOT EXISTS campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL');
     await client.query('CREATE INDEX IF NOT EXISTS quest_completions_project_user_idx ON quest_completions (project_id, user_id)');

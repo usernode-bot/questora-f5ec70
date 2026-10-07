@@ -179,6 +179,36 @@
       "expectText": "Quests in Staging demo Octra Builders"
     },
     {
+      "id": "quests.status-vocabulary",
+      "name": "Project quests directory uses the simplified status wording",
+      "path": "/projects/staging-demo-octra-builders/quests",
+      "expectSelector": "a[href*='/quests/']",
+      "expectText": "Published",
+      "visual": true,
+      "impact": [
+        "public/views.js",
+        "public/quest-builder.js"
+      ]
+    },
+    {
+      "id": "quests.manager",
+      "name": "Quests manager lists quests with the simplified filters",
+      "path": "/dashboard/projects/staging-demo-octra-builders/quests?demo=1",
+      "expectSelector": "a[href$='/quests/new']",
+      "expectText": "Create Quest",
+      "visual": true,
+      "impact": [
+        "public/views.js",
+        "public/quest-builder.js",
+        "src/routes/creator.js"
+      ]
+    },
+    {
+      "name": "Create Quest form opens from the Quests manager",
+      "path": "/dashboard/projects/staging-demo-octra-builders/quests/new?demo=1",
+      "expectText": "Quest details"
+    },
+    {
       "id": "wallets.panel",
       "name": "Profile Wallets tab lists a linked wallet",
       "path": "/u/staging-demo-user-1?tab=wallets",
