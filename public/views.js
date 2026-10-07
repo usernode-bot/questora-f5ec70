@@ -1,6 +1,6 @@
 window.QV = (function () {
 'use strict';
-var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, statCard, pager, emptyState, dangerZone, icon, tooltip, notificationRow, NOTIF_KINDS;
+var el, escapeHtml, toast, campaignCard, sectionRow, timeLeft, levelRing, badgePill, statePill, breadcrumb, statCard, pager, emptyState, dangerZone, confirmDialog, icon, tooltip, notificationRow, NOTIF_KINDS;
 // Resolve the orchestrator's helpers at call time: app.js loads after this
 // file, so a bind-time capture would freeze the fallbacks.
 var mount, errorCard, Render;
@@ -8,7 +8,7 @@ function bindRender() {
   mount = function (n) { var R = window.QV && window.QV.Render; return R && R.mount ? R.mount(n) : app().replaceChildren(n); };
   errorCard = function (m) { var R = window.QV && window.QV.Render; return R && R.errorCard ? R.errorCard(m) : el('<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">' + escapeHtml(m) + '</p></div>'); };
 }
-function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; dangerZone = q.dangerZone; icon = q.icon; tooltip = q.tooltip; notificationRow = q.notificationRow; NOTIF_KINDS = q.NOTIF_KINDS; }
+function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; dangerZone = q.dangerZone; confirmDialog = q.confirmDialog; icon = q.icon; tooltip = q.tooltip; notificationRow = q.notificationRow; NOTIF_KINDS = q.NOTIF_KINDS; }
 bindQUI();
 bindRender();
 // View renderers. Each returns a DocumentFragment-ish element appended by
@@ -763,7 +763,11 @@ async function viewProjects() {
 // Loads a project and its campaigns; every hierarchical screen goes through
 // it so breadcrumb labels and scoping come from one place.
 async function loadProjectView(slug) {
-  const data = await window.QuestoraAPI.api.get('/api/v1/projects/' + encodeURIComponent(slug));
+  // The staging demo flag (read-only) rides along so a screenshot of the
+  // management surfaces can open without a project membership. It is inert in
+  // production: the server ignores it outside staging.
+  const demo = new URLSearchParams(window.location.search).get('demo');
+  const data = await window.QuestoraAPI.api.get('/api/v1/projects/' + encodeURIComponent(slug) + (demo ? '?demo=' + encodeURIComponent(demo) : ''));
   return data;
 }
 
@@ -937,7 +941,7 @@ async function viewProjectQuests(slug, params) {
         <a href="/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(c.slug)}/quests/${encodeURIComponent(qid)}" class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40">
           <span class="min-w-0 flex-1"><span class="block font-medium truncate">${escapeHtml(q.title)}</span>
           <span class="block text-xs text-content-tertiary">${escapeHtml(c.name)}</span></span>
-          ${statePill(q.status)}
+          ${questStatusPill(q.status)}
           <span class="shrink-0 text-sm text-accent-text">+${q.xp_reward} XP</span>
         </a>`));
     }
@@ -1234,8 +1238,15 @@ async function viewDashboard(slug, section, params) {
       </div>`));
     return;
   }
-  try { overview = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/overview`); }
-  catch { overview = { stats: {}, recent_activity: [] }; }
+  // The staging demo read (loadProjectView forwards ?demo=1) embeds the
+  // overview numbers, because /overview enforces analytics.view and would 403
+  // the non-member capture identity. Everyone else fetches it as before.
+  if (data.stats) {
+    overview = { stats: data.stats, recent_activity: data.recent_activity || [] };
+  } else {
+    try { overview = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/overview`); }
+    catch { overview = { stats: {}, recent_activity: [] }; }
+  }
   const stats = overview.stats || {};
 
   const node = el(`
@@ -1261,25 +1272,26 @@ async function viewDashboard(slug, section, params) {
   const base = '/dashboard/projects/' + encodeURIComponent(p.slug);
   for (const [seg, label, perm] of DASH_SECTIONS) {
     if (!perms[perm]) continue;
-    const active = (seg === section) || (seg === 'campaigns' && section.startsWith('campaigns/'));
+    const active = (seg === section) || (seg === 'campaigns' && section.startsWith('campaigns/')) || (seg === 'quests' && section.startsWith('quests/'));
     sidebar.appendChild(el(`<a href="${base}${seg ? '/' + seg : ''}" class="shrink-0 px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium ${active ? 'bg-accent text-accent-contrast' : 'bg-surface-container text-content-secondary hover:text-content-primary'}">${escapeHtml(label)}</a>`));
   }
 
   const ctx = { p, data, stats, base, isCreator, perms, params, reload: () => viewDashboard(slug, section, params) };
   // A section the viewer cannot reach falls back to the overview rather than
   // rendering a management surface the routes would reject anyway.
-  const sectionPerm = (DASH_SECTIONS.find(([seg]) => seg === section || (seg === 'campaigns' && section.startsWith('campaigns/')) || (seg === 'tasks' && section.startsWith('tasks/'))));
+  const sectionPerm = (DASH_SECTIONS.find(([seg]) => seg === section || (seg === 'campaigns' && section.startsWith('campaigns/')) || (seg === 'quests' && section.startsWith('quests/'))));
   const required = sectionPerm ? sectionPerm[2] : null;
   const allowed = required ? !!perms[required] : true;
   if (section && !allowed) return renderDashOverview(sectionEl, ctx);
   if (section === 'campaigns') return renderDashCampaigns(sectionEl, ctx);
   if (section.startsWith('campaigns/')) return renderDashCampaignQuests(sectionEl, ctx, section.slice('campaigns/'.length));
-  if (section === 'quests') {
-    const nw = params.get('new');
-    if (nw === 'quest' || nw === 'task') return renderDashNewChooser(sectionEl, ctx, nw);
-    return renderDashQuests(sectionEl, ctx);
+  if (section === 'quests/new') return renderQuestEditor(sectionEl, ctx, null);
+  if (section.startsWith('quests/')) {
+    // quests/<id>/edit and its quests/<id> alias open the same editor.
+    const qid = decodeURIComponent(section.slice('quests/'.length).split('/')[0]);
+    return renderQuestEditor(sectionEl, ctx, qid);
   }
-  if (section.startsWith('tasks/')) return renderDashTaskEditor(sectionEl, ctx, decodeURIComponent(section.slice('tasks/'.length)));
+  if (section === 'quests') return renderDashQuests(sectionEl, ctx);
   if (section === 'participants' || section === 'leaderboard') return renderDashLeaderboard(sectionEl, ctx, section);
   if (section === 'rewards') return renderDashRewards(sectionEl, ctx);
   if (section === 'analytics') return renderDashAnalytics(sectionEl, ctx);
@@ -1468,573 +1480,825 @@ function renderDashCampaigns(sectionEl, ctx) {
   render();
 }
 
-// Manage one campaign's quests: table with reorder, CRUD and status actions.
+// Quest-local status pill: the same visual language as the shared statePill
+// (a glyph plus colour), but the label is the three-word quest vocabulary so
+// an active quest reads "Published". Campaigns keep statePill's wording.
+function questStatusPill(status) {
+  const QB = window.QuestoraQuestBuilder;
+  const map = {
+    draft: ['bg-surface-container-high text-content-secondary', 'info'],
+    active: ['bg-success-bg text-success', 'check'],
+    scheduled: ['bg-info-bg text-info', 'info'],
+    paused: ['bg-warning-bg text-warning', 'warning'],
+    ended: ['bg-surface-container text-content-secondary', 'info'],
+    archived: ['bg-surface-container text-content-secondary', 'info'],
+  };
+  const [cls, glyph] = map[status] || ['bg-surface-container-high text-content-secondary', 'info'];
+  return `<span class="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full ${cls}">${icon(glyph, { class: 'w-3.5 h-3.5' })}<span>${escapeHtml(QB.statusPill(status))}</span></span>`;
+}
+
+// ---- quest CRUD (simplified) ----
+// One shared manager for the project-wide Quests page and the campaign-scoped
+// route, so the two never drift. `campaign` is optional; when present the list
+// is narrowed to that campaign and the breadcrumb names it.
 function renderDashCampaignQuests(sectionEl, ctx, campaignSlug) {
-  const { p, data } = ctx;
+  const { data } = ctx;
   const campaign = data.campaigns.find(c => c.slug === campaignSlug);
   if (!campaign) { sectionEl.appendChild(el(emptyState('That campaign is not in this project.'))); return; }
-  const quests = (campaign.quests || []).slice();
-  const state = { q: '', status: '', type: '', sort: 'order', page: 1 };
-  const pageSize = 8;
+  renderDashQuests(sectionEl, ctx, campaign);
+}
+
+function renderDashQuests(sectionEl, ctx, campaign) {
+  const { p, data, base, params } = ctx;
+  const QB = window.QuestoraQuestBuilder;
+  // Flatten every campaign's quests into one row projection.
+  const allRows = [];
+  for (const c of data.campaigns) {
+    for (const q of (c.quests || [])) allRows.push({ ...q, campaign_name: c.name, campaign_slug: c.slug });
+  }
+  const scoped = campaign ? allRows.filter(q => Number(q.campaign_id) === Number(campaign.id)) : allRows;
+  const qParam = (key) => (params && params.get(key)) || '';
+  const state = {
+    q: qParam('q'),
+    bucket: ['Draft', 'Published', 'Archived'].includes(qParam('status')) ? qParam('status') : '',
+    sort: ['order', 'newest', 'oldest', 'participants'].includes(qParam('sort')) ? qParam('sort') : (campaign ? 'order' : 'newest'),
+  };
+  const canReorder = !!campaign || new Set(scoped.map(q => q.campaign_id)).size === 1;
+
+  function writeUrl() {
+    const u = new URLSearchParams(window.location.search);
+    for (const k of ['q', 'status', 'sort']) u.delete(k);
+    if (state.q) u.set('q', state.q);
+    if (state.bucket) u.set('status', state.bucket);
+    if (state.sort && state.sort !== (campaign ? 'order' : 'newest')) u.set('sort', state.sort);
+    const qs = u.toString();
+    window.history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
+  }
+
+  const createHref = base + '/quests/new' + (campaign ? '?campaign=' + encodeURIComponent(campaign.id) : '');
   sectionEl.appendChild(el(`
     <div class="mb-4">
-      ${breadcrumb([{ label: 'Campaigns', href: ctx.base + '/campaigns' }, { label: campaign.name }])}
-      <h2 class="text-lg font-bold">${escapeHtml(campaign.name)}</h2>
-      <p class="text-sm text-content-secondary">Manage this campaign's quests.</p>
-    </div>`));
-
-  const create = el(`
-    <div class="rounded-xl border border-line bg-surface p-4 mb-4">
-      <h3 class="font-semibold mb-2">Create quest</h3>
-      <div class="flex flex-col sm:flex-row gap-2">
-        <input class="q-title flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" placeholder="Quest title">
-        <input class="q-xp w-28 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" type="number" min="0" placeholder="XP">
-        <button class="q-create shrink-0 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Create quest</button>
+      ${campaign ? breadcrumb([{ label: 'Quests', href: base + '/quests' }, { label: campaign.name }]) : ''}
+      <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div class="min-w-0">
+          <h2 class="text-lg font-bold">Quests</h2>
+          <p class="text-sm text-content-secondary">${campaign ? 'Manage this campaign\u2019s quests.' : 'Every quest in this project.'}</p>
+        </div>
+        <a href="${createHref}" class="inline-flex items-center gap-1.5 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">${icon('add', { class: 'w-4 h-4' })}<span>Create Quest</span></a>
       </div>
-      <p class="text-xs text-content-tertiary mt-1">A quest starts with one manual task you can edit later.</p>
-    </div>`);
-  create.querySelector('.q-create').addEventListener('click', async () => {
-    const title = create.querySelector('.q-title').value.trim();
-    if (!title) return toast('A quest title is required', true);
-    try {
-      await window.QuestoraAPI.api.post(`/api/v1/campaigns/${campaign.id}/quests`, {
-        title, xp_reward: parseInt(create.querySelector('.q-xp').value, 10) || 0, status: 'draft',
-        tasks: [{ type: 'manual', title: 'Task', config: {} }],
-      });
-      toast('Quest created'); ctx.reload();
-    } catch (err) { toast(err.message, true); }
-  });
-  sectionEl.appendChild(create);
-  if (ctx.params && ctx.params.get('new') === 'quest') {
-    const titleInput = create.querySelector('.q-title');
-    if (titleInput) titleInput.focus();
-  }
+    </div>`));
 
   const controls = el(`
     <div class="flex flex-wrap gap-2 items-center mb-3">
-      <input class="k-search flex-1 min-w-[160px] rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" placeholder="Search quests">
-      <select class="k-status rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
-        <option value="">All statuses</option>
-        <option value="draft">Draft</option><option value="scheduled">Scheduled</option><option value="active">Active</option>
-        <option value="paused">Paused</option><option value="ended">Ended</option><option value="archived">Archived</option>
-      </select>
-      <select class="k-type rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
-        <option value="">All types</option>
-        <option value="Social">Social</option><option value="Quiz">Quiz</option><option value="Wallet">Wallet</option>
-        <option value="Submission">Submission</option><option value="Mixed">Mixed</option>
-      </select>
-      <select class="k-sort rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
-        <option value="order">Manual order</option><option value="name">Name</option>
-        <option value="participants">Most participants</option><option value="xp">Most XP</option>
+      <input class="qm-search flex-1 min-w-[160px] rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none" placeholder="Search quests" value="${escapeHtml(state.q)}" aria-label="Search quests">
+      <div class="qm-chips flex gap-1 bg-surface-container rounded-full p-1 border border-line"></div>
+      <select class="qm-sort rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" aria-label="Sort quests">
+        ${canReorder ? '<option value="order">Manual order</option>' : ''}
+        <option value="newest">Newest</option>
+        <option value="oldest">Oldest</option>
+        <option value="participants">Most participants</option>
       </select>
     </div>`);
   sectionEl.appendChild(controls);
+  const chips = controls.querySelector('.qm-chips');
+  for (const label of ['All', 'Draft', 'Published', 'Archived']) {
+    const value = label === 'All' ? '' : label;
+    const b = el(`<button class="px-4 py-1.5 rounded-full text-sm font-medium ${state.bucket === value ? 'bg-accent text-accent-contrast' : 'text-content-secondary'}">${label}</button>`);
+    b.addEventListener('click', () => { state.bucket = value; writeUrl(); render(); });
+    chips.appendChild(b);
+  }
+  controls.querySelector('.qm-sort').value = state.sort;
 
-  if (!quests.length) { sectionEl.appendChild(el(emptyState("This campaign doesn't have any quests yet."))); return; }
-
-  const table = el('<div class="space-y-2"></div>');
+  const table = el('<div class="qm-rows space-y-2"></div>');
   sectionEl.appendChild(table);
-  const pagerSlot = el('<div></div>');
-  sectionEl.appendChild(pagerSlot);
+
+  let rows = scoped.slice();
+  function filtered() {
+    let list = rows.slice();
+    if (state.q) list = list.filter(q => q.title.toLowerCase().includes(state.q.toLowerCase()));
+    if (state.bucket) list = list.filter(q => QB.statusBucket(q.status) === state.bucket);
+    if (state.sort === 'participants') list.sort((a, b) => (b.participants || 0) - (a.participants || 0));
+    else if (state.sort === 'oldest') list.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+    else if (state.sort === 'newest') list.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+    else list.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    return list;
+  }
 
   async function saveOrder(list) {
-    try { await window.QuestoraAPI.api.post(`/api/v1/campaigns/${campaign.id}/quests/reorder`, { order: list.map(q => q.id) }); toast('Order saved'); }
-    catch (e) { toast(e.message, true); }
+    // Reorder is per campaign; group by campaign and post each order.
+    const byCampaign = new Map();
+    for (const q of list) {
+      if (!byCampaign.has(q.campaign_id)) byCampaign.set(q.campaign_id, []);
+      byCampaign.get(q.campaign_id).push(q.id);
+    }
+    try {
+      for (const [cid, ids] of byCampaign) {
+        await window.QuestoraAPI.api.post(`/api/v1/campaigns/${cid}/quests/reorder`, { order: ids });
+      }
+      toast('Order saved');
+      ctx.reload();
+    } catch (e) { toast(e.message, true); }
   }
 
-  async function patchQuest(id, body) {
-    try { await window.QuestoraAPI.api.patch(`/api/v1/quests/${id}`, body); toast('Updated'); ctx.reload(); }
-    catch (e) { toast(e.message, true); }
-  }
-
-  function filtered() {
-    let rows = quests.slice();
-    if (state.q) rows = rows.filter(q => q.title.toLowerCase().includes(state.q.toLowerCase()));
-    if (state.status) rows = rows.filter(q => q.status === state.status);
-    if (state.type) rows = rows.filter(q => (q.quest_type || 'Mixed') === state.type);
-    if (state.sort === 'name') rows.sort((a, b) => a.title.localeCompare(b.title));
-    else if (state.sort === 'participants') rows.sort((a, b) => (b.participants || 0) - (a.participants || 0));
-    else if (state.sort === 'xp') rows.sort((a, b) => (b.xp_reward || 0) - (a.xp_reward || 0));
-    return rows;
+  function questActions(q) {
+    const items = [];
+    const openPublic = () => { window.history.pushState({}, '', `/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(q.campaign_slug)}/quests/${encodeURIComponent(q.slug || q.id)}`); window.dispatchEvent(new PopStateEvent('popstate')); };
+    items.push({ label: 'View', icon: 'open_in_new', run: openPublic });
+    items.push({ label: 'Edit', icon: 'edit', run: () => window.QuestoraNav.go(base + '/quests/' + encodeURIComponent(q.id) + '/edit') });
+    items.push({ label: 'Duplicate', icon: 'content_copy', run: async () => {
+      try { const r = await window.QuestoraAPI.api.post(`/api/v1/quests/${q.id}/duplicate`, {}); toast(`Duplicated as "${r.quest.title}"`); ctx.reload(); }
+      catch (e) { toast(e.message, true); }
+    } });
+    if (q.status !== 'active') {
+      items.push({ label: 'Publish', icon: 'publish', run: async () => {
+        const taskCount = q.task_count || 0;
+        await confirmDialog({
+          title: 'Publish quest?',
+          body: `${escapeHtml(q.title)} will go live${q.starts_at ? ' from ' + new Date(q.starts_at).toLocaleDateString() : ''}${q.ends_at ? ' until ' + new Date(q.ends_at).toLocaleDateString() : ''}. It has ${taskCount} task${taskCount === 1 ? '' : 's'}.`,
+          confirmLabel: 'Publish',
+          onConfirm: async () => { await window.QuestoraAPI.api.patch(`/api/v1/quests/${q.id}`, { status: 'active' }); toast('Quest published'); ctx.reload(); },
+        });
+      } });
+    }
+    if (q.status === 'active') {
+      items.push({ label: 'Unpublish', icon: 'cancel', run: async () => { try { await window.QuestoraAPI.api.patch(`/api/v1/quests/${q.id}`, { status: 'paused' }); toast('Quest unpublished'); ctx.reload(); } catch (e) { toast(e.message, true); } } });
+    }
+    items.push({ label: 'Archive', icon: 'archive', danger: true, run: async () => { try { await window.QuestoraAPI.api.patch(`/api/v1/quests/${q.id}`, { status: 'archived' }); toast('Quest archived'); ctx.reload(); } catch (e) { toast(e.message, true); } } });
+    items.push({ label: 'Delete', icon: 'delete', danger: true, run: async () => {
+      const hasData = (q.participants || 0) > 0;
+      await confirmDialog({
+        title: hasData ? 'Archive quest?' : 'Delete quest?',
+        body: hasData
+          ? `${escapeHtml(q.title)} has ${q.participants} participant completion${q.participants === 1 ? '' : 's'}, so it will be archived to keep their history rather than permanently deleted.`
+          : `${escapeHtml(q.title)} will be permanently deleted along with its tasks. This cannot be undone.`,
+        confirmLabel: hasData ? 'Archive' : 'Delete',
+        danger: !hasData,
+        onConfirm: async () => {
+          const r = await window.QuestoraAPI.api.del(`/api/v1/quests/${q.id}`);
+          toast(r.archived ? r.reason : 'Quest deleted');
+          ctx.reload();
+        },
+      });
+    } });
+    return actionMenu(items);
   }
 
   function render() {
-    const rows = filtered();
-    const pages = Math.max(1, Math.ceil(rows.length / pageSize));
-    if (state.page > pages) state.page = pages;
-    const slice = rows.slice((state.page - 1) * pageSize, state.page * pageSize);
+    const list = filtered();
+    controls.querySelector('.qm-chips').querySelectorAll('button').forEach((b) => {
+      const label = b.textContent;
+      const value = label === 'All' ? '' : label;
+      b.className = 'px-4 py-1.5 rounded-full text-sm font-medium ' + (state.bucket === value ? 'bg-accent text-accent-contrast' : 'text-content-secondary');
+    });
     table.replaceChildren();
     if (!rows.length) {
-      table.appendChild(el(emptyState('No quests match the selected filters.')));
-      pagerSlot.replaceChildren();
+      table.appendChild(el(emptyState(campaign ? "This campaign doesn't have any quests yet." : "This project doesn't have any quests yet.", 'Create Quest', createHref)));
       return;
     }
-    slice.forEach((q) => {
-      const idx = quests.indexOf(q);
+    if (!list.length) { table.appendChild(el(emptyState('No quests match the selected filters.'))); return; }
+    list.forEach((q) => {
+      const idxInRows = rows.indexOf(q);
+      const updated = q.updated_at || q.created_at;
       const row = el(`
-        <div class="flex items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2.5">
-          <span class="drag-handle cursor-grab text-content-tertiary select-none" title="Drag to reorder" aria-hidden="true">${icon('drag_indicator')}</span>
-          <span class="min-w-0 flex-1">
+        <div class="qm-row rounded-xl border border-line bg-surface px-3 py-2.5 md:grid md:grid-cols-[auto_1fr_auto_auto_auto_auto] md:items-center md:gap-3 flex flex-wrap items-center gap-3">
+          ${canReorder && state.sort === 'order' ? `<span class="drag-handle cursor-grab text-content-tertiary select-none min-w-[24px] min-h-[44px] inline-flex items-center justify-center" role="button" tabindex="0" title="Drag or use arrow keys to reorder" aria-label="Reorder ${escapeHtml(q.title)}">${icon('drag_indicator')}</span>` : ''}
+          <span class="min-w-0 flex-1 md:flex-none">
             <span class="block font-medium truncate">${escapeHtml(q.title)}</span>
-            <span class="block text-xs text-content-tertiary">${escapeHtml(q.quest_type || 'Mixed')} \u00b7 ${q.participants || 0} participants \u00b7 ${q.points_reward || 0} points</span>
+            <span class="block text-xs text-content-tertiary truncate">${campaign ? '' : escapeHtml(q.campaign_name) + ' \u00b7 '}${q.task_count || 0} task${(q.task_count || 0) === 1 ? '' : 's'} \u00b7 ${q.participants || 0} participant${(q.participants || 0) === 1 ? '' : 's'} \u00b7 updated ${updated ? new Date(updated).toLocaleDateString() : 'n/a'}</span>
           </span>
-          ${statePill(q.status)}
-          <span class="shrink-0 text-sm text-accent-text">+${q.xp_reward} XP</span>
-          <span class="updown shrink-0 flex gap-1">
-            <button class="up min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-secondary disabled:bg-surface-container disabled:text-content-disabled disabled:cursor-not-allowed" aria-label="Move up">${icon('arrow_upward')}</button>
-            <button class="down min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-secondary disabled:bg-surface-container disabled:text-content-disabled disabled:cursor-not-allowed" aria-label="Move down">${icon('arrow_downward')}</button>
-          </span>
+          <span class="hidden md:inline-flex shrink-0 text-sm text-accent-text">+${q.xp_reward || 0} XP</span>
+          <span class="shrink-0 qm-pill"></span>
+          <span class="md:hidden text-xs text-accent-text">+${q.xp_reward || 0} XP</span>
           <span class="menu-slot shrink-0"></span>
         </div>`);
-      row.querySelector('.up').disabled = idx === 0;
-      row.querySelector('.down').disabled = idx === quests.length - 1;
-      tooltip(row.querySelector('.up'), 'Move up');
-      tooltip(row.querySelector('.down'), 'Move down');
-      row.querySelector('.up').addEventListener('click', () => { if (idx > 0) { const l = quests.slice(); [l[idx - 1], l[idx]] = [l[idx], l[idx - 1]]; saveOrder(l).then(ctx.reload); } });
-      row.querySelector('.down').addEventListener('click', () => { if (idx < quests.length - 1) { const l = quests.slice(); [l[idx + 1], l[idx]] = [l[idx], l[idx + 1]]; saveOrder(l).then(ctx.reload); } });
-      // Drag and drop reordering: grab a row and drop it on another.
-      row.setAttribute('draggable', 'true');
-      row.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', String(idx)); });
-      row.addEventListener('dragover', (e) => e.preventDefault());
-      row.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        const from = Number(e.dataTransfer.getData('text/plain'));
-        if (Number.isNaN(from) || from === idx) return;
-        const l = quests.slice(); const [moved] = l.splice(from, 1); l.splice(idx, 0, moved);
-        await saveOrder(l); ctx.reload();
-      });
-      const actions = [];
-      actions.push({ label: 'View', icon: 'open_in_new', run: async () => { try { const d = await window.QuestoraAPI.api.get('/api/v1/quests/' + q.id); window.history.pushState({}, '', `/projects/${encodeURIComponent(p.slug)}/campaigns/${encodeURIComponent(campaign.slug)}/quests/${encodeURIComponent(d.quest.slug || q.id)}`); window.dispatchEvent(new PopStateEvent('popstate')); } catch (e) { toast(e.message, true); } } });
-      actions.push({ label: 'Edit', icon: 'edit', run: () => promptEditQuest(row, q, async (body) => { await window.QuestoraAPI.api.patch(`/api/v1/quests/${q.id}`, body); toast('Quest updated'); ctx.reload(); }) });
-      actions.push({ label: 'Configure tasks', icon: 'checklist', run: () => { window.history.pushState({}, '', `${ctx.base}/tasks/${q.id}`); window.dispatchEvent(new PopStateEvent('popstate')); } });
-      actions.push({ label: 'Duplicate', icon: 'content_copy', run: async () => { try { await window.QuestoraAPI.api.post(`/api/v1/quests/${q.id}/duplicate`, {}); toast('Duplicated as a draft'); ctx.reload(); } catch (e) { toast(e.message, true); } } });
-      actions.push({ label: 'Reorder', icon: 'drag_indicator', run: () => toast('Drag a row handle, or use the up and down arrows, to reorder quests.') });
-      if (q.status !== 'active') actions.push({ label: 'Publish', icon: 'publish', run: () => patchQuest(q.id, { status: 'active' }) });
-      if (q.status === 'active') actions.push({ label: 'Unpublish', icon: 'cancel', run: () => patchQuest(q.id, { status: 'paused' }) });
-      if (q.status === 'active' || q.status === 'scheduled') actions.push({ label: 'Pause', icon: 'cancel', run: () => patchQuest(q.id, { status: 'paused' }) });
-      actions.push({ label: 'Archive', icon: 'archive', danger: true, run: () => patchQuest(q.id, { status: 'archived' }) });
-      actions.push({ label: 'Delete', icon: 'delete', danger: true, run: async (btn) => {
-        if (!btn.dataset.armed) { btn.dataset.armed = '1'; btn.textContent = 'Confirm delete'; return; }
-        try { const r = await window.QuestoraAPI.api.del(`/api/v1/quests/${q.id}`); toast(r.archived ? r.reason : 'Quest deleted'); ctx.reload(); } catch (e) { toast(e.message, true); }
-      } });
-      row.querySelector('.menu-slot').appendChild(actionMenu(actions));
+      row.querySelector('.qm-pill').innerHTML = questStatusPill(q.status);
+      row.querySelector('.menu-slot').appendChild(questActions(q));
+      if (canReorder && state.sort === 'order') {
+        const handle = row.querySelector('.drag-handle');
+        row.setAttribute('draggable', 'true');
+        row.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', String(idxInRows)); });
+        row.addEventListener('dragover', (e) => e.preventDefault());
+        row.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          const from = Number(e.dataTransfer.getData('text/plain'));
+          if (Number.isNaN(from) || from === idxInRows) return;
+          const l = rows.slice(); const [moved] = l.splice(from, 1); l.splice(idxInRows, 0, moved);
+          rows = l; await saveOrder(l);
+        });
+        // Keyboard reordering: Enter picks up, arrows move, Enter drops,
+        // Escape cancels. Replaces the removed up/down arrow buttons.
+        let held = false;
+        const move = async (dir) => {
+          const i = rows.indexOf(q);
+          const j = i + dir;
+          if (i < 0 || j < 0 || j >= rows.length) return;
+          const l = rows.slice(); [l[i], l[j]] = [l[j], l[i]]; rows = l;
+          await saveOrder(l);
+        };
+        if (handle) {
+          handle.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); held = !held; handle.classList.toggle('text-accent-text', held); return; }
+            if (e.key === 'Escape') { held = false; handle.classList.remove('text-accent-text'); return; }
+            if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && held) { e.preventDefault(); move(e.key === 'ArrowUp' ? -1 : 1); }
+          });
+        }
+      }
       table.appendChild(row);
     });
-    pagerSlot.replaceChildren();
-    if (pages > 1) {
-      const pg = el('<div class="flex items-center justify-center gap-3 mt-2"></div>');
-      const prev = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg ${state.page === 1 ? 'bg-surface-container text-content-disabled' : 'bg-surface-container-high hover:bg-surface-container-highest text-content-primary'}">Previous</button>`);
-      prev.disabled = state.page === 1;
-      prev.addEventListener('click', () => { state.page--; render(); });
-      const next = el(`<button class="text-sm px-3 py-2 min-h-[44px] rounded-lg ${state.page === pages ? 'bg-surface-container text-content-disabled' : 'bg-surface-container-high hover:bg-surface-container-highest text-content-primary'}">Next</button>`);
-      next.disabled = state.page === pages;
-      next.addEventListener('click', () => { state.page++; render(); });
-      pg.appendChild(prev); pg.appendChild(el(`<span class="text-sm text-content-secondary">Page ${state.page} of ${pages}</span>`)); pg.appendChild(next);
-      pagerSlot.appendChild(pg);
-    }
   }
-  controls.querySelector('.k-search').addEventListener('input', (e) => { state.q = e.target.value; state.page = 1; render(); });
-  controls.querySelector('.k-status').addEventListener('change', (e) => { state.status = e.target.value; state.page = 1; render(); });
-  controls.querySelector('.k-type').addEventListener('change', (e) => { state.type = e.target.value; state.page = 1; render(); });
-  controls.querySelector('.k-sort').addEventListener('change', (e) => { state.sort = e.target.value; state.page = 1; render(); });
+
+  controls.querySelector('.qm-search').addEventListener('input', (e) => { state.q = e.target.value; writeUrl(); render(); });
+  controls.querySelector('.qm-sort').addEventListener('change', (e) => { state.sort = e.target.value; writeUrl(); render(); });
   render();
 }
 
-function promptEditQuest(row, q, save) {
-  const panel = el(`
-    <div class="mt-2 rounded-xl border border-line bg-surface p-3 space-y-2">
-      <input class="e-title w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" value="${escapeHtml(q.title)}" aria-label="Quest title">
-      <input class="e-xp w-32 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="0" value="${q.xp_reward}" aria-label="XP reward">
-      <div class="flex gap-2"><button class="save text-sm px-3 py-2 min-h-[44px] rounded-lg bg-accent text-accent-contrast">Save</button><button class="cancel text-sm px-3 py-2 min-h-[44px] rounded-lg bg-surface-container-high text-content-secondary">Cancel</button></div>
-    </div>`);
-  panel.querySelector('.cancel').addEventListener('click', () => panel.remove());
-  panel.querySelector('.save').addEventListener('click', async () => {
-    try { await save({ title: panel.querySelector('.e-title').value.trim(), xp_reward: parseInt(panel.querySelector('.e-xp').value, 10) || 0 }); panel.remove(); }
-    catch (e) { toast(e.message, true); }
-  });
-  row.after(panel);
-}
-
-// Flat quest table across the whole project.
-// The Create menu lands here: pick the campaign (and, for a task, the quest)
-// that the real builder below edits. It reuses the existing create surfaces
-// rather than duplicating them.
-function renderDashNewChooser(sectionEl, ctx, mode) {
-  const { data, base } = ctx;
-  const campaigns = data.campaigns || [];
-  const isTask = mode === 'task';
-  sectionEl.appendChild(el(`
-    <div class="mb-4">
-      ${breadcrumb([{ label: 'Quests', href: base + '/quests' }, { label: isTask ? 'New task' : 'New quest' }])}
-      <h2 class="text-lg font-bold">${isTask ? 'Add a task' : 'Create a quest'}</h2>
-      <p class="text-sm text-content-secondary">${isTask ? 'Pick the campaign and quest to configure.' : 'Pick the campaign to add the quest to.'}</p>
-    </div>`));
-  if (!campaigns.length) {
-    sectionEl.appendChild(el(emptyState('This project has no campaigns yet. Create a campaign first.', 'Create campaign', base + '/campaigns?new=campaign')));
-    return;
-  }
-  const form = el(`
-    <div class="rounded-xl border border-line bg-surface p-4 max-w-xl space-y-3">
-      <div>
-        <label class="block text-xs text-content-secondary mb-1">Campaign</label>
-        <select class="nc-campaign w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none"></select>
-      </div>
-      <div class="nc-quest-wrap hidden">
-        <label class="block text-xs text-content-secondary mb-1">Quest</label>
-        <select class="nc-quest w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none"></select>
-      </div>
-      <button class="nc-go font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">${isTask ? 'Open task editor' : 'Continue'}</button>
-    </div>`);
-  const cSel = form.querySelector('.nc-campaign');
-  for (const c of campaigns) cSel.appendChild(el(`<option value="${c.id}">${escapeHtml(c.name)}</option>`));
-  const qWrap = form.querySelector('.nc-quest-wrap');
-  const qSel = form.querySelector('.nc-quest');
-  function fillQuests() {
-    const c = campaigns.find(x => String(x.id) === cSel.value);
-    qSel.replaceChildren();
-    for (const q of ((c && c.quests) || [])) qSel.appendChild(el(`<option value="${q.id}">${escapeHtml(q.title)}</option>`));
-    qWrap.classList.toggle('hidden', !isTask);
-    form.querySelector('.nc-go').disabled = isTask && !qSel.options.length;
-  }
-  cSel.addEventListener('change', fillQuests);
-  fillQuests();
-  form.querySelector('.nc-go').addEventListener('click', () => {
-    const c = campaigns.find(x => String(x.id) === cSel.value);
-    if (!c) return;
-    if (isTask) {
-      if (!qSel.value) { toast('This campaign has no quests yet', true); return; }
-      window.QuestoraNav.go(base + '/tasks/' + encodeURIComponent(qSel.value));
-    } else {
-      window.QuestoraNav.go(base + '/campaigns/' + encodeURIComponent(c.slug) + '?new=quest');
-    }
-  });
-  sectionEl.appendChild(form);
-}
-
-function renderDashQuests(sectionEl, ctx) {
-  const { p, data } = ctx;
-  sectionEl.appendChild(el('<h2 class="text-lg font-bold mb-1">Quests</h2><p class="text-sm text-content-secondary mb-4">Every quest in this project.</p>'));
-  const rows = [];
-  for (const c of data.campaigns) for (const q of (c.quests || [])) rows.push({ ...q, campaign_name: c.name, campaign_slug: c.slug });
-  if (!rows.length) { sectionEl.appendChild(el(emptyState("This project doesn't have any quests yet."))); return; }
-  const list = el('<div class="space-y-2"></div>');
-  for (const q of rows) {
-    list.appendChild(el(`
-      <a href="${ctx.base}/campaigns/${encodeURIComponent(q.campaign_slug)}" class="flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 hover:border-accent/40">
-        <span class="min-w-0 flex-1"><span class="block font-medium truncate">${escapeHtml(q.title)}</span><span class="block text-xs text-content-tertiary">${escapeHtml(q.campaign_name)} \u00b7 ${escapeHtml(q.quest_type || 'Mixed')}</span></span>
-        ${statePill(q.status)}
-        <span class="shrink-0 text-sm text-accent-text">+${q.xp_reward} XP</span>
-      </a>`));
-  }
-  sectionEl.appendChild(list);
-}
-
-// Simple Mode task editor: create/configure an on-chain task for a quest,
-// with a network form, an RPC list and a Test connection button. Reachable at
-// /dashboard/projects/<slug>/tasks/<questId> so it can be screenshotted.
-async function renderDashTaskEditor(sectionEl, ctx, questId) {
-  const { p } = ctx;
+// The single-page quest editor, shared by create and edit.
+//   questId null -> create (a campaign picker, tasks held until submit)
+//   questId set  -> edit (loaded quest + tasks + rewards/conditions)
+function renderQuestEditor(sectionEl, ctx, questId) {
+  const { p, data, base, params } = ctx;
+  const QB = window.QuestoraQuestBuilder;
   const api = window.QuestoraAPI.api;
-  let questData, netData, tokData;
-  try {
-    questData = await api.get(`/api/v1/quests/${encodeURIComponent(questId)}/tasks`);
-    netData = await api.get(`/api/v1/projects/${p.id}/networks`);
-    tokData = await api.get(`/api/v1/projects/${p.id}/tokens`);
-  } catch (err) { sectionEl.appendChild(el(`<div class="rounded-xl border border-error/40 bg-error-bg p-4 text-sm text-error">${escapeHtml(err.message)}</div>`)); return; }
-  const quest = questData.quest;
-  const tasks = questData.tasks || [];
-  const networks = netData.networks || [];
-  const tokens = tokData.tokens || [];
-  const editing = { taskId: null };
+  const isEdit = questId !== null && questId !== undefined;
+  const newCampaignId = params && params.get('campaign');
 
-  sectionEl.appendChild(el(`
-    <div class="mb-4">
-      ${breadcrumb([{ label: 'Campaigns', href: ctx.base + '/campaigns' }, { label: 'Tasks' }])}
-      <h2 class="text-lg font-bold">Configure tasks</h2>
-      <p class="text-sm text-content-secondary">${escapeHtml(quest.title)} · ${tasks.length} task${tasks.length === 1 ? '' : 's'}</p>
-    </div>`));
+  const wrap = el('<div class="pb-24"></div>');
+  sectionEl.appendChild(wrap);
+  wrap.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading\u2026</p>'));
 
-  const netPanel = el(`
-    <div class="rounded-xl border border-line bg-surface p-4 mb-4">
-      <div class="flex items-center justify-between">
-        <h3 class="font-semibold">Networks</h3>
-        <span class="text-xs text-content-secondary">${networks.length} configured</span>
-      </div>
-      <div class="net-list space-y-2 mt-2"></div>
-      <details class="mt-3">
-        <summary class="cursor-pointer text-sm text-accent-text">Add a network</summary>
-        <div class="mt-3">
-          <label class="block text-xs text-content-secondary mb-1" for="n-preset">Network preset</label>
-          <select id="n-preset" class="n-preset w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
-            <option value="">Custom network</option>
-          </select>
-          <p class="n-preset-info text-xs text-content-secondary mt-2" aria-live="polite">Pick a preset to fill in the RPC, chain id, token and explorer. You can still edit any field.</p>
-        </div>
-        <div class="grid sm:grid-cols-2 gap-2 mt-3">
-          <input class="n-name rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Network name (e.g. Sepolia)">
-          <select class="n-family rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
-            <option value="eip155">EVM</option>
-            <option value="solana">Solana</option>
-            <option value="sui">Sui</option>
-            <option value="aptos">Aptos</option>
-            <option value="octra">Octra</option>
-          </select>
-          <input class="n-chainid rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Chain id (EVM only)">
-          <input class="n-symbol rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Native symbol (ETH)">
-          <input class="n-decimals rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" placeholder="Native decimals (18)">
-          <input class="n-rpc rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Primary RPC URL">
-          <input class="n-tx rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Explorer tx URL template (…/{tx})">
-          <label class="flex items-center gap-2 text-sm text-content-secondary"><input type="checkbox" class="n-testnet accent-[var(--q-accent)]" checked> Testnet</label>
-        </div>
-        <button class="n-add mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Add network</button>
-      </details>
-    </div>`);
-  sectionEl.appendChild(netPanel);
-  const netList = netPanel.querySelector('.net-list');
+  Promise.all([
+    isEdit ? api.get('/api/v1/quests/' + encodeURIComponent(questId)) : Promise.resolve(null),
+    isEdit ? api.get('/api/v1/quests/' + encodeURIComponent(questId) + '/tasks') : Promise.resolve({ tasks: [] }),
+    isEdit ? api.get('/api/v1/quests/' + encodeURIComponent(questId) + '/rewards').catch(() => ({ badge_id: null, credential_title: null, requires_quests: [], require_all: true })) : Promise.resolve({ badge_id: null, credential_title: null, requires_quests: [], require_all: true }),
+    api.get('/api/v1/badges').catch(() => ({ badges: [] })),
+  ]).then(([questData, taskData, rewardData, badgeData]) => {
+    const quest = questData ? questData.quest : {};
+    const tasks = (taskData.tasks || []).slice();
+    const badges = badgeData.badges || [];
+    const campaigns = data.campaigns || [];
+    const localTasks = [];           // create-mode task drafts
+    let pendingTasks = null;         // create-mode: which list the builder edits
+    const taskList = isEdit ? tasks : localTasks;
 
-  // Preset picker: choosing one fills the form; the fields stay editable.
-  const presetSel = netPanel.querySelector('.n-preset');
-  const presetInfo = netPanel.querySelector('.n-preset-info');
-  let presets = [];
-  const q = (c) => netPanel.querySelector(c);
-  api.get('/api/v1/network-presets').then((d) => {
-    presets = d.presets || [];
-    for (const group of ['Mainnet', 'Testnet']) {
-      const og = document.createElement('optgroup');
-      og.label = group;
-      for (const pr of presets.filter((x) => x.isTestnet === (group === 'Testnet'))) {
-        const o = document.createElement('option');
-        o.value = pr.id; o.textContent = `${pr.name} (${pr.type})`;
-        og.appendChild(o);
-      }
-      presetSel.appendChild(og);
+    wrap.replaceChildren();
+    wrap.appendChild(el(`
+      <div class="mb-4">
+        ${breadcrumb([{ label: 'Quests', href: base + '/quests' }, { label: isEdit ? 'Edit quest' : 'New quest' }])}
+      </div>`));
+
+    if (!campaigns.length) {
+      wrap.appendChild(el(emptyState('This project has no campaigns yet. Create a campaign first.', 'Create campaign', base + '/campaigns?new=campaign')));
+      return;
     }
-  }).catch(() => { presetInfo.textContent = 'Presets could not be loaded. Enter the network details by hand.'; });
-  presetSel.addEventListener('change', () => {
-    const pr = presets.find((x) => x.id === presetSel.value);
-    if (!pr) { presetInfo.textContent = 'Enter the network details by hand.'; return; }
-    q('.n-name').value = pr.name;
-    q('.n-family').value = pr.namespace;
-    q('.n-chainid').value = pr.chainId === null ? '' : String(pr.chainId);
-    q('.n-symbol').value = pr.nativeToken.symbol;
-    q('.n-decimals').value = pr.nativeToken.decimals === null ? '' : String(pr.nativeToken.decimals);
-    q('.n-rpc').value = pr.rpcs[0] || '';
-    q('.n-tx').value = pr.explorer.txUrl || '';
-    q('.n-testnet').checked = pr.isTestnet;
-    const bits = [`${pr.isTestnet ? 'Testnet' : 'Mainnet'}`, `Address: ${pr.addressFormat}`, `Wallets: ${pr.wallets.join(', ')}`];
-    if (pr.rpcs.length > 1) bits.push(`${pr.rpcs.length} RPC endpoints are added (first is primary)`);
-    presetInfo.textContent = bits.join(' · ') + (pr.unverified.length
-      ? `. Not published by the official docs: ${pr.unverified.join(', ')}. Confirm with the official source.` : '.');
-  });
 
-  netPanel.querySelector('.n-add').addEventListener('click', async () => {
-    const preset = presets.find((x) => x.id === presetSel.value) || null;
-    const b = {
-      preset_id: preset ? preset.id : undefined,
-      name: netPanel.querySelector('.n-name').value.trim(),
-      chain_namespace: netPanel.querySelector('.n-family').value,
-      chain_id: netPanel.querySelector('.n-chainid').value.trim() || null,
-      native_symbol: netPanel.querySelector('.n-symbol').value.trim() || null,
-      native_decimals: netPanel.querySelector('.n-decimals').value.trim() || null,
-      explorer_tx_url: netPanel.querySelector('.n-tx').value.trim() || null,
-      is_testnet: netPanel.querySelector('.n-testnet').checked,
-    };
-    if (!b.name) return toast('A network name is required', true);
-    try {
-      const rpcUrl = netPanel.querySelector('.n-rpc').value.trim();
-      if (preset) {
-        // Preset RPCs are created by the server; a different primary URL overrides them.
-        if (rpcUrl && rpcUrl !== preset.rpcs[0]) b.rpc_urls = [rpcUrl];
-        await api.post(`/api/v1/projects/${p.id}/networks`, b);
-      } else {
-        const r = await api.post(`/api/v1/projects/${p.id}/networks`, b);
-        if (rpcUrl) await api.post(`/api/v1/networks/${r.network.id}/rpcs`, { url: rpcUrl, is_primary: true });
-      }
-      toast('Network added'); ctx.reload();
-    } catch (err) { toast(err.message, true); }
-  });
-
-  function renderNetworks() {
-    netList.replaceChildren();
-    if (!networks.length) { netList.appendChild(el('<p class="text-sm text-content-tertiary">No networks yet. Add one below.</p>')); return; }
-    for (const n of networks) {
-      const row = el(`
-        <div class="rounded-lg border border-line bg-surface-container-high px-3 py-2.5">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="font-medium">${escapeHtml(n.name)}</span>
-            <span class="text-xs text-content-secondary">${escapeHtml(n.chain_namespace)}${n.chain_id !== null ? ' · chain ' + n.chain_id : ''}${n.native_symbol ? ' · ' + escapeHtml(n.native_symbol) : ''}</span>
-            <span class="ml-auto flex items-center gap-2">
-              <button class="test-conn text-xs px-3 py-2 min-h-[36px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">Test connection</button>
-            </span>
+    const form = el(`
+      <div class="max-w-2xl space-y-5">
+        <section class="rounded-2xl border border-line bg-surface p-5">
+          <h3 class="font-semibold mb-3">Quest details</h3>
+          <div class="space-y-3">
+            <div>
+              <label class="block text-xs text-content-secondary mb-1" for="qe-title">Title</label>
+              <input id="qe-title" class="f-title w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" placeholder="Quest title" value="${escapeHtml(quest.title || '')}">
+            </div>
+            <div>
+              <label class="block text-xs text-content-secondary mb-1" for="qe-desc">Description</label>
+              <textarea id="qe-desc" class="f-desc w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm focus:outline-none focus:border-accent" rows="2" placeholder="What is this quest about?">${escapeHtml(quest.description || '')}</textarea>
+            </div>
+            <div>
+              <label class="block text-xs text-content-secondary mb-1" for="qe-image">Cover image URL</label>
+              <input id="qe-image" class="f-image w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" placeholder="https://\u2026" value="${escapeHtml(quest.image_url || '')}">
+            </div>
+            <div class="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-content-secondary mb-1" for="qe-start">Starts</label>
+                <input id="qe-start" class="f-start w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="date" value="${quest.starts_at ? new Date(quest.starts_at).toISOString().slice(0, 10) : ''}">
+              </div>
+              <div>
+                <label class="block text-xs text-content-secondary mb-1" for="qe-end">Ends</label>
+                <input id="qe-end" class="f-end w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="date" value="${quest.ends_at ? new Date(quest.ends_at).toISOString().slice(0, 10) : ''}">
+              </div>
+            </div>
+            <div class="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-content-secondary mb-1" for="qe-campaign">Campaign</label>
+                <select id="qe-campaign" class="f-campaign w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" ${isEdit ? 'disabled' : ''}></select>
+              </div>
+              <div>
+                <label class="block text-xs text-content-secondary mb-1" for="qe-xp">XP reward</label>
+                <input id="qe-xp" class="f-xp w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="0" value="${Number(quest.xp_reward || 0)}">
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs text-content-secondary mb-1" for="qe-points">Points reward</label>
+              <input id="qe-points" class="f-points w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="0" value="${Number(quest.points_reward || 0)}">
+            </div>
           </div>
-          <div class="rpc-add flex gap-2 mt-2">
-            <input class="rpc-url flex-1 rounded-lg bg-surface-container-high border border-line-strong px-3 py-2 text-sm" placeholder="Add backup RPC URL">
-            <button class="rpc-save text-xs px-3 py-2 min-h-[36px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">Add</button>
+        </section>
+
+        <section class="rounded-2xl border border-line bg-surface p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold">Tasks</h3>
+            <span class="text-xs text-content-secondary task-count"></span>
           </div>
-          <div class="rpc-list mt-2 space-y-1"></div>
-          <div class="test-result text-xs mt-2"></div>
-        </div>`);
-      const rpcList = row.querySelector('.rpc-list');
-      for (const r of n.rpcs) {
-        rpcList.appendChild(el(`<p class="text-xs text-content-secondary">${r.is_primary ? 'Primary' : 'Backup'} · ${escapeHtml(r.host)} · ${escapeHtml(r.health_state)}</p>`));
-      }
-      row.querySelector('.rpc-save').addEventListener('click', async () => {
-        const url = row.querySelector('.rpc-url').value.trim();
-        if (!url) return toast('Paste an RPC URL', true);
-        try { await api.post(`/api/v1/networks/${n.id}/rpcs`, { url }); toast('Endpoint added'); ctx.reload(); }
-        catch (err) { toast(err.message, true); }
-      });
-      row.querySelector('.test-conn').addEventListener('click', async () => {
-        const out = row.querySelector('.test-result');
-        out.textContent = 'Testing…';
-        try { const r = await api.post(`/api/v1/networks/${n.id}/test`, {}); out.className = 'test-result text-xs mt-2 ' + (r.ok ? 'text-success' : 'text-warning'); out.textContent = r.message; }
-        catch (err) { out.className = 'test-result text-xs mt-2 text-warning'; out.textContent = err.message; }
-      });
-      netList.appendChild(row);
-    }
-  }
-  renderNetworks();
+          <div class="tb-cards space-y-3"></div>
+          <div class="tb-add mt-3"></div>
+        </section>
 
-  const tokPanel = el(`
-    <div class="rounded-xl border border-line bg-surface p-4 mb-4">
-      <h3 class="font-semibold">Tokens</h3>
-      <p class="text-xs text-content-secondary">Used by token balance tasks. Metadata is read from the contract when possible; type it in if the read fails.</p>
-      <div class="tok-list space-y-1 mt-2"></div>
-      <details class="mt-2">
-        <summary class="cursor-pointer text-sm text-accent-text">Add a token</summary>
-        <div class="grid sm:grid-cols-2 gap-2 mt-3">
-          <select class="t-network rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
-          <input class="t-addr rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Contract address">
-          <input class="t-symbol rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Symbol (USDX)">
-          <input class="t-decimals rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" placeholder="Decimals (18)">
-        </div>
-        <button class="t-add mt-3 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Add token</button>
-      </details>
-    </div>`);
-  sectionEl.appendChild(tokPanel);
-  const tNet = tokPanel.querySelector('.t-network');
-  for (const n of networks) tNet.appendChild(el(`<option value="${n.id}">${escapeHtml(n.name)}</option>`));
-  const tokList = tokPanel.querySelector('.tok-list');
-  if (!tokens.length) tokList.appendChild(el('<p class="text-sm text-content-tertiary">No tokens yet.</p>'));
-  for (const tk of tokens) tokList.appendChild(el(`<p class="text-xs text-content-secondary">${escapeHtml(tk.symbol || tk.address || tk.contract_address)} · ${escapeHtml(String(tk.contract_address))} · ${tk.decimals === null ? 'no decimals' : tk.decimals + ' decimals'}</p>`));
-  tokPanel.querySelector('.t-add').addEventListener('click', async () => {
-    const b = {
-      network_id: Number(tNet.value), contract_address: tokPanel.querySelector('.t-addr').value.trim(),
-      symbol: tokPanel.querySelector('.t-symbol').value.trim() || null,
-      decimals: tokPanel.querySelector('.t-decimals').value.trim() || null,
-    };
-    if (!b.network_id) return toast('Add a network first', true);
-    if (!b.contract_address) return toast('A contract address is required', true);
-    try { await api.post(`/api/v1/projects/${p.id}/tokens`, b); toast('Token added'); ctx.reload(); }
-    catch (err) { toast(err.message, true); }
-  });
-
-  // The task form.
-  const form = el(`
-    <div class="rounded-xl border border-line bg-surface p-4">
-      <h3 class="font-semibold task-form-title">Add an on-chain task</h3>
-      <div class="grid sm:grid-cols-2 gap-2 mt-3">
-        <input class="f-title rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Task title" value="On-chain task">
-        <select class="f-method rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
-          <option value="native_balance">Hold native balance</option>
-          <option value="erc20_balance">Hold token balance</option>
-          <option value="transaction">Make a transaction</option>
-        </select>
-        <select class="f-network rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
-        <select class="f-token rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
-        <select class="f-operator rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
-          <option value="gte">At least</option><option value="gt">More than</option>
-          <option value="lte">At most</option><option value="lt">Less than</option><option value="eq">Exactly</option>
-        </select>
-        <input class="f-amount rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Amount (100)">
-        <input class="f-confirmations rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Confirmations (transaction only)" value="1">
-        <input class="f-xp rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Task XP" value="0">
-        <select class="f-completion rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
-          <option value="one_time">One time</option><option value="daily">Daily</option>
-          <option value="weekly">Weekly</option><option value="monthly">Monthly</option>
-        </select>
-        <input class="f-attempts rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Attempt limit (optional)">
-        <input class="f-cooldown rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Cooldown seconds (0)">
-      </div>
-      <div class="flex flex-wrap gap-2 mt-3">
-        <button class="f-save font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save task</button>
-        <button class="f-reset text-sm px-4 py-2.5 min-h-[44px] rounded-lg bg-surface-container-high text-content-secondary">Clear</button>
-      </div>
-      <div class="f-result text-sm mt-2"></div>
-    </div>`);
-  sectionEl.appendChild(form);
-  const fNet = form.querySelector('.f-network');
-  for (const n of networks) fNet.appendChild(el(`<option value="${n.id}">${escapeHtml(n.name)}</option>`));
-  const fTok = form.querySelector('.f-token');
-  function renderTokenOptions() {
-    fTok.replaceChildren();
-    fTok.appendChild(el('<option value="">No token</option>'));
-    for (const tk of tokens) fTok.appendChild(el(`<option value="${tk.id}">${escapeHtml(tk.symbol || String(tk.contract_address))}</option>`));
-  }
-  renderTokenOptions();
-  form.querySelector('.f-reset').addEventListener('click', () => { editing.taskId = null; form.querySelector('.task-form-title').textContent = 'Add an on-chain task'; form.querySelector('.f-amount').value = ''; form.querySelector('.f-result').replaceChildren(); });
-
-  form.querySelector('.f-save').addEventListener('click', async () => {
-    const method = form.querySelector('.f-method').value;
-    const config = {
-      method,
-      network_id: Number(fNet.value) || null,
-      requirement: form.querySelector('.f-amount').value.trim() ? {
-        amount: form.querySelector('.f-amount').value.trim(),
-        operator: form.querySelector('.f-operator').value,
-      } : null,
-    };
-    if (method !== 'native_balance') {
-      const tokenId = Number(fTok.value);
-      if (tokenId) config.token_id = tokenId;
-    }
-    if (method === 'transaction') config.confirmations = parseInt(form.querySelector('.f-confirmations').value, 10) || 1;
-    const body = {
-      type: 'on_chain', config,
-      title: form.querySelector('.f-title').value.trim() || 'On-chain task',
-      xp_reward: parseInt(form.querySelector('.f-xp').value, 10) || 0,
-      completion_mode: form.querySelector('.f-completion').value,
-      attempt_limit: form.querySelector('.f-attempts').value.trim() || null,
-      cooldown_seconds: parseInt(form.querySelector('.f-cooldown').value, 10) || 0,
-    };
-    const out = form.querySelector('.f-result');
-    out.className = 'f-result text-sm mt-2 text-content-secondary';
-    out.textContent = 'Saving…';
-    try {
-      if (editing.taskId) {
-        await api.patch(`/api/v1/tasks/${editing.taskId}`, {
-          title: body.title, xp_reward: body.xp_reward, completion_mode: body.completion_mode,
-          attempt_limit: body.attempt_limit, cooldown_seconds: body.cooldown_seconds, config: body.config,
-        });
-        toast('Task updated'); ctx.reload();
-      } else {
-        await api.post(`/api/v1/quests/${questId}/tasks`, body);
-        toast('Task added'); ctx.reload();
-      }
-    } catch (err) { out.className = 'f-result text-sm mt-2 text-warning'; out.textContent = err.message; }
-  });
-
-  // Existing tasks with a publish button.
-  const list = el('<div class="space-y-2 mt-4"></div>');
-  sectionEl.appendChild(el('<h3 class="text-sm font-medium text-content-secondary mb-2 mt-4">Tasks on this quest</h3>'));
-  sectionEl.appendChild(list);
-  if (!tasks.length) list.appendChild(el('<p class="text-sm text-content-tertiary">No tasks yet.</p>'));
-  for (const t of tasks) {
-    const row = el(`
-      <div class="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2.5">
-        <span class="min-w-0 flex-1">
-          <span class="block font-medium truncate">${escapeHtml(t.title)}</span>
-          <span class="block text-xs text-content-tertiary">${escapeHtml(TASK_LABEL[t.type] || t.type)}${t.type === 'on_chain' && t.config.method ? ' · ' + escapeHtml(t.config.method) : ''} · ${t.xp_reward} XP</span>
-        </span>
-        ${statePill(t.verification_type === 'automatic' ? 'active' : 'draft')}
-        <button class="pub text-xs px-3 py-2 min-h-[36px] rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary">Publish task</button>
+        <details class="qe-more rounded-2xl border border-line bg-surface p-5">
+          <summary class="cursor-pointer font-semibold select-none">More options</summary>
+          <div class="mt-4 space-y-4">
+            <div>
+              <label class="block text-xs text-content-secondary mb-1" for="qe-instr">Instructions</label>
+              <textarea id="qe-instr" class="f-instr w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm focus:outline-none" rows="2" placeholder="How should participants complete this quest?">${escapeHtml(quest.instructions || '')}</textarea>
+            </div>
+            <div>
+              <label class="block text-xs text-content-secondary mb-1" for="qe-badge">Badge reward</label>
+              <select id="qe-badge" class="f-badge w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
+                <option value="">No badge</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-content-secondary mb-1" for="qe-cred">Credential title</label>
+              <input id="qe-cred" class="f-cred w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" placeholder="e.g. Basics Certified" value="${escapeHtml(rewardData.credential_title || '')}">
+            </div>
+            <div>
+              <label class="block text-xs text-content-secondary mb-1" for="qe-prereq">Prerequisite quests</label>
+              <select id="qe-prereq" class="f-prereq w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm focus:outline-none" multiple size="4"></select>
+              <label class="flex items-center gap-2 text-sm text-content-secondary mt-2"><input type="checkbox" class="f-require-all accent-[var(--q-accent)]"> Require all selected quests</label>
+            </div>
+            <div class="grid sm:grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-content-secondary mb-1" for="qe-vis">Visibility</label>
+                <select id="qe-vis" class="f-vis w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
+                  <option value="public">Public</option>
+                  <option value="unlisted">Unlisted</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-content-secondary mb-1" for="qe-max">Max participants</label>
+                <input id="qe-max" class="f-max w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="1" placeholder="No limit" value="${quest.max_participants == null ? '' : Number(quest.max_participants)}">
+              </div>
+              <div>
+                <label class="block text-xs text-content-secondary mb-1" for="qe-limit">Completion limit</label>
+                <input id="qe-limit" class="f-limit w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="1" value="${Number(quest.completion_limit || 1)}">
+              </div>
+              <label class="flex items-center gap-2 text-sm text-content-secondary self-end">
+                <input type="checkbox" class="f-required accent-[var(--q-accent)]" ${quest.is_required === false ? '' : 'checked'}> Required to finish the campaign
+              </label>
+            </div>
+          </div>
+        </details>
       </div>`);
-    row.querySelector('.pub').addEventListener('click', async () => {
-      try { await api.post(`/api/v1/tasks/${t.id}/publish`, {}); toast('Task published'); ctx.reload(); }
-      catch (err) { toast(err.message, true); }
+    wrap.appendChild(form);
+
+    // Campaign picker
+    const campSel = form.querySelector('.f-campaign');
+    for (const c of campaigns) campSel.appendChild(el(`<option value="${c.id}">${escapeHtml(c.name)}</option>`));
+    const chosenCampaign = isEdit ? quest.campaign_id : (newCampaignId || (campaigns[0] && campaigns[0].id));
+    if (chosenCampaign != null) campSel.value = String(chosenCampaign);
+
+    // Badges
+    const badgeSel = form.querySelector('.f-badge');
+    for (const b of badges) badgeSel.appendChild(el(`<option value="${b.id}">${escapeHtml(b.name)}${b.project_id ? '' : ' (platform)'}</option>`));
+    if (rewardData.badge_id) badgeSel.value = String(rewardData.badge_id);
+
+    // Prerequisites: every other quest in the project.
+    const prereqSel = form.querySelector('.f-prereq');
+    const allQuests = [];
+    for (const c of campaigns) for (const q of (c.quests || [])) if (!isEdit || Number(q.id) !== Number(questId)) allQuests.push({ ...q, campaign_name: c.name });
+    for (const q of allQuests) prereqSel.appendChild(el(`<option value="${q.id}">${escapeHtml(q.title)} \u2014 ${escapeHtml(q.campaign_name)}</option>`));
+    const selectedPrereqs = new Set((rewardData.requires_quests || []).map(Number));
+    prereqSel.querySelectorAll('option').forEach((o) => { if (selectedPrereqs.has(Number(o.value))) o.selected = true; });
+    form.querySelector('.f-require-all').checked = rewardData.require_all !== false;
+
+    function serialize() {
+      const v = (s) => form.querySelector(s).value.trim();
+      return JSON.stringify({
+        title: v('.f-title'), desc: v('.f-desc'), image: v('.f-image'), start: v('.f-start'), end: v('.f-end'),
+        campaign: campSel.value, xp: v('.f-xp'), points: v('.f-points'),
+        instr: v('.f-instr'), badge: badgeSel.value, cred: v('.f-cred'),
+        prereqs: [...prereqSel.selectedOptions].map(o => o.value).sort(), requireAll: form.querySelector('.f-require-all').checked,
+        vis: v('.f-vis'), max: v('.f-max'), limit: v('.f-limit'), required: form.querySelector('.f-required').checked,
+        tasks: JSON.stringify(taskList.map(t => ({ type: t.type, title: t.title, config: t.config, xp_reward: t.xp_reward }))),
+      });
+    }
+    const initial = serialize();
+
+    // Sticky action bar with the unsaved indicator.
+    const bar = el(`
+      <div class="fixed bottom-0 left-0 right-0 z-30 border-t border-line bg-surface/95 backdrop-blur px-4 py-3">
+        <div class="max-w-2xl mx-auto flex items-center gap-2 flex-wrap">
+          <span class="dirty text-xs text-warning hidden">Unsaved changes</span>
+          <span class="flex-1"></span>
+          <a href="${base}/quests" class="inline-flex items-center justify-center min-h-[44px] px-4 py-2.5 rounded-lg bg-surface-container border border-line-strong hover:bg-surface-container-high text-content-primary text-sm font-medium">Cancel</a>
+          ${isEdit
+            ? `<button class="save-changes font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save Changes</button>`
+            : `<button class="save-draft inline-flex items-center justify-center min-h-[44px] px-4 py-2.5 rounded-lg bg-surface-container border border-line-strong hover:bg-surface-container-high text-content-primary text-sm font-medium">Save Draft</button>
+               <button class="publish-btn font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Publish</button>`}
+        </div>
+      </div>`);
+    wrap.appendChild(bar);
+    const dirtyEl = bar.querySelector('.dirty');
+    const markDirty = () => { dirtyEl.classList.toggle('hidden', serialize() === initial); };
+    form.addEventListener('input', markDirty);
+    form.addEventListener('change', markDirty);
+
+    bar.querySelector('.cancel') && bar.querySelector('.cancel').addEventListener('click', () => {});
+
+    wrap.addEventListener('click', (e) => {
+      const a = e.target.closest('a');
+      if (a && a.getAttribute('href') === base + '/quests' && serialize() !== initial) {
+        if (!window.confirm('You have unsaved changes. Leave without saving?')) { e.preventDefault(); e.stopPropagation(); }
+      }
+    }, true);
+
+    // Task builder
+    const cards = form.querySelector('.tb-cards');
+    const addSlot = form.querySelector('.tb-add');
+    const taskCountEl = form.querySelector('.task-count');
+    const builder = renderTaskBuilder({
+      cards, addSlot, ctx, isEdit, questId,
+      getTasks: () => taskList,
+      setTasks: (list) => { taskList.length = 0; taskList.push(...list); taskCountEl.textContent = taskList.length + ' task' + (taskList.length === 1 ? '' : 's'); markDirty(); },
+      onPersisted: () => ctx.reload(),
     });
-    list.appendChild(row);
+    builder.render();
+
+    async function collectQuestBody(status) {
+      const v = (s) => form.querySelector(s).value.trim();
+      if (!v('.f-title')) throw new Error('A quest title is required');
+      if (!isEdit && !taskList.length) throw new Error('A quest needs at least one task');
+      const body = {
+        title: v('.f-title'), description: v('.f-desc') || undefined, image_url: v('.f-image') || undefined,
+        instructions: v('.f-instr') || undefined, quest_type: quest.quest_type || undefined,
+        xp_reward: parseInt(v('.f-xp'), 10) || 0, points_reward: parseInt(v('.f-points'), 10) || 0,
+        starts_at: v('.f-start') || null, ends_at: v('.f-end') || null,
+        visibility: v('.f-vis'), max_participants: v('.f-max') || null, completion_limit: parseInt(v('.f-limit'), 10) || 1,
+        is_required: form.querySelector('.f-required').checked,
+        badge_id: badgeSel.value || null,
+        credential_title: v('.f-cred') || null,
+        requires_quests: [...prereqSel.selectedOptions].map(o => Number(o.value)),
+        require_all: form.querySelector('.f-require-all').checked,
+      };
+      if (status) body.status = status;
+      return body;
+    }
+
+    bar.querySelector('.publish-btn') && bar.querySelector('.publish-btn').addEventListener('click', async () => {
+      try {
+        const body = await collectQuestBody('active');
+        body.tasks = taskList;
+        body.campaign_id = Number(campSel.value);
+        const key = 'quest-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
+        const r = await api.post(`/api/v1/campaigns/${campSel.value}/quests`, body, { headers: { 'Idempotency-Key': key } });
+        toast('Quest published');
+        window.QuestoraNav.go(base + '/quests/' + encodeURIComponent(r.quest.id) + '/edit');
+      } catch (err) { toast(err.message, true); }
+    });
+    bar.querySelector('.save-draft') && bar.querySelector('.save-draft').addEventListener('click', async () => {
+      try {
+        const body = await collectQuestBody('draft');
+        body.tasks = taskList;
+        body.campaign_id = Number(campSel.value);
+        const key = 'quest-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
+        const r = await api.post(`/api/v1/campaigns/${campSel.value}/quests`, body, { headers: { 'Idempotency-Key': key } });
+        toast('Quest saved as a draft');
+        window.QuestoraNav.go(base + '/quests/' + encodeURIComponent(r.quest.id) + '/edit');
+      } catch (err) { toast(err.message, true); }
+    });
+    bar.querySelector('.save-changes') && bar.querySelector('.save-changes').addEventListener('click', async () => {
+      try {
+        const body = await collectQuestBody(null);
+        delete body.campaign_id;
+        await api.patch(`/api/v1/quests/${questId}`, body);
+        toast('Changes saved');
+        ctx.reload();
+      } catch (err) { toast(err.message, true); }
+    });
+    taskCountEl.textContent = taskList.length + ' task' + (taskList.length === 1 ? '' : 's');
+  }).catch((err) => {
+    wrap.replaceChildren(el(`<div class="rounded-xl border border-error/40 bg-error-bg p-4 text-sm text-error">${escapeHtml(err.message)}</div>`));
+  });
+}
+
+// The reorderable task builder. In create mode it owns a local array; in edit
+// mode every add/edit/duplicate/delete/reorder persists through the API.
+function renderTaskBuilder(opts) {
+  const { cards, addSlot, ctx, isEdit, questId } = opts;
+  const QB = window.QuestoraQuestBuilder;
+  const api = window.QuestoraAPI.api;
+  const { p } = ctx;
+  let networks = null, tokens = null;
+  const editingKey = { id: null };
+
+  function summary(t) {
+    const label = TASK_LABEL[t.type] || t.type;
+    const bits = [label];
+    if (t.type === 'on_chain' && t.config) {
+      if (t.config.method) bits.push(t.config.method.replace('_', ' '));
+      const line = requirementLine(t);
+      if (line) bits.push(line);
+    }
+    bits.push('+' + (t.xp_reward || 0) + ' XP');
+    return bits.join(' \u00b7 ');
   }
+
+  function render() {
+    const list = opts.getTasks();
+    cards.replaceChildren();
+    if (!list.length) {
+      cards.appendChild(el('<p class="text-sm text-content-tertiary">No tasks yet. Add the first one below.</p>'));
+    }
+    list.forEach((t, i) => {
+      const key = t.id || t._localId;
+      const card = el(`
+        <div class="tb-card rounded-xl border border-line bg-surface-container-high p-3">
+          <div class="flex items-center gap-2">
+            <span class="drag-handle cursor-grab text-content-tertiary select-none min-w-[24px] min-h-[44px] inline-flex items-center justify-center" role="button" tabindex="0" title="Drag or use arrow keys to reorder" aria-label="Reorder ${escapeHtml(t.title || 'task')}">${icon('drag_indicator')}</span>
+            <span class="min-w-0 flex-1">
+              <span class="block font-medium truncate">${escapeHtml(t.title || 'Task')}</span>
+              <span class="block text-xs text-content-tertiary">${escapeHtml(summary(t))}</span>
+            </span>
+            <span class="tb-actions flex items-center gap-1 shrink-0"></span>
+          </div>
+          <div class="tb-form mt-3 hidden"></div>
+        </div>`);
+      const actions = card.querySelector('.tb-actions');
+      const editBtn = el(`<button class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container hover:bg-surface-container-high text-content-secondary" aria-label="Edit task">${icon('edit')}</button>`);
+      tooltip(editBtn, 'Edit task');
+      editBtn.addEventListener('click', () => openForm(card, t, i));
+      const dupBtn = el(`<button class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container hover:bg-surface-container-high text-content-secondary" aria-label="Duplicate task">${icon('content_copy')}</button>`);
+      tooltip(dupBtn, 'Duplicate task');
+      dupBtn.addEventListener('click', () => duplicateTask(t));
+      const delBtn = el(`<button class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container hover:bg-surface-container-high text-error" aria-label="Delete task">${icon('delete')}</button>`);
+      tooltip(delBtn, 'Delete task');
+      delBtn.addEventListener('click', () => deleteTask(t));
+      actions.appendChild(editBtn); actions.appendChild(dupBtn); actions.appendChild(delBtn);
+      // Drag and keyboard reorder.
+      card.setAttribute('draggable', 'true');
+      card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', String(i)); });
+      card.addEventListener('dragover', (e) => e.preventDefault());
+      card.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        const from = Number(e.dataTransfer.getData('text/plain'));
+        if (Number.isNaN(from) || from === i) return;
+        move(from, i);
+      });
+      const handle = card.querySelector('.drag-handle');
+      let held = false;
+      handle.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); held = !held; handle.classList.toggle('text-accent-text', held); return; }
+        if (e.key === 'Escape') { held = false; handle.classList.remove('text-accent-text'); return; }
+        if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && held) { e.preventDefault(); move(i, i + (e.key === 'ArrowUp' ? -1 : 1)); }
+      });
+      cards.appendChild(card);
+    });
+    renderAdd();
+  }
+
+  function move(from, to) {
+    const list = opts.getTasks().slice();
+    if (to < 0 || to >= list.length || from < 0 || from >= list.length) return;
+    const [moved] = list.splice(from, 1); list.splice(to, 0, moved);
+    opts.setTasks(list);
+    persistOrder(list);
+    render();
+  }
+
+  async function persistOrder(list) {
+    if (!isEdit) return;
+    try { await api.post(`/api/v1/quests/${questId}/tasks/reorder`, { order: list.map(t => t.id) }); }
+    catch (e) { toast(e.message, true); }
+  }
+
+  async function duplicateTask(t) {
+    // Duplicate is a pure client-side copy: read the task, then create one.
+    try {
+      if (isEdit) {
+        const d = await api.get(`/api/v1/tasks/${t.id}`);
+        const s = d.task;
+        await api.post(`/api/v1/quests/${questId}/tasks`, {
+          type: s.type, title: s.title + ' copy', config: s.config || {}, xp_reward: s.xp_reward,
+          completion_mode: s.completion_mode, max_completions: s.max_completions,
+          attempt_limit: s.attempt_limit, cooldown_seconds: s.cooldown_seconds,
+        });
+        toast('Task duplicated'); opts.onPersisted();
+      } else {
+        const list = opts.getTasks().slice();
+        list.splice(list.indexOf(t) + 1, 0, { _localId: 't' + Date.now() + Math.random(), type: t.type, title: t.title + ' copy', config: JSON.parse(JSON.stringify(t.config || {})), xp_reward: t.xp_reward });
+        opts.setTasks(list); render();
+      }
+    } catch (e) { toast(e.message, true); }
+  }
+
+  function deleteTask(t) {
+    confirmDialog({
+      title: 'Delete task?',
+      body: `${escapeHtml(t.title || 'This task')} will be removed from the quest.`,
+      confirmLabel: 'Delete', danger: true,
+      onConfirm: async () => {
+        if (isEdit) { await api.del(`/api/v1/tasks/${t.id}`); toast('Task deleted'); opts.onPersisted(); }
+        else { const list = opts.getTasks().filter(x => x !== t); opts.setTasks(list); render(); toast('Task removed'); }
+      },
+    });
+  }
+
+  async function ensureChainData() {
+    if (networks === null) {
+      try { networks = (await api.get(`/api/v1/projects/${p.id}/networks`)).networks || []; } catch { networks = []; }
+    }
+    if (tokens === null) {
+      try { tokens = (await api.get(`/api/v1/projects/${p.id}/tokens`)).tokens || []; } catch { tokens = []; }
+    }
+  }
+
+  function taskTypeForm(choiceKey, values, host) {
+    host.replaceChildren();
+    const info = QB.TYPE_CHOICES.find(c => c.key === choiceKey) || QB.TYPE_CHOICES[QB.TYPE_CHOICES.length - 1];
+    host.appendChild(el(`<p class="text-xs text-content-secondary mb-2">${escapeHtml(info.hint)}</p>`));
+    const grid = el('<div class="grid sm:grid-cols-2 gap-2"></div>');
+    host.appendChild(grid);
+    const add = (html) => { grid.appendChild(el(html)); return grid.lastElementChild; };
+    if (choiceKey === 'social') {
+      add(`<input class="tf-url w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Link to visit (https://\u2026)" value="${escapeHtml(values.url || '')}">`);
+    } else if (choiceKey === 'url_proof' || choiceKey === 'custom_manual') {
+      add(`<input class="tf-placeholder w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Hint text shown to users (optional)" value="${escapeHtml(values.placeholder || '')}">`);
+    } else if (choiceKey === 'wallet_connect') {
+      add('<p class="text-sm text-content-secondary sm:col-span-2">No extra setup. Users sign a message with their browser wallet.</p>');
+    } else {
+      // on_chain family
+      const netSel = add('<select class="tf-network w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>');
+      netSel.appendChild(el('<option value="">Choose a network</option>'));
+      for (const n of (networks || [])) netSel.appendChild(el(`<option value="${n.id}">${escapeHtml(n.name)}</option>`));
+      if (values.network_id) netSel.value = String(values.network_id);
+      if (choiceKey === 'token_balance' || choiceKey === 'hold_token') {
+        const tokSel = add('<select class="tf-token w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>');
+        tokSel.appendChild(el('<option value="">Choose a token</option>'));
+        for (const tk of (tokens || [])) tokSel.appendChild(el(`<option value="${tk.id}">${escapeHtml(tk.symbol || tk.contract_address)}</option>`));
+        if (values.token_id) tokSel.value = String(values.token_id);
+      }
+      if (choiceKey === 'contract_interaction') {
+        add(`<input class="tf-contract w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Contract address (0x\u2026)" value="${escapeHtml(values.contract || '')}">`);
+      }
+      if (choiceKey !== 'on_chain_transaction' && choiceKey !== 'contract_interaction') {
+        add(`<input class="tf-amount w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Required amount (100)" value="${escapeHtml(values.amount || '')}">`);
+        const opSel = add('<select class="tf-operator w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"><option value="gte">At least</option><option value="gt">More than</option><option value="lte">At most</option><option value="lt">Less than</option><option value="eq">Exactly</option></select>');
+        if (values.operator) opSel.value = values.operator;
+      }
+      if (choiceKey === 'on_chain_transaction' || choiceKey === 'contract_interaction') {
+        add(`<input class="tf-confirmations w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Confirmations" value="${values.confirmations != null ? values.confirmations : 1}">`);
+      }
+    }
+    return grid;
+  }
+
+  function readForm(host, choiceKey) {
+    const val = (s) => { const n = host.querySelector(s); return n ? n.value.trim() : ''; };
+    return {
+      url: val('.tf-url'), placeholder: val('.tf-placeholder'),
+      network_id: val('.tf-network'), token_id: val('.tf-token'),
+      contract: val('.tf-contract'), amount: val('.tf-amount'), operator: val('.tf-operator') || 'gte',
+      confirmations: val('.tf-confirmations'),
+    };
+  }
+
+  function formValuesForTask(t) {
+    const c = t.config || {};
+    const choice = QB.choiceForTask(t);
+    return {
+      url: c.url, placeholder: c.placeholder, network_id: c.network_id, token_id: c.token_id,
+      contract: c.contract, amount: c.requirement ? c.requirement.amount : '', operator: c.requirement ? c.requirement.operator : 'gte',
+      confirmations: c.confirmations,
+    };
+  }
+
+  function openForm(card, t, i) {
+    const host = card.querySelector('.tb-form');
+    if (!host.classList.contains('hidden') && editingKey.id === (t.id || t._localId)) { host.classList.add('hidden'); host.replaceChildren(); editingKey.id = null; return; }
+    editingKey.id = t.id || t._localId;
+    host.classList.remove('hidden');
+    const isChain = ['on_chain'].includes(t.type);
+    const form = el(`
+      <div class="space-y-2">
+        <div class="grid sm:grid-cols-2 gap-2">
+          <input class="ef-title w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Task title" value="${escapeHtml(t.title || '')}">
+          <select class="ef-type w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
+          <input class="ef-xp w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Task XP" value="${Number(t.xp_reward || 0)}">
+          <select class="ef-completion w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
+            <option value="one_time">One time</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
+          </select>
+        </div>
+        <div class="tf-host"></div>
+        <div class="flex gap-2">
+          <button class="ef-save font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save task</button>
+          <button class="ef-cancel text-sm px-4 py-2.5 min-h-[44px] rounded-lg bg-surface-container text-content-secondary">Cancel</button>
+        </div>
+        <p class="ef-hint text-xs text-content-secondary"></p>
+      </div>`);
+    host.replaceChildren(form);
+    const typeSel = form.querySelector('.ef-type');
+    const currentChoice = QB.choiceForTask(t);
+    for (const c of QB.TYPE_CHOICES) typeSel.appendChild(el(`<option value="${c.key}" ${c.key === currentChoice ? 'selected' : ''}>${escapeHtml(c.label)}</option>`));
+    form.querySelector('.ef-completion').value = t.completion_mode || 'one_time';
+    const tfHost = form.querySelector('.tf-host');
+    let values = formValuesForTask(t);
+    const draw = () => taskTypeForm(typeSel.value, values, tfHost);
+    draw();
+    if (['on_chain_transaction', 'token_balance', 'hold_token', 'contract_interaction'].includes(currentChoice)) {
+      ensureChainData().then(() => taskTypeForm(typeSel.value, values, tfHost));
+    }
+    typeSel.addEventListener('change', () => {
+      const chainNow = ['on_chain_transaction', 'token_balance', 'hold_token', 'contract_interaction'].includes(typeSel.value);
+      if (chainNow) ensureChainData().then(() => taskTypeForm(typeSel.value, values, tfHost));
+      else taskTypeForm(typeSel.value, values, tfHost);
+    });
+    form.querySelector('.ef-cancel').addEventListener('click', () => { host.classList.add('hidden'); host.replaceChildren(); editingKey.id = null; });
+    form.querySelector('.ef-save').addEventListener('click', async () => {
+      const choice = typeSel.value;
+      const fields = readForm(tfHost, choice);
+      const mapped = QB.taskTypeToConfig(choice, fields);
+      const title = form.querySelector('.ef-title').value.trim() || 'Task';
+      const xp = parseInt(form.querySelector('.ef-xp').value, 10) || 0;
+      const completion = form.querySelector('.ef-completion').value;
+      const hint = form.querySelector('.ef-hint');
+      hint.textContent = 'Saving\u2026'; hint.className = 'ef-hint text-xs text-content-secondary';
+      try {
+        if (isEdit) {
+          await api.patch(`/api/v1/tasks/${t.id}`, { title, xp_reward: xp, completion_mode: completion, config: mapped.config });
+          toast('Task updated'); opts.onPersisted();
+        } else {
+          const list = opts.getTasks().slice();
+          const idx = list.indexOf(t);
+          list[idx] = { ...t, type: mapped.type, config: mapped.config, title, xp_reward: xp, completion_mode: completion };
+          opts.setTasks(list); render();
+          toast('Task updated');
+        }
+        host.classList.add('hidden'); host.replaceChildren(); editingKey.id = null;
+      } catch (err) { hint.textContent = err.message; hint.className = 'ef-hint text-xs text-error'; }
+    });
+  }
+
+  function renderAdd() {
+    addSlot.replaceChildren();
+    const wrapEl = el(`
+      <div class="tb-add-panel">
+        <button class="tb-open inline-flex items-center gap-1.5 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-surface-container border border-line-strong hover:bg-surface-container-high text-content-primary text-sm">${icon('add', { class: 'w-4 h-4' })}<span>Add Task</span></button>
+        <div class="tb-chooser mt-2 hidden rounded-xl border border-line bg-surface-container-high p-3 space-y-2">
+          <label class="block text-xs text-content-secondary">Task type</label>
+          <select class="tb-type w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
+          <input class="tb-title w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Task title">
+          <div class="tb-fields"></div>
+          <div class="flex gap-2">
+            <button class="tb-create font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Add task</button>
+            <button class="tb-cancel text-sm px-4 py-2.5 min-h-[44px] rounded-lg bg-surface-container text-content-secondary">Cancel</button>
+          </div>
+          <p class="tb-hint text-xs text-content-secondary"></p>
+        </div>
+      </div>`);
+    addSlot.appendChild(wrapEl);
+    const typeSel = wrapEl.querySelector('.tb-type');
+    for (const c of QB.TYPE_CHOICES) typeSel.appendChild(el(`<option value="${c.key}">${escapeHtml(c.label)}</option>`));
+    const chooser = wrapEl.querySelector('.tb-chooser');
+    const titleInput = wrapEl.querySelector('.tb-title');
+    const fieldsHost = wrapEl.querySelector('.tb-fields');
+    const CHAIN = ['on_chain_transaction', 'token_balance', 'hold_token', 'contract_interaction'];
+    const draw = () => {
+      if (CHAIN.includes(typeSel.value)) ensureChainData().then(() => taskTypeForm(typeSel.value, {}, fieldsHost));
+      else taskTypeForm(typeSel.value, {}, fieldsHost);
+    };
+    wrapEl.querySelector('.tb-open').addEventListener('click', () => {
+      chooser.classList.toggle('hidden');
+      if (!chooser.classList.contains('hidden')) {
+        titleInput.value = (QB.TYPE_CHOICES.find(c => c.key === typeSel.value) || {}).label || '';
+        draw();
+      }
+    });
+    wrapEl.querySelector('.tb-cancel').addEventListener('click', () => chooser.classList.add('hidden'));
+    typeSel.addEventListener('change', () => {
+      titleInput.value = (QB.TYPE_CHOICES.find(c => c.key === typeSel.value) || {}).label || '';
+      draw();
+    });
+    wrapEl.querySelector('.tb-create').addEventListener('click', async () => {
+      const choice = typeSel.value;
+      const fields = readForm(fieldsHost, choice);
+      const mapped = QB.taskTypeToConfig(choice, fields);
+      const title = titleInput.value.trim() || (QB.TYPE_CHOICES.find(c => c.key === choice) || {}).label || 'Task';
+      const hint = wrapEl.querySelector('.tb-hint');
+      hint.textContent = 'Saving\u2026'; hint.className = 'tb-hint text-xs text-content-secondary';
+      if (isEdit) {
+        try {
+          await api.post(`/api/v1/quests/${questId}/tasks`, { type: mapped.type, title, config: mapped.config, xp_reward: 0 });
+          toast('Task added'); opts.onPersisted();
+        } catch (e) { hint.textContent = e.message; hint.className = 'tb-hint text-xs text-error'; }
+      } else {
+        const list = opts.getTasks().slice();
+        list.push({ _localId: 't' + Date.now() + Math.random(), type: mapped.type, title, config: mapped.config, xp_reward: 0, completion_mode: 'one_time' });
+        opts.setTasks(list); chooser.classList.add('hidden'); render();
+      }
+    });
+  }
+
+  return { render: () => render() };
 }
 
 async function renderDashLeaderboard(sectionEl, ctx, which) {

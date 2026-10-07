@@ -1493,6 +1493,173 @@ t('create wizard: a url_proof task needs no builder-side placeholder', async () 
   assert.deepEqual(hintedTask.rows[0].config, { placeholder: 'https://your-work.example' });
 }, { timeout: 30000 });
 
+// The quest builder's data layer: a duplicate copies the whole configuration
+// (task reward/completion settings, a fresh task version, rewards and
+// prerequisites) instead of dropping it, and the new task delete/reorder
+// endpoints enforce their guards.
+t('quest duplicate copies full task config, rewards and prereqs; task delete and reorder guards hold', async () => {
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const tokenFor = (u, id) => jwt.sign(
+    { id, username: u, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  const owner = { 'x-usernode-token': tokenFor('staging-demo-user-1', 900001), 'content-type': 'application/json' };
+  const proj = (await (await fetch(base + '/api/v1/projects/staging-demo-octra-builders', { headers: owner })).json()).project;
+  const camp = (await (await fetch(base + `/api/v1/projects/${proj.id}/campaigns`, {
+    method: 'POST', headers: owner, body: JSON.stringify({ name: 'Builder Dup Campaign ' + Date.now(), status: 'active' }),
+  })).json()).campaign;
+
+  const prereq = (await (await fetch(base + `/api/v1/campaigns/${camp.id}/quests`, {
+    method: 'POST', headers: owner,
+    body: JSON.stringify({ title: 'Builder Prereq ' + Date.now(), xp_reward: 5, status: 'active', tasks: [{ type: 'manual', title: 'P' }] }),
+  })).json()).quest;
+  const badgeId = (await (await fetch(base + '/api/v1/badges', { headers: owner })).json()).badges[0].id;
+
+  const src = (await (await fetch(base + `/api/v1/campaigns/${camp.id}/quests`, {
+    method: 'POST', headers: owner,
+    body: JSON.stringify({
+      title: 'Builder Source ' + Date.now(), xp_reward: 100, points_reward: 50, status: 'active',
+      tasks: [
+        { type: 'manual', title: 'First', xp_reward: 40 },
+        { type: 'url_proof', title: 'Second', xp_reward: 60, config: { placeholder: 'https://x.example' } },
+      ],
+      badge_id: badgeId, credential_title: 'Staging demo copy credential',
+      requires_quests: [prereq.id], require_all: true,
+    }),
+  })).json()).quest;
+  assert.ok(src && src.id, 'the source quest must be created');
+
+  // Give the source tasks non-default reward/completion settings through the
+  // real task PATCH, so the copy has something meaningful to preserve.
+  const srcTasks = (await (await fetch(base + `/api/v1/quests/${src.id}/tasks`, { headers: owner })).json()).tasks;
+  assert.equal(srcTasks.length, 2);
+  for (const tsk of srcTasks) {
+    const r = await fetch(base + `/api/v1/tasks/${tsk.id}`, {
+      method: 'PATCH', headers: owner,
+      body: JSON.stringify({ completion_mode: 'weekly', max_completions: 3, attempt_limit: 5, cooldown_seconds: 120 }),
+    });
+    assert.equal(r.status, 200, JSON.stringify(await r.clone().json().catch(() => ({}))));
+  }
+
+  const dupRes = await fetch(base + `/api/v1/quests/${src.id}/duplicate`, { method: 'POST', headers: owner, body: '{}' });
+  assert.equal(dupRes.status, 200, JSON.stringify(await dupRes.clone().json().catch(() => ({}))));
+  const dup = (await dupRes.json()).quest;
+  assert.equal(dup.status, 'draft', 'a duplicate is always a draft');
+  assert.equal(dup.title, src.title + ' Copy', 'the copy title uses the plain " Copy" suffix');
+  assert.equal(Number(dup.xp_reward), 100, 'the copy keeps the quest XP reward');
+
+  const dupTasks = (await (await fetch(base + `/api/v1/quests/${dup.id}/tasks`, { headers: owner })).json()).tasks;
+  assert.equal(dupTasks.length, 2, 'both tasks are copied');
+  for (const dt of dupTasks) {
+    assert.equal(dt.xp_reward > 0, true, 'the copy keeps each task XP reward');
+    assert.equal(dt.completion_mode, 'weekly', 'the copy keeps the task completion mode');
+    assert.equal(dt.max_completions, 3, 'the copy keeps the task max completions');
+    assert.equal(dt.attempt_limit, 5, 'the copy keeps the task attempt limit');
+    assert.equal(dt.cooldown_seconds, 120, 'the copy keeps the task cooldown');
+    assert.ok(dt.current_version_id, 'each copied task has an active version');
+    assert.equal(Number(dt.project_id), Number(proj.id), 'the copied task carries the project scope');
+    assert.equal(Number(dt.campaign_id), Number(camp.id), 'the copied task carries the campaign scope');
+    const versions = await pool.query('SELECT COUNT(*)::int AS n FROM task_versions WHERE task_id = $1', [dt.id]);
+    assert.ok(versions.rows[0].n >= 1, 'a task_versions row was created for the copied task');
+  }
+
+  // Rewards and prerequisites travel with the copy.
+  const rewards = await pool.query(`SELECT kind, config FROM rewards WHERE quest_id = $1 ORDER BY kind`, [dup.id]);
+  assert.ok(rewards.rows.some(r => r.kind === 'badge'), 'the badge reward is copied');
+  assert.ok(rewards.rows.some(r => r.kind === 'credential'), 'the credential reward is copied');
+  const cond = await pool.query('SELECT operator, config FROM quest_conditions WHERE quest_id = $1 LIMIT 1', [dup.id]);
+  assert.equal(cond.rows[0].operator, 'all');
+  assert.deepEqual(cond.rows[0].config.requires_quests, [prereq.id], 'the prerequisite list is copied');
+
+  // Reorder: the ordered list maps to sort_order indices.
+  const reversed = dupTasks.map(t => t.id).reverse();
+  const reorder = await fetch(base + `/api/v1/quests/${dup.id}/tasks/reorder`, {
+    method: 'POST', headers: owner, body: JSON.stringify({ order: reversed }),
+  });
+  assert.equal(reorder.status, 200);
+  const afterOrder = await pool.query(
+    'SELECT id, sort_order FROM quest_tasks WHERE quest_id = $1 ORDER BY sort_order', [dup.id]);
+  assert.deepEqual(afterOrder.rows.map(r => r.id), reversed, 'the reorder payload decides the order');
+
+  // A plain delete removes the task and its versions.
+  const delTaskId = reversed[0];
+  const del = await fetch(base + `/api/v1/tasks/${delTaskId}`, { method: 'DELETE', headers: owner });
+  assert.equal(del.status, 200, JSON.stringify(await del.clone().json().catch(() => ({}))));
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM quest_tasks WHERE id = $1', [delTaskId])).rows[0].n, 0, 'the task row is gone');
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM task_versions WHERE task_id = $1', [delTaskId])).rows[0].n, 0, 'its versions cascade away');
+
+  // A task with participant activity is refused, not silently destroyed.
+  const keepTaskId = reversed[1];
+  const fakeUser = (await pool.query(`SELECT id FROM users WHERE username = 'staging-demo-user-2'`)).rows[0].id;
+  await pool.query(
+    `INSERT INTO task_submissions (task_id, quest_id, user_id, proof_type, status)
+     VALUES ($1, $2, $3, 'manual', 'pending')`, [keepTaskId, dup.id, fakeUser]);
+  const refused = await fetch(base + `/api/v1/tasks/${keepTaskId}`, { method: 'DELETE', headers: owner });
+  assert.equal(refused.status, 409, 'a task with participant activity cannot be deleted');
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM quest_tasks WHERE id = $1', [keepTaskId])).rows[0].n, 1, 'the task with history survives');
+
+  // A non-member cannot delete a task.
+  const nobody = { 'x-usernode-token': tokenFor('staging-demo-nobody-dup', 777555111), 'content-type': 'application/json' };
+  await fetch(base + '/api/v1/users/me', { headers: nobody });
+  assert.equal((await fetch(base + `/api/v1/tasks/${keepTaskId}`, { method: 'DELETE', headers: nobody })).status, 403);
+}, { timeout: 30000 });
+
+// The redesigned Quests dashboard is screenshot-reachable in staging through
+// a read-only ?demo=1 payload. The capture identity is never a project member,
+// so the demo project read must also carry the overview numbers the dashboard
+// would otherwise fetch from /overview. That route keeps enforcing
+// analytics.view: fixing the 403 must not open it to a non-member.
+t('staging demo project read is permission-widened and carries its own overview', async () => {
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const tokenFor = (username, id) => jwt.sign(
+    { id, username, pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
+  );
+  const stranger = { 'x-usernode-token': tokenFor('staging-demo-stranger-' + (Date.now() % 100000000), 830000000) };
+
+  // The plain read is what a real non-member gets: no management permission,
+  // no embedded numbers.
+  const plainRes = await fetch(base + '/api/v1/projects/staging-demo-octra-builders', { headers: stranger });
+  assert.equal(plainRes.status, 200);
+  const plain = await plainRes.json();
+  assert.equal(plain.permissions['quest.manage'], false, 'a non-member holds no management permission');
+  assert.equal(plain.stats, undefined, 'the plain payload carries no overview numbers');
+  const projectId = plain.project.id;
+
+  // The demo read reports the management permissions and carries the overview
+  // numbers, so the dashboard needs no second, still-gated request.
+  const demoRes = await fetch(base + '/api/v1/projects/staging-demo-octra-builders?demo=1', { headers: stranger });
+  assert.equal(demoRes.status, 200);
+  const demo = await demoRes.json();
+  assert.equal(demo.permissions['quest.manage'], true, 'the demo read widens the management permission');
+  assert.ok(demo.stats && typeof demo.stats.quests === 'number', 'the demo read carries the overview stats');
+
+  // The write path still resolves the real role: a demo viewer cannot reorder.
+  const reorder = await fetch(base + '/api/v1/campaigns/1/quests/reorder', {
+    method: 'POST',
+    headers: { ...stranger, 'content-type': 'application/json' },
+    body: JSON.stringify({ order: [] }),
+  });
+  assert.equal(reorder.status, 403, 'the demo read must not grant writes');
+
+  // /overview stays gated for the same non-member; only the demo project read
+  // supplies the numbers.
+  assert.equal((await fetch(base + `/api/v1/projects/${projectId}/overview`, { headers: stranger })).status, 403,
+    'the overview endpoint still requires analytics.view');
+}, { timeout: 20000 });
+
 after(async () => {
   if (httpServer) await new Promise(resolve => httpServer.close(resolve));
   if (pool) await pool.end();

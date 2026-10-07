@@ -37,8 +37,10 @@
   function actionsFor(slug) {
     return [
       { key: 'campaign', label: 'Campaign', href: base(slug) + '/campaigns?new=campaign' },
-      { key: 'quest', label: 'Quest', href: base(slug) + '/quests?new=quest' },
-      { key: 'task', label: 'Task', href: base(slug) + '/quests?new=task' },
+      { key: 'quest', label: 'Quest', href: base(slug) + '/quests/new' },
+      // A task is added inside a quest, so Task opens the Quests manager
+      // where a quest can be chosen and edited.
+      { key: 'task', label: 'Task', href: base(slug) + '/quests' },
     ];
   }
 
