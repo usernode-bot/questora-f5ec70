@@ -35,9 +35,29 @@ router.get('/discover', async (req, res) => {
     quest_count: Number(r.quest_count), total_xp: Number(r.total_xp),
     participants: Number(r.participants), ends_at: r.ends_at,
   });
-  const pick = rows => rows.rows.map(card);
+  // The roster comes back as four independently ordered lists (Featured,
+  // Trending, New, Ending soon). An active campaign matches more than one of
+  // them, and a project can carry several active campaigns, so the same
+  // project used to appear once per campaign per section: the / (Explore)
+  // screen showed it three or more times. Keep one representative campaign
+  // per project across the whole payload, filling each section in order
+  // while skipping any project already shown above it.
+  const pick = (rows, seen) => {
+    const out = [];
+    for (const r of rows.rows) {
+      if (seen.has(r.project_slug)) continue;
+      seen.add(r.project_slug);
+      out.push(card(r));
+    }
+    return out;
+  };
+  const seenProjects = new Set();
+  const featuredCards = pick(featured, seenProjects);
+  const trendingCards = pick(trending, seenProjects);
+  const freshCards = pick(fresh, seenProjects);
+  const endingCards = pick(ending, seenProjects);
   res.json({
-    featured: pick(featured), trending: pick(trending), fresh: pick(fresh), ending: pick(ending),
+    featured: featuredCards, trending: trendingCards, fresh: freshCards, ending: endingCards,
     categories: cats.rows.map(r => r.category),
   });
 });

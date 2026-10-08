@@ -46,11 +46,20 @@ async function viewDiscover() {
     wrap.querySelector('.retry').addEventListener('click', viewDiscover);
     return;
   }
-  const mk = (cards) => cards;
-  wrap.appendChild(sectionRow('Featured', mk(data.featured), 'No featured campaigns yet'));
-  wrap.appendChild(sectionRow('Trending', mk(data.trending), 'No campaigns yet. Create the first one.'));
-  wrap.appendChild(sectionRow('New', mk(data.fresh), 'No new campaigns yet'));
-  wrap.appendChild(sectionRow('Ending soon', mk(data.ending), 'Nothing ending soon'));
+  // The API now sends one card per project across the whole payload, so a
+  // heading can arrive with nothing under it (every project it named is
+  // already shown above it). Drop those rows rather than print an empty one.
+  const sections = [
+    ['Featured', data.featured],
+    ['Trending', data.trending],
+    ['New', data.fresh],
+    ['Ending soon', data.ending],
+  ].filter(([, cards]) => cards.length);
+  if (!sections.length) {
+    wrap.appendChild(el(emptyState('No campaigns yet. Create the first one to get started.', 'Create a campaign', '/create')));
+  } else {
+    for (const [label, cards] of sections) wrap.appendChild(sectionRow(label, cards, ''));
+  }
   if (data.categories.length) {
     const chips = el(`<section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Categories</h2><div class="flex flex-wrap gap-2 px-1"></div></section>`);
     const holder = chips.querySelector('div');
