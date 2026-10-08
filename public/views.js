@@ -38,6 +38,10 @@ async function viewDiscover() {
   try {
     data = await window.QuestoraAPI.api.get('/api/v1/discover');
   } catch (err) {
+    // A cancelled read is not a failure. When a navigation or a newer load
+    // supersedes this one, the request is aborted; leave what is on screen
+    // alone instead of painting the browser's raw abort text as an error.
+    if (window.QuestoraAPI.isCancelled(err)) return;
     wrap.replaceChildren(el(`<div class="rounded-2xl border border-line bg-surface p-6 text-center"><p class="text-content-secondary mb-2">${escapeHtml(err.message)}</p><button class="retry text-accent-text text-sm font-medium">Try again</button></div>`));
     wrap.querySelector('.retry').addEventListener('click', viewDiscover);
     return;

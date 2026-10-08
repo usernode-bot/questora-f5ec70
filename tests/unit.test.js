@@ -570,6 +570,78 @@ test('all RPC endpoints down is RPC_UNAVAILABLE, never a user failure', async ()
 // ---- Quest CRUD builder helpers ----
 const questBuilder = require('../public/quest-builder.js');
 
+// ---- Explore load cancellation (api client) ----
+// The SPA's api client is a browser IIFE, so load it in a sandbox with just
+// the globals it reads (window, fetch, AbortController).
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+function loadApiClient(fetchImpl) {
+  const code = fs.readFileSync(path.join(__dirname, '..', 'public', 'api.js'), 'utf8');
+  const sandbox = {
+    window: { location: { search: '' } },
+    fetch: fetchImpl,
+    AbortController,
+    URLSearchParams,
+    Map,
+    Promise,
+    Date,
+    console,
+  };
+  sandbox.window.window = sandbox.window;
+  vm.createContext(sandbox);
+  vm.runInContext(code, sandbox);
+  return sandbox.window.QuestoraAPI;
+}
+
+test('api client: a newer navigation never inherits an older signal (Explore abort)', async () => {
+  // fetch resolves only when the test releases it, so both reads are genuinely
+  // in flight at the same time.
+  const pending = [];
+  const fetchImpl = (url, opts) => new Promise((resolve) => {
+    pending.push({ url, signal: opts && opts.signal, resolve: () =>
+      resolve({ ok: true, status: 200, json: async () => ({ marker: url }) }) });
+  });
+  const api = loadApiClient(fetchImpl);
+
+  const ctrlA = new AbortController();
+  const ctxA = { seq: 1, signal: ctrlA.signal };
+  const ctxB = { seq: 2, signal: new AbortController().signal };
+
+  // Read 1: navigation A asks for the discover feed.
+  const first = api.api.get('/api/v1/discover', { signal: ctxA.signal });
+  assert.equal(pending.length, 1, 'first read starts one request');
+
+  // Navigation B begins: A's signal aborts (app.js beginNav behaviour).
+  ctrlA.abort();
+
+  // Read 2: navigation B asks for the SAME path. It must not reuse A's
+  // request, which is bound to the now-aborted signal.
+  const second = api.api.get('/api/v1/discover', { signal: ctxB.signal });
+  assert.equal(pending.length, 2, 'a new signal starts a fresh request, not the aborted one');
+
+  // Resolve the newer request; the current screen keeps its content.
+  pending[1].resolve();
+  const data = await second;
+  assert.equal(data.marker, '/api/v1/discover');
+
+  // The superseded request, when it settles, must not reject the screen and
+  // must not poison the cache the newer read uses.
+  pending[0].resolve();
+  await first.catch(() => {}); // A's promise is irrelevant to B
+  const cached = await api.api.get('/api/v1/discover', { signal: ctxB.signal });
+  assert.equal(cached.marker, '/api/v1/discover');
+});
+
+test('api client: isCancelled recognises an AbortError, not a real failure', () => {
+  const api = loadApiClient(() => Promise.resolve({ ok: true, status: 200, json: async () => ({}) }));
+  const abortErr = new Error('signal is aborted without reason');
+  abortErr.name = 'AbortError';
+  assert.equal(api.isCancelled(abortErr), true);
+  assert.equal(api.isCancelled(new Error('Internal server error')), false);
+  assert.equal(api.isCancelled(null), false);
+});
+
 test('quest status maps to the three-word vocabulary without losing the honest word', () => {
   assert.deepEqual(questBuilder.statusBucket('draft'), 'Draft');
   assert.deepEqual(questBuilder.statusPill('draft'), 'Draft');
