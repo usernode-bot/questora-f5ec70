@@ -13,12 +13,20 @@
 
   function clearCache() { cache.clear(); }
 
+  // True when a rejection is a cancelled request, not a failure: fetch's own
+  // AbortError (a DOMException, so the name survives the throw), or the signal
+  // that governed the call has aborted. Cancelled reads never render an error.
+  function isAbort(err, signal) {
+    return !!(err && err.name === 'AbortError') || !!(signal && signal.aborted);
+  }
+
   async function request(path, options = {}) {
-    // Cancel a read that belongs to a navigation the user has already left.
-    var signal = options.signal || (window.QV && window.QV.__ctx && window.QV.__ctx.signal);
+    // Only a caller-passed signal can cancel a request here. The navigation
+    // signal is resolved by get() for reads; writes carry no signal, so an
+    // action the user starts is never cancelled by a route change.
     var res = await fetch(path, {
       ...options,
-      signal: signal,
+      signal: options.signal || undefined,
       headers: {
         'Content-Type': 'application/json',
         'x-usernode-token': TOKEN,
@@ -36,14 +44,27 @@
   }
 
   function get(p, opts) {
+    opts = opts || {};
+    // Reads belong to a navigation: an explicit `signal` key wins (null means
+    // no signal), otherwise the read rides the current navigation's signal.
+    var signal = 'signal' in opts
+      ? opts.signal
+      : (window.QV && window.QV.__ctx && window.QV.__ctx.signal) || null;
     var cached = cache.get(p);
     if (cached && Date.now() - cached.at < CACHE_MS) return Promise.resolve(cached.data);
     if (inflight.has(p)) return inflight.get(p);
-    var promise = request(p, opts).then((data) => {
+    var promise = request(p, { ...opts, signal: signal || undefined }).then((data) => {
       cache.set(p, { at: Date.now(), data: data });
       return data;
     }).finally(() => { inflight.delete(p); });
     inflight.set(p, promise);
+    // `.finally` deletes the inflight entry a microtask late; drop it as soon
+    // as the signal aborts so a newer navigation never reuses an aborted read.
+    if (signal) {
+      signal.addEventListener('abort', () => {
+        if (inflight.get(p) === promise) inflight.delete(p);
+      }, { once: true });
+    }
     return promise;
   }
 
@@ -61,5 +82,5 @@
     invalidate: clearCache,
   };
 
-  window.QuestoraAPI = { api, TOKEN };
+  window.QuestoraAPI = { api, TOKEN, isAbort };
 })();

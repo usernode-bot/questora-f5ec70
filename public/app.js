@@ -39,6 +39,8 @@
   function errorCard(message) {
     return window.QUI.el('<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">' + window.QUI.escapeHtml(message) + '</p></div>');
   }
+  // A cancelled request is not a failure: load-path catches return early on it.
+  const isAbort = (e) => window.QuestoraAPI.isAbort(e);
 
   // ---- session store -------------------------------------------------------
   // One shared /users/me read: concurrent callers await the same request, the
@@ -52,7 +54,9 @@
     load() {
       if (this.loaded) return Promise.resolve(this.data);
       if (this.inflight) return this.inflight;
-      this.inflight = window.QuestoraAPI.api.get('/api/v1/users/me')
+      // The session is app-wide, so it must not ride a navigation signal: an
+      // aborted read here would be cached as signed out.
+      this.inflight = window.QuestoraAPI.api.get('/api/v1/users/me', { signal: null })
         .then((d) => { this.data = d; this.loaded = true; this.emit(); return d; })
         .catch(() => { this.data = null; this.loaded = true; this.emit(); return null; })
         .finally(() => { this.inflight = null; });
@@ -336,6 +340,7 @@
       notifCache.data = data;
       markBadge(data.unread);
     } catch (err) {
+      if (isAbort(err)) return;
       holder.replaceChildren(window.QUI.el('<div class="px-3 py-4"><p class="text-sm text-error">' + window.QUI.escapeHtml(err.message) + '</p><button type="button" class="retry mt-2 text-sm text-accent-text font-medium">Try again</button></div>'));
       holder.querySelector('.retry').addEventListener('click', () => renderNotifBody(holder, trigger));
       appendNotifFooter(holder, trigger);
@@ -515,6 +520,7 @@
       await routeFor(path, params, ctx);
     } catch (err) {
       if (!isCurrent(ctx.seq)) return;
+      if (isAbort(err)) return;
       appEl().replaceChildren(errorCard(err.message || 'Something went wrong'));
       console.error(err);
     }

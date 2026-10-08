@@ -848,3 +848,105 @@ test('network presets: catalog shape, no keys, no guessed non-EVM fields', () =>
   assert.equal(presetToNetworkFields(eth).chain_namespace, 'eip155');
   assert.equal(getPreset('nope'), null);
 });
+
+// ---- cancelled loads never render an error (Explore "signal is aborted without reason") ----
+
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+// Load public/api.js (a browser bundle) in a vm: a stub window plus a fetch
+// that honours the signal it is given and rejects the way the browser does.
+function abortErr() { const e = new Error('signal is aborted without reason'); e.name = 'AbortError'; return e; }
+function loadApi(fetchImpl) {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'api.js'), 'utf8');
+  const windowStub = { location: { search: '?token=t' } };
+  const sandbox = { window: windowStub, fetch: fetchImpl, URLSearchParams, AbortController, console, setTimeout };
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox);
+  return { Q: windowStub.QuestoraAPI, windowStub };
+}
+// A fetch that behaves like the browser's: rejects with AbortError when the
+// signal aborts, otherwise resolves with a valid json response.
+function makeFetch(log) {
+  return (p, config) => {
+    log.push({ path: p, signal: config.signal });
+    return new Promise((resolve, reject) => {
+      if (config.signal) {
+        if (config.signal.aborted) { reject(abortErr()); return; }
+        config.signal.addEventListener('abort', () => reject(abortErr()), { once: true });
+      }
+      setTimeout(() => resolve({ ok: true, status: 200, json: async () => ({ data: 'ok:' + log.length }) }), 0);
+    });
+  };
+}
+
+test('an aborted shared read is not reused by a newer navigation', async () => {
+  const log = [];
+  const { Q, windowStub } = loadApi(makeFetch(log));
+  const a = new AbortController();
+  windowStub.QV = { __ctx: { seq: 1, signal: a.signal } };
+  const first = Q.api.get('/x');
+  assert.equal(log.length, 1, 'the first read fetches once');
+  a.abort();
+  const firstRejects = assert.rejects(first, (e) => e.name === 'AbortError', 'the aborted read rejects as an AbortError');
+  const b = new AbortController();
+  windowStub.QV.__ctx = { seq: 2, signal: b.signal };
+  const second = Q.api.get('/x');
+  assert.equal(log.length, 2, 'the newer navigation fetches fresh instead of inheriting the aborted read');
+  assert.deepEqual(await second, { data: 'ok:2' }, 'the newer read resolves and fills the page');
+  await firstRejects;
+});
+
+test('writes carry no navigation signal', async () => {
+  const log = [];
+  const { Q, windowStub } = loadApi(makeFetch(log));
+  const c = new AbortController();
+  windowStub.QV = { __ctx: { seq: 1, signal: c.signal } };
+  await Q.api.post('/y', {});
+  assert.equal(log[0].signal, undefined, 'a user-started action is never cancelled by a route change');
+});
+
+test('an explicit null signal opts a read out of the navigation signal', async () => {
+  const log = [];
+  const { Q, windowStub } = loadApi(makeFetch(log));
+  const c = new AbortController();
+  windowStub.QV = { __ctx: { seq: 1, signal: c.signal } };
+  await Q.api.get('/api/v1/users/me', { signal: null });
+  assert.equal(log[0].signal, undefined, 'the app-wide session read is never aborted by navigation');
+});
+
+test('isAbort recognises the browser cancel signal, not the message text', () => {
+  const fsMod = fs;
+  void fsMod;
+  const log = [];
+  const { Q } = loadApi(makeFetch(log));
+  const aborted = new AbortController(); aborted.abort();
+  assert.equal(Q.isAbort(abortErr()), true, 'a DOMException-style AbortError is a cancel');
+  assert.equal(Q.isAbort(new Error('x')), false, 'a genuine failure is not');
+  assert.equal(Q.isAbort(new Error('whatever'), aborted.signal), true, 'an aborted signal is a cancel');
+});
+
+test('load-path catches guard with isAbort before the error markup', () => {
+  // views.js is a browser bundle, so check the source text: each spec-listed
+  // load catch must early-return on isAbort before it renders err.message.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'views.js'), 'utf8');
+  const named = ['viewDiscover', 'viewCampaigns', 'viewQuest', 'viewProfile', 'viewProjects',
+    'viewProjectOverview', 'renderProjectBoard', 'viewProjectQuests', 'viewCampaignDetail',
+    'viewQuestDetail', 'viewScopedLeaderboard', 'renderQuestEditor', 'renderDashLeaderboard',
+    'renderDashRewards', 'renderDashAnalytics', 'renderMembers', 'viewNotifications',
+    'viewSettings', 'viewMyProjects', 'viewSearch', 'viewCredential', 'viewAdmin'];
+  for (const fn of named) {
+    const start = src.indexOf('function ' + fn + '(');
+    assert.ok(start > -1, fn + ' exists');
+    const next = src.slice(start + 1).search(/\n(async )?function /);
+    const body = src.slice(start, next > -1 ? start + 1 + next : undefined);
+    assert.ok(/catch[^\n]*\{\s*if \(isAbort\(err\)\) return;/.test(body) || /\)\.catch\(\(err\) => \{\s*if \(isAbort\(err\)\) return;/.test(body),
+      fn + ': its load-path catch early-returns on a cancelled request');
+  }
+  // The Explore slice specifically: the guard comes before the error markup.
+  const discover = src.slice(src.indexOf('async function viewDiscover()'), src.indexOf('async function viewCampaigns'));
+  const guard = discover.indexOf('if (isAbort(err)) return;');
+  const markup = discover.indexOf('Try again');
+  assert.ok(guard > -1 && markup > guard, 'viewDiscover guards before rendering the error card');
+});
