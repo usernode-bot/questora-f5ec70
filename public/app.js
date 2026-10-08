@@ -39,6 +39,14 @@
   function errorCard(message) {
     return window.QUI.el('<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">' + window.QUI.escapeHtml(message) + '</p></div>');
   }
+  // A cancelled fetch is not a failure. Detect it by name, never by message
+  // text; the signal check is a safety net for a rejection whose name was
+  // lost upstream. Callers early-return on this and leave the DOM untouched.
+  function isAbort(err) {
+    if (err && err.name === 'AbortError') return true;
+    const s = window.QV && window.QV.__ctx && window.QV.__ctx.signal;
+    return !!(s && s.aborted);
+  }
 
   // ---- session store -------------------------------------------------------
   // One shared /users/me read: concurrent callers await the same request, the
@@ -336,6 +344,9 @@
       notifCache.data = data;
       markBadge(data.unread);
     } catch (err) {
+      // A cancelled notifications fetch keeps the loading state; reopening the
+      // panel refetches.
+      if (isAbort(err)) return;
       holder.replaceChildren(window.QUI.el('<div class="px-3 py-4"><p class="text-sm text-error">' + window.QUI.escapeHtml(err.message) + '</p><button type="button" class="retry mt-2 text-sm text-accent-text font-medium">Try again</button></div>'));
       holder.querySelector('.retry').addEventListener('click', () => renderNotifBody(holder, trigger));
       appendNotifFooter(holder, trigger);
@@ -514,7 +525,7 @@
     try {
       await routeFor(path, params, ctx);
     } catch (err) {
-      if (!isCurrent(ctx.seq)) return;
+      if (isAbort(err) || !isCurrent(ctx.seq)) return;
       appEl().replaceChildren(errorCard(err.message || 'Something went wrong'));
       console.error(err);
     }

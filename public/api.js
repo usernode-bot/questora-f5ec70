@@ -15,7 +15,12 @@
 
   async function request(path, options = {}) {
     // Cancel a read that belongs to a navigation the user has already left.
-    var signal = options.signal || (window.QV && window.QV.__ctx && window.QV.__ctx.signal);
+    // Writes carry no signal unless the caller passes one: a user-initiated
+    // action (join, publish, save) must survive a navigation, and an aborted
+    // write would only ever surface as a bogus error toast.
+    var isWrite = !!options.method && options.method !== 'GET';
+    var signal = options.signal !== undefined ? options.signal
+      : (isWrite ? undefined : (window.QV && window.QV.__ctx && window.QV.__ctx.signal));
     var res = await fetch(path, {
       ...options,
       signal: signal,
@@ -50,6 +55,7 @@
   function write(method, p, body, opts) {
     // A write can change anything a cached read returned, so drop the cache.
     clearCache();
+    // opts.signal passes through untouched; the caller's explicit choice wins.
     return request(p, { ...(opts || {}), method: method, body: JSON.stringify(body || {}) });
   }
 

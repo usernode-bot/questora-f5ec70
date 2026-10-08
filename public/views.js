@@ -9,6 +9,15 @@ function bindRender() {
   errorCard = function (m) { var R = window.QV && window.QV.Render; return R && R.errorCard ? R.errorCard(m) : el('<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">' + escapeHtml(m) + '</p></div>'); };
 }
 function bindQUI() { var q = window.QUI; el = q.el; escapeHtml = q.escapeHtml; toast = q.toast; campaignCard = q.campaignCard; sectionRow = q.sectionRow; timeLeft = q.timeLeft; levelRing = q.levelRing; badgePill = q.badgePill; statePill = q.statePill; breadcrumb = q.breadcrumb; statCard = q.statCard; pager = q.pager; emptyState = q.emptyState; dangerZone = q.dangerZone; confirmDialog = q.confirmDialog; icon = q.icon; tooltip = q.tooltip; notificationRow = q.notificationRow; NOTIF_KINDS = q.NOTIF_KINDS; }
+// A cancelled fetch is not a failure: detect it by name, never by message
+// text; the signal check is a safety net for a rejection whose name was lost
+// upstream. Load-path catches early-return on this and leave the DOM
+// untouched. Duplicated from app.js on purpose: the files load independently.
+function isAbort(err) {
+  if (err && err.name === 'AbortError') return true;
+  var s = window.QV && window.QV.__ctx && window.QV.__ctx.signal;
+  return !!(s && s.aborted);
+}
 bindQUI();
 bindRender();
 // View renderers. Each returns a DocumentFragment-ish element appended by
@@ -38,6 +47,7 @@ async function viewDiscover() {
   try {
     data = await window.QuestoraAPI.api.get('/api/v1/discover');
   } catch (err) {
+    if (isAbort(err)) return;
     wrap.replaceChildren(el(`<div class="rounded-2xl border border-line bg-surface p-6 text-center"><p class="text-content-secondary mb-2">${escapeHtml(err.message)}</p><button class="retry text-accent-text text-sm font-medium">Try again</button></div>`));
     wrap.querySelector('.retry').addEventListener('click', viewDiscover);
     return;
@@ -79,7 +89,7 @@ async function viewCampaigns(params) {
   body.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading campaigns…</p>'));
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/campaigns?status=' + status); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   body.replaceChildren();
   const rows = data.campaigns || [];
   if (!rows.length) {
@@ -118,7 +128,7 @@ async function viewQuest(id) {
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/quests/' + encodeURIComponent(id)); }
-  catch (err) { mount(errorCard(err.message)); return; }
+  catch (err) { if (isAbort(err)) return; mount(errorCard(err.message)); return; }
   const q = data.quest;
   let states;
   try { states = await window.QuestoraAPI.api.get(`/api/v1/quests/${q.id}/my`); } catch { states = { states: [] }; }
@@ -382,7 +392,7 @@ async function viewProfile(username, params) {
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/users/' + encodeURIComponent(username)); }
-  catch (err) { mount(errorCard(err.message)); return; }
+  catch (err) { if (isAbort(err)) return; mount(errorCard(err.message)); return; }
   const u = data.user;
   const pct = u.next ? Math.min(100, Math.round(((u.xp - (u.next.min_xp - (u.next.min_xp - 0))) / u.next.min_xp) * 100)) : 100;
   const progress = u.next
@@ -737,7 +747,7 @@ async function viewProjects() {
   body.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading projects\u2026</p>'));
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/projects/directory'); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   body.replaceChildren();
   const rows = data.projects || [];
   if (!rows.length) {
@@ -779,7 +789,7 @@ async function viewProjectOverview(slug, params, legacyTab) {
   mount(wrap);
   let data;
   try { data = await loadProjectView(slug); }
-  catch (err) { mount(errorCard(err.message)); return; }
+  catch (err) { if (isAbort(err)) return; mount(errorCard(err.message)); return; }
   const p = data.project;
   let tab = legacyTab || params.get('tab') || 'overview';
   if (tab === 'points') tab = 'leaderboard';
@@ -889,7 +899,7 @@ async function renderProjectBoard(body, p) {
   body.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading leaderboard\u2026</p>'));
   let data;
   try { data = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/leaderboard?metric=points`); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   body.replaceChildren();
   body.appendChild(el(`<a href="/projects/${encodeURIComponent(p.slug)}/leaderboard" class="text-sm text-accent-text">Open the full project leaderboard</a>`));
   if (!data.entries.length) {
@@ -922,7 +932,7 @@ async function viewProjectQuests(slug, params) {
   mount(wrap);
   let data;
   try { data = await loadProjectView(slug); }
-  catch (err) { mount(errorCard(err.message)); return; }
+  catch (err) { if (isAbort(err)) return; mount(errorCard(err.message)); return; }
   const p = data.project;
   const node = el(`
     <div>
@@ -955,7 +965,7 @@ async function viewCampaignDetail(projectSlug, campaignSlug) {
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/campaigns/' + encodeURIComponent(campaignSlug)); }
-  catch (err) { mount(errorCard(err.message)); return; }
+  catch (err) { if (isAbort(err)) return; mount(errorCard(err.message)); return; }
   const c = data.campaign;
   const pSlug = projectSlug || c.project_slug;
   const completedCount = data.quests.filter(q => q.completed).length;
@@ -1036,7 +1046,7 @@ async function viewQuestDetail(projectSlug, campaignSlug, questSlug) {
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/quests/' + encodeURIComponent(questSlug)); }
-  catch (err) { mount(errorCard(err.message)); return; }
+  catch (err) { if (isAbort(err)) return; mount(errorCard(err.message)); return; }
   const q = data.quest;
   const pSlug = projectSlug || q.project_slug;
   let states;
@@ -1107,7 +1117,7 @@ async function viewScopedLeaderboard(opts) {
   const period = opts.period || 'all';
   let data;
   try { data = await loadProjectView(opts.projectSlug); }
-  catch (err) { mount(errorCard(err.message)); return; }
+  catch (err) { if (isAbort(err)) return; mount(errorCard(err.message)); return; }
   const p = data.project;
   let campaign = null, quest = null;
   if (opts.campaignSlug) campaign = data.campaigns.find(c => c.slug === opts.campaignSlug) || null;
@@ -1223,7 +1233,7 @@ async function viewDashboard(slug, section, params) {
   mount(wrap);
   let data, overview = null;
   try { data = await loadProjectView(slug); }
-  catch (err) { mount(errorCard(err.message)); return; }
+  catch (err) { if (isAbort(err)) return; mount(errorCard(err.message)); return; }
   const p = data.project;
   const perms = data.permissions || {};
   const isCreator = !!data.is_creator;
@@ -2306,7 +2316,7 @@ async function renderDashLeaderboard(sectionEl, ctx, which) {
   sectionEl.appendChild(el(`<h2 class="text-lg font-bold mb-1">${which === 'participants' ? 'Participants' : 'Leaderboard'}</h2><p class="text-sm text-content-secondary mb-4">${which === 'participants' ? 'Everyone who has earned recognition here.' : 'This project, ranked by points.'}</p>`));
   let board;
   try { board = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/leaderboard?metric=points`); }
-  catch (err) { sectionEl.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; sectionEl.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   if (!board.entries.length) { sectionEl.appendChild(el(emptyState('No participants have earned points yet.'))); return; }
   const list = el('<div class="space-y-2"></div>');
   board.entries.forEach((e, i) => list.appendChild(leaderboardRow(e, i)));
@@ -2318,7 +2328,7 @@ async function renderDashRewards(sectionEl, ctx) {
   sectionEl.appendChild(el('<h2 class="text-lg font-bold mb-1">Rewards</h2><p class="text-sm text-content-secondary mb-4">Rewards attached to this project\'s quests.</p>'));
   let an;
   try { an = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/analytics`); }
-  catch (err) { sectionEl.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; sectionEl.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   sectionEl.appendChild(el(`<p class="text-sm text-content-secondary mb-3">${an.quests.length} quests carry rewards. Credentials and badges are issued on completion.</p>`));
   const list = el('<div class="space-y-2"></div>');
   for (const q of an.quests) {
@@ -2339,7 +2349,7 @@ async function renderDashAnalytics(sectionEl, ctx) {
   sectionEl.appendChild(cards);
   let an;
   try { an = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/analytics`); }
-  catch (err) { sectionEl.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; sectionEl.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   const list = el('<div class="space-y-2"></div>');
   for (const q of an.quests) {
     const rate = q.submissions ? Math.round((q.completions / q.submissions) * 100) : 0;
@@ -2446,7 +2456,7 @@ async function renderMembers(sectionEl, ctx) {
   holder.replaceChildren(el('<p class="text-sm text-content-tertiary">Loading access\u2026</p>'));
   let roster;
   try { roster = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/members`); }
-  catch (err) { holder.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; holder.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   holder.replaceChildren();
 
   // The Creator always sits at the top and has no membership row.
@@ -2498,7 +2508,7 @@ async function renderMembers(sectionEl, ctx) {
   auditHolder.replaceChildren(el('<p class="text-xs text-content-tertiary">Loading access history\u2026</p>'));
   let audit;
   try { audit = await window.QuestoraAPI.api.get(`/api/v1/projects/${p.id}/audit`); }
-  catch (err) { auditHolder.replaceChildren(el(`<p class="text-xs text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; auditHolder.replaceChildren(el(`<p class="text-xs text-error">${escapeHtml(err.message)}</p>`)); return; }
   auditHolder.replaceChildren(el('<h3 class="text-xs font-medium text-content-secondary mb-1">Access history</h3>'));
   const entries = audit.entries || [];
   if (!entries.length) {
@@ -2564,7 +2574,7 @@ async function viewNotifications() {
   wrap.appendChild(body);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/notifications'); }
-  catch (err) { body.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; body.appendChild(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   if (!data.notifications.length) {
     body.appendChild(el('<div class="rounded-2xl border border-line bg-surface p-8 text-center"><p class="text-content-secondary">Nothing here yet.</p><p class="text-sm text-content-tertiary mt-1">Complete quests and follow campaigns to hear about it here.</p></div>'));
   } else {
@@ -2610,6 +2620,7 @@ async function viewSettings() {
     ]);
     meData = both[0]; prefsData = both[1];
   } catch (err) {
+    if (isAbort(err)) return;
     body.replaceChildren(el(`<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">${escapeHtml(err.message)}</p><button class="retry mt-2 text-sm text-accent-text font-medium">Try again</button></div>`));
     body.querySelector('.retry').addEventListener('click', viewSettings);
     return;
@@ -2698,7 +2709,7 @@ async function viewMyProjects() {
   body.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading your projects…</p>'));
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/projects'); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
   body.replaceChildren();
   const rows = data.projects || [];
   if (!rows.length) {
@@ -2755,7 +2766,7 @@ async function viewSearch(params) {
   wrap.appendChild(body);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/search?q=' + encodeURIComponent(q)); }
-  catch (err) { body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
+  catch (err) { if (isAbort(err)) return; body.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`)); return; }
 
   function section(label, rows, renderRow, empty) {
     const sec = el(`<section><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">${escapeHtml(label)}</h2><div class="space-y-2"></div></section>`);
@@ -2838,7 +2849,7 @@ async function viewCredential(id) {
   mount(wrap);
   let data;
   try { data = await window.QuestoraAPI.api.get('/api/v1/credentials/' + encodeURIComponent(id)); }
-  catch (err) { mount(errorCard(err.message)); return; }
+  catch (err) { if (isAbort(err)) return; mount(errorCard(err.message)); return; }
   const c = data.credential;
   const criteriaText = c.criteria && (c.criteria.description || c.criteria.quest_title);
   const node = el(`
@@ -2879,7 +2890,7 @@ async function viewAdmin() {
     body.replaceChildren();
     let meData;
     try { meData = await window.QuestoraAPI.api.get('/api/v1/users/me'); }
-    catch { body.appendChild(el('<p class="text-sm text-error">Could not load your account.</p>')); return; }
+    catch (err) { if (isAbort(err)) return; body.appendChild(el('<p class="text-sm text-error">Could not load your account.</p>')); return; }
     if (meData.user.role !== 'admin') {
       body.appendChild(el('<div class="rounded-2xl border border-line bg-surface p-6"><p class="text-content-secondary">Admin access required. Ask the platform admin to add your username to ADMIN_USERNAMES.</p></div>'));
       return;
