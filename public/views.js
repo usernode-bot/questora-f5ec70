@@ -1184,6 +1184,7 @@ async function viewScopedLeaderboard(opts) {
 // gated by the same matrix the routes enforce rather than a role name.
 const DASH_SECTIONS = [
   ['', 'Overview', 'analytics.view'],
+  ['manage', 'Manage', 'campaign.manage'],
   ['campaigns', 'Campaigns', 'campaign.manage'],
   ['quests', 'Quests', 'quest.manage'],
   ['participants', 'Participants', 'participants.view'],
@@ -1285,17 +1286,23 @@ async function viewDashboard(slug, section, params) {
   const base = '/dashboard/projects/' + encodeURIComponent(p.slug);
   for (const [seg, label, perm] of DASH_SECTIONS) {
     if (!perms[perm]) continue;
-    const active = (seg === section) || (seg === 'campaigns' && section.startsWith('campaigns/')) || (seg === 'quests' && section.startsWith('quests/'));
+    const active = (seg === section) || (seg === 'manage' && section.startsWith('manage'))
+      || (seg === 'campaigns' && section.startsWith('campaigns/'))
+      || (seg === 'quests' && section.startsWith('quests/'));
     sidebar.appendChild(el(`<a href="${base}${seg ? '/' + seg : ''}" class="shrink-0 px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium ${active ? 'bg-accent text-accent-contrast' : 'bg-surface-container text-content-secondary hover:text-content-primary'}">${escapeHtml(label)}</a>`));
   }
 
   const ctx = { p, data, stats, base, isCreator, perms, params, reload: () => viewDashboard(slug, section, params) };
   // A section the viewer cannot reach falls back to the overview rather than
   // rendering a management surface the routes would reject anyway.
-  const sectionPerm = (DASH_SECTIONS.find(([seg]) => seg === section || (seg === 'campaigns' && section.startsWith('campaigns/')) || (seg === 'quests' && section.startsWith('quests/'))));
+  const sectionPerm = (DASH_SECTIONS.find(([seg]) => seg === section
+    || (seg === 'manage' && section.startsWith('manage'))
+    || (seg === 'campaigns' && section.startsWith('campaigns/'))
+    || (seg === 'quests' && section.startsWith('quests/'))));
   const required = sectionPerm ? sectionPerm[2] : null;
   const allowed = required ? !!perms[required] : true;
   if (section && !allowed) return renderDashOverview(sectionEl, ctx);
+  if (section === 'manage' || section.startsWith('manage/')) return renderDashManage(sectionEl, ctx, section.slice('manage'.length).replace(/^\//, ''));
   if (section === 'campaigns') return renderDashCampaigns(sectionEl, ctx);
   if (section.startsWith('campaigns/')) return renderDashCampaignQuests(sectionEl, ctx, section.slice('campaigns/'.length));
   if (section === 'quests/new') return renderQuestEditor(sectionEl, ctx, null);
@@ -1336,6 +1343,481 @@ function renderDashOverview(sectionEl, ctx) {
   } else {
     sectionEl.appendChild(el('<p class="text-sm text-content-tertiary">No activity yet. Publish a campaign and its quests to start.</p>'));
   }
+}
+
+// ---------- Manage: one screen to create, update and delete projects,
+// campaigns and quests ----------
+// The quick path for the everyday task: everything the three entities need
+// for a plain create / edit / delete, in one place, with no wizard and no
+// separate section per entity. Each tab lists its rows with an inline Edit
+// form and a two-step Delete. The richer per-entity editors (the campaign
+// table's bulk actions, the quest builder's tasks and rewards) stay where
+// they are and are linked from here.
+const MANAGE_TABS = [
+  { key: 'projects', label: 'Projects', perm: 'project.edit' },
+  { key: 'campaigns', label: 'Campaigns', perm: 'campaign.manage' },
+  { key: 'quests', label: 'Quests', perm: 'quest.manage' },
+];
+
+function renderDashManage(sectionEl, ctx, tab) {
+  const { perms, params } = ctx;
+  const wanted = tab || (params && params.get('tab')) || '';
+  const available = MANAGE_TABS.filter(t => perms[t.perm]);
+  if (!available.length) {
+    sectionEl.appendChild(el(emptyState('You do not have access to manage this project.')));
+    return;
+  }
+  let active = available.find(t => t.key === wanted) || available[0];
+
+  const node = el(`
+    <div>
+      <div class="mb-4">
+        <h2 class="text-lg font-bold">Manage</h2>
+        <p class="text-sm text-content-secondary">Create, edit and delete projects, campaigns and quests.</p>
+      </div>
+      <div class="manage-tabs flex flex-wrap gap-1.5 mb-4" role="navigation" aria-label="Manage"></div>
+      <div class="manage-body"></div>
+    </div>`);
+  sectionEl.appendChild(node);
+  const tabsEl = node.querySelector('.manage-tabs');
+  const bodyEl = node.querySelector('.manage-body');
+
+  // The active tab lives in the URL so the refresh after a create, edit or
+  // delete comes back to the same tab instead of the first one.
+  function writeTab() {
+    const u = new URLSearchParams(window.location.search);
+    if (active.key === available[0].key) u.delete('tab'); else u.set('tab', active.key);
+    const qs = u.toString();
+    window.history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''));
+  }
+  function select(t) { active = t; writeTab(); renderTabs(); renderBody(); }
+  function renderTabs() {
+    tabsEl.replaceChildren();
+    for (const t of available) {
+      const b = el(`<button type="button"${t.key === active.key ? ' aria-current="page"' : ''} class="shrink-0 px-4 py-2 min-h-[44px] rounded-full text-sm font-medium ${t.key === active.key ? 'bg-accent text-accent-contrast' : 'bg-surface-container text-content-secondary hover:text-content-primary'}">${escapeHtml(t.label)}</button>`);
+      b.addEventListener('click', () => select(t));
+      tabsEl.appendChild(b);
+    }
+  }
+  function renderBody() {
+    bodyEl.replaceChildren();
+    if (active.key === 'projects') return renderManageProjects(bodyEl, ctx);
+    if (active.key === 'campaigns') return renderManageCampaigns(bodyEl, ctx);
+    return renderManageQuests(bodyEl, ctx);
+  }
+  renderTabs();
+  renderBody();
+}
+
+// A small disclosure for a "create" or "edit" form: one trigger button and a
+// form card that opens below it. `build` fills the panel lazily on first open,
+// and `afterOpen` runs each time it opens, so the call sites stay symmetrical.
+function manageForm(opts) {
+  const wrap = el(`
+    <div class="manage-form">
+      <button type="button" class="manage-open ${opts.secondary ? 'bg-surface-container border border-line-strong hover:bg-surface-container-high text-content-primary' : 'bg-accent hover:bg-accent-hover text-accent-contrast'} inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 py-2.5 rounded-lg text-sm font-medium">${icon(opts.icon || 'add', { class: 'w-4 h-4' })}<span>${escapeHtml(opts.openLabel)}</span></button>
+      <div class="manage-panel hidden mt-3 rounded-xl border border-line bg-surface p-4"></div>
+    </div>`);
+  const openBtn = wrap.querySelector('.manage-open');
+  const panel = wrap.querySelector('.manage-panel');
+  let built = false;
+  openBtn.addEventListener('click', () => {
+    if (panel.classList.contains('hidden')) {
+      if (!built) { opts.build(panel); built = true; }
+      panel.classList.remove('hidden');
+      if (opts.afterOpen) opts.afterOpen(panel);
+    } else {
+      panel.classList.add('hidden');
+    }
+  });
+  return wrap;
+}
+
+// One row in a manage list: a title line, a meta line and a right-aligned
+// action slot. Rows that have opened their inline editor swap in the form.
+function manageRow(title, meta) {
+  return el(`
+    <div class="manage-row flex items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 flex-wrap">
+      <span class="min-w-0 flex-1">
+        <span class="block font-medium truncate">${escapeHtml(title)}</span>
+        <span class="block text-xs text-content-tertiary truncate">${meta}</span>
+      </span>
+      <span class="manage-actions flex items-center gap-1.5 shrink-0"></span>
+    </div>`);
+}
+
+// Input helpers: the manager's fields are all the same primitives the
+// dashboard already uses, so the tokens and focus ring are shared.
+const MSTYLE_INPUT = 'w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent';
+const MSTYLE_BTN = 'font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm';
+
+const MSTYLE_AREA = 'w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm placeholder:text-content-tertiary focus:outline-none focus:border-accent';
+
+// Wrap a row and its (hidden) inline edit form so the form spans the list
+// width when it opens, without disturbing the row's own flex layout.
+function manageItem(row) {
+  const item = el('<div class="manage-item"></div>');
+  item.appendChild(row);
+  item.appendChild(el('<div class="manage-edit hidden mt-2 rounded-xl border border-line bg-surface p-4"></div>'));
+  return item;
+}
+
+function manageEditToggle(text, onClick) {
+  const b = el(`<button type="button" class="min-h-[44px] px-3 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary text-sm inline-flex items-center gap-1.5">${icon('edit', { class: 'w-4 h-4' })}<span>${escapeHtml(text || 'Edit')}</span></button>`);
+  b.addEventListener('click', onClick);
+  return b;
+}
+
+function manageDeleteButton(label, build) {
+  const b = el(`<button type="button" class="min-h-[44px] px-3 rounded-lg bg-surface-container-high hover:bg-error hover:text-error-bg text-content-primary text-sm inline-flex items-center gap-1.5">${icon('delete', { class: 'w-4 h-4' })}<span>${escapeHtml(label || 'Delete')}</span></button>`);
+  b.addEventListener('click', () => build());
+  return b;
+}
+
+// The shared two-step confirm for every delete in the manager: a labelled
+// dialog that names the row and states what the delete does.
+function manageConfirm(opts) {
+  return confirmDialog({
+    title: opts.title,
+    body: opts.body,
+    confirmLabel: opts.confirmLabel,
+    danger: opts.danger !== false,
+    onConfirm: opts.onConfirm,
+  });
+}
+
+// ---- projects tab ----
+function renderManageProjects(bodyEl, ctx) {
+  const api = window.QuestoraAPI.api;
+  bodyEl.appendChild(manageForm({
+    openLabel: 'New project', icon: 'add',
+    build(panel) {
+      panel.appendChild(el('<h3 class="font-semibold mb-3">New project</h3>'));
+      const nameI = el(`<input class="${MSTYLE_INPUT} mb-2" placeholder="Project name" aria-label="Project name">`);
+      const descI = el(`<textarea class="${MSTYLE_AREA} mb-2" rows="2" placeholder="What does your project do?" aria-label="Description"></textarea>`);
+      const webI = el(`<input class="${MSTYLE_INPUT} mb-3" placeholder="Website (optional)" aria-label="Website">`);
+      panel.appendChild(nameI); panel.appendChild(descI); panel.appendChild(webI);
+      const save = el(`<button type="button" class="${MSTYLE_BTN}">Create project</button>`);
+      panel.appendChild(save);
+      save.addEventListener('click', async () => {
+        const name = nameI.value.trim();
+        if (!name) return toast('A project name is required', true);
+        save.disabled = true;
+        try {
+          const r = await api.post('/api/v1/projects', {
+            name, description: descI.value.trim() || undefined, website: webI.value.trim() || undefined,
+          });
+          toast('Project created');
+          window.QuestoraNav.go('/dashboard/projects/' + encodeURIComponent(r.project.slug) + '/manage');
+        } catch (err) { toast(err.message, true); save.disabled = false; }
+      });
+    },
+  }));
+
+  const list = el('<div class="manage-list space-y-2"></div>');
+  bodyEl.appendChild(list);
+  list.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading your projects\u2026</p>'));
+  // The staging demo (read-only) is the only place the caller may manage a
+  // project they did not create: the current demo project is listed so the
+  // Projects tab is reviewable. Every write still resolves the real role.
+  const demo = new URLSearchParams(window.location.search).get('demo');
+  api.get('/api/v1/projects').then((d) => {
+    let rows = (d.projects || []).filter(pr => pr.viewer_role === 'creator' || pr.viewer_role === 'admin');
+    if (demo === '1' && ctx.p && !rows.some(pr => Number(pr.id) === Number(ctx.p.id))) {
+      rows = [{ ...ctx.p, viewer_role: 'creator' }].concat(rows);
+    }
+    list.replaceChildren();
+    if (!rows.length) {
+      list.appendChild(el(emptyState('You have not created a project yet.', 'Create a project', '/create')));
+      return;
+    }
+    for (const pr of rows) list.appendChild(manageProjectRow(pr));
+  }).catch((err) => {
+    list.replaceChildren(el(`<p class="text-sm text-error">${escapeHtml(err.message)}</p>`));
+  });
+}
+
+function manageProjectRow(pr) {
+  const api = window.QuestoraAPI.api;
+  const canEdit = pr.viewer_role === 'creator';
+  const meta = `${pr.status || 'active'} \u00b7 ` + (pr.website ? escapeHtml(pr.website) : 'no website');
+  const row = manageRow(pr.name, meta);
+  const actions = row.querySelector('.manage-actions');
+
+  if (canEdit) {
+    const edit = () => {
+      const panel = row.closest('.manage-item').querySelector('.manage-edit');
+      if (panel.classList.contains('hidden')) {
+        if (!panel.dataset.built) {
+          const nameI = el(`<input class="${MSTYLE_INPUT} mb-2" value="${escapeHtml(pr.name)}" aria-label="Project name">`);
+          const descI = el(`<textarea class="${MSTYLE_AREA} mb-2" rows="2" aria-label="Description">${escapeHtml(pr.description || '')}</textarea>`);
+          const webI = el(`<input class="${MSTYLE_INPUT} mb-2" value="${escapeHtml(pr.website || '')}" placeholder="Website" aria-label="Website">`);
+          const stSel = el(`<select class="${MSTYLE_INPUT} mb-3" aria-label="Status"><option value="active"${pr.status === 'active' || !pr.status ? ' selected' : ''}>Active (published)</option><option value="paused"${pr.status === 'paused' ? ' selected' : ''}>Paused</option><option value="archived"${pr.status === 'archived' ? ' selected' : ''}>Archived</option></select>`);
+          panel.appendChild(nameI); panel.appendChild(descI); panel.appendChild(webI); panel.appendChild(stSel);
+          const save = el(`<button type="button" class="${MSTYLE_BTN}">Save changes</button>`);
+          panel.appendChild(save);
+          save.addEventListener('click', async () => {
+            const name = nameI.value.trim();
+            if (!name) return toast('A project name is required', true);
+            save.disabled = true;
+            try {
+              await api.patch(`/api/v1/projects/${pr.id}`, {
+                name, description: descI.value, website: webI.value.trim() || null, status: stSel.value,
+              });
+              toast('Project saved');
+              window.QuestoraNav.refresh();
+            } catch (err) { toast(err.message, true); save.disabled = false; }
+          });
+          panel.dataset.built = '1';
+        }
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.add('hidden');
+      }
+    };
+    actions.appendChild(manageEditToggle('Edit', edit));
+    actions.appendChild(manageDeleteButton('Delete', () => {
+      manageConfirm({
+        title: 'Delete project?',
+        body: `${escapeHtml(pr.name)} will be archived and hidden, and its participant history is kept. You can restore it later from its dashboard.`,
+        confirmLabel: 'Delete project',
+        onConfirm: async () => {
+          const r = await api.del(`/api/v1/projects/${pr.id}`);
+          toast(r && r.reason ? r.reason : 'Project deleted');
+          window.QuestoraNav.refresh();
+        },
+      });
+    }));
+  } else {
+    actions.appendChild(el('<a href="/projects/' + encodeURIComponent(pr.slug) + '" class="min-h-[44px] px-3 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary text-sm inline-flex items-center gap-1.5">' + icon('open_in_new', { class: 'w-4 h-4' }) + '<span>View</span></a>'));
+  }
+
+  return manageItem(row);
+}
+
+// ---- campaigns tab ----
+function renderManageCampaigns(bodyEl, ctx) {
+  const api = window.QuestoraAPI.api;
+  const { p, data } = ctx;
+  bodyEl.appendChild(manageForm({
+    openLabel: 'New campaign', icon: 'add',
+    build(panel) {
+      panel.appendChild(el('<h3 class="font-semibold mb-3">New campaign</h3>'));
+      const nameI = el(`<input class="${MSTYLE_INPUT} mb-2" placeholder="Campaign name" aria-label="Campaign name">`);
+      const descI = el(`<textarea class="${MSTYLE_AREA} mb-2" rows="2" placeholder="What is this campaign about?" aria-label="Description"></textarea>`);
+      const stSel = el(`<select class="${MSTYLE_INPUT} mb-3" aria-label="Status"><option value="draft">Draft</option><option value="scheduled">Scheduled</option><option value="active">Active</option></select>`);
+      panel.appendChild(nameI); panel.appendChild(descI); panel.appendChild(stSel);
+      const save = el(`<button type="button" class="${MSTYLE_BTN}">Create campaign</button>`);
+      panel.appendChild(save);
+      save.addEventListener('click', async () => {
+        const name = nameI.value.trim();
+        if (!name) return toast('A campaign name is required', true);
+        save.disabled = true;
+        try {
+          await api.post(`/api/v1/projects/${p.id}/campaigns`, {
+            name, description: descI.value.trim() || undefined, status: stSel.value,
+          });
+          toast('Campaign created');
+          window.QuestoraNav.refresh();
+        } catch (err) { toast(err.message, true); save.disabled = false; }
+      });
+    },
+  }));
+
+  const list = el('<div class="manage-list space-y-2"></div>');
+  bodyEl.appendChild(list);
+  const rows = (data.campaigns || []).slice();
+  if (!rows.length) {
+    list.appendChild(el(emptyState('This project doesn\u2019t have any campaigns yet. Create the first one above.')));
+    return;
+  }
+  for (const c of rows) list.appendChild(manageCampaignRow(c, p));
+}
+
+const CAMPAIGN_STATUS_OPTIONS = [
+  ['draft', 'Draft'], ['scheduled', 'Scheduled'], ['active', 'Active'],
+  ['paused', 'Paused'], ['ended', 'Ended'], ['archived', 'Archived'],
+];
+
+function manageCampaignRow(c, p) {
+  const api = window.QuestoraAPI.api;
+  const when = c.starts_at ? new Date(c.starts_at).toLocaleDateString() : 'no start';
+  const meta = `${c.quest_count || 0} quest${(c.quest_count || 0) === 1 ? '' : 's'} \u00b7 ${when} \u00b7 ${escapeHtml(c.status || 'draft')}`;
+  const row = manageRow(c.name, meta);
+  const actions = row.querySelector('.manage-actions');
+  actions.appendChild(manageEditToggle('Edit', () => toggleCampaignEdit(row, c, p)));
+  actions.appendChild(manageDeleteButton('Delete', () => {
+    manageConfirm({
+      title: 'Delete campaign?',
+      body: `${escapeHtml(c.name)} will be removed. If it already has participant completions, it is archived instead so their history is kept.`,
+      confirmLabel: 'Delete campaign',
+      onConfirm: async () => {
+        const r = await api.del(`/api/v1/campaigns/${c.id}`);
+        toast(r && r.reason ? r.reason : (r && r.archived ? 'Campaign archived' : 'Campaign deleted'));
+        window.QuestoraNav.refresh();
+      },
+    });
+  }));
+
+  return manageItem(row);
+}
+
+function toggleCampaignEdit(row, c, p) {
+  const panel = row.closest('.manage-item').querySelector('.manage-edit');
+  if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); return; }
+  if (!panel.dataset.built) {
+    const api = window.QuestoraAPI.api;
+    const nameI = el(`<input class="${MSTYLE_INPUT} mb-2" value="${escapeHtml(c.name)}" aria-label="Campaign name">`);
+    const descI = el(`<textarea class="${MSTYLE_AREA} mb-2" rows="2" aria-label="Description">${escapeHtml(c.description || '')}</textarea>`);
+    const stSel = el(`<select class="${MSTYLE_INPUT} mb-3" aria-label="Status">${CAMPAIGN_STATUS_OPTIONS.map(([v, l]) => `<option value="${v}"${c.status === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`);
+    panel.appendChild(nameI); panel.appendChild(descI); panel.appendChild(stSel);
+    const save = el(`<button type="button" class="${MSTYLE_BTN}">Save changes</button>`);
+    panel.appendChild(save);
+    save.addEventListener('click', async () => {
+      const name = nameI.value.trim();
+      if (!name) return toast('A campaign name is required', true);
+      save.disabled = true;
+      const body = { name, description: descI.value };
+      if (stSel.value !== c.status) body.status = stSel.value;
+      try {
+        await api.patch(`/api/v1/campaigns/${c.id}`, body);
+        toast('Campaign saved');
+        window.QuestoraNav.refresh();
+      } catch (err) { toast(err.message, true); save.disabled = false; }
+    });
+    panel.dataset.built = '1';
+  }
+  panel.classList.remove('hidden');
+}
+
+// ---- quests tab ----
+function renderManageQuests(bodyEl, ctx) {
+  const api = window.QuestoraAPI.api;
+  const { p, data } = ctx;
+  const campaigns = data.campaigns || [];
+
+  if (!campaigns.length) {
+    bodyEl.appendChild(el(emptyState('This project has no campaigns yet. Create a campaign first, then add quests to it.', 'Create campaign', '/dashboard/projects/' + encodeURIComponent(p.slug) + '/manage?tab=campaigns')));
+    return;
+  }
+
+  bodyEl.appendChild(manageForm({
+    openLabel: 'New quest', icon: 'add',
+    build(panel) {
+      panel.appendChild(el('<h3 class="font-semibold mb-3">New quest</h3>'));
+      const campSel = el(`<select class="${MSTYLE_INPUT} mb-2" aria-label="Campaign">${campaigns.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')}</select>`);
+      const titleI = el(`<input class="${MSTYLE_INPUT} mb-2" placeholder="Quest title" aria-label="Quest title">`);
+      const descI = el(`<textarea class="${MSTYLE_AREA} mb-2" rows="2" placeholder="What is this quest about?" aria-label="Description"></textarea>`);
+      const xpI = el(`<input class="${MSTYLE_INPUT} mb-2" type="number" min="0" value="100" placeholder="XP reward" aria-label="XP reward">`);
+      const taskSel = el(`<select class="${MSTYLE_INPUT} mb-2" aria-label="First task"><option value="manual">Complete Form (text proof)</option><option value="url_proof">Submit a link</option><option value="social">Visit a website</option><option value="wallet_connect">Connect wallet</option></select>`);
+      const taskExtra = el('<div class="mb-3"></div>');
+      const renderExtra = () => {
+        taskExtra.replaceChildren();
+        if (taskSel.value === 'social') taskExtra.appendChild(el(`<input class="${MSTYLE_INPUT}" placeholder="Link to visit (https://\u2026)" aria-label="Task link">`));
+        else taskExtra.appendChild(el('<p class="text-xs text-content-tertiary">No extra setup needed for this task.</p>'));
+      };
+      taskSel.addEventListener('change', renderExtra); renderExtra();
+      panel.appendChild(campSel); panel.appendChild(titleI); panel.appendChild(descI);
+      panel.appendChild(xpI); panel.appendChild(taskSel); panel.appendChild(taskExtra);
+      panel.appendChild(el('<p class="text-xs text-content-tertiary mb-3">A new quest is published straight away. Add more tasks, quizzes or rewards later in the quest builder.</p>'));
+      const save = el(`<button type="button" class="${MSTYLE_BTN}">Create quest</button>`);
+      panel.appendChild(save);
+      save.addEventListener('click', async () => {
+        const title = titleI.value.trim();
+        if (!title) return toast('A quest title is required', true);
+        const type = taskSel.value;
+        const task = { type, title: taskSel.options[taskSel.selectedIndex].text, config: {} };
+        if (type === 'social') {
+          const url = taskExtra.querySelector('input');
+          const link = url ? url.value.trim() : '';
+          if (!link) return toast('A link is required for this task', true);
+          task.config = { url: link, action: 'visit' };
+        }
+        save.disabled = true;
+        try {
+          await api.post(`/api/v1/campaigns/${campSel.value}/quests`, {
+            title, description: descI.value.trim() || undefined,
+            xp_reward: parseInt(xpI.value, 10) || 0,
+            points_reward: Math.round((parseInt(xpI.value, 10) || 0) / 2),
+            tasks: [task],
+          });
+          toast('Quest created');
+          window.QuestoraNav.refresh();
+        } catch (err) { toast(err.message, true); save.disabled = false; }
+      });
+    },
+  }));
+
+  const list = el('<div class="manage-list space-y-2"></div>');
+  bodyEl.appendChild(list);
+  const all = [];
+  for (const c of campaigns) for (const q of (c.quests || [])) all.push({ ...q, campaign_name: c.name });
+  if (!all.length) {
+    list.appendChild(el(emptyState('This project doesn\u2019t have any quests yet. Create the first one above.')));
+    return;
+  }
+  for (const q of all) list.appendChild(manageQuestRow(q, p));
+}
+
+const QUEST_STATUS_OPTIONS = [
+  ['draft', 'Draft'], ['scheduled', 'Scheduled'], ['active', 'Published'],
+  ['paused', 'Paused'], ['ended', 'Ended'], ['archived', 'Archived'],
+];
+
+function manageQuestRow(q, p) {
+  const api = window.QuestoraAPI.api;
+  const meta = `${escapeHtml(q.campaign_name)} \u00b7 +${q.xp_reward || 0} XP \u00b7 ${q.task_count || 0} task${(q.task_count || 0) === 1 ? '' : 's'}`;
+  const row = manageRow(q.title, meta);
+  const actions = row.querySelector('.manage-actions');
+  const builderHref = '/dashboard/projects/' + encodeURIComponent(p.slug) + '/quests/' + encodeURIComponent(q.id) + '/edit';
+  actions.appendChild(el(`<a href="${builderHref}" class="min-h-[44px] px-3 rounded-lg bg-surface-container-high hover:bg-surface-container-highest text-content-primary text-sm inline-flex items-center gap-1.5">${icon('edit', { class: 'w-4 h-4' })}<span>Tasks</span></a>`));
+  actions.appendChild(manageEditToggle('Edit', () => toggleQuestEdit(row, q)));
+  actions.appendChild(manageDeleteButton('Delete', () => {
+    const hasData = (q.participants || 0) > 0;
+    manageConfirm({
+      title: hasData ? 'Archive quest?' : 'Delete quest?',
+      body: hasData
+        ? `${escapeHtml(q.title)} has ${q.participants} participant completion${q.participants === 1 ? '' : 's'}, so it will be archived to keep their history rather than permanently deleted.`
+        : `${escapeHtml(q.title)} will be permanently deleted along with its tasks. This cannot be undone.`,
+      confirmLabel: hasData ? 'Archive quest' : 'Delete quest',
+      onConfirm: async () => {
+        const r = await api.del(`/api/v1/quests/${q.id}`);
+        toast(r && r.reason ? r.reason : (r && r.archived ? 'Quest archived' : 'Quest deleted'));
+        window.QuestoraNav.refresh();
+      },
+    });
+  }));
+
+  return manageItem(row);
+}
+
+function toggleQuestEdit(row, q) {
+  const panel = row.closest('.manage-item').querySelector('.manage-edit');
+  if (!panel.classList.contains('hidden')) { panel.classList.add('hidden'); return; }
+  if (!panel.dataset.built) {
+    const api = window.QuestoraAPI.api;
+    const titleI = el(`<input class="${MSTYLE_INPUT} mb-2" value="${escapeHtml(q.title)}" aria-label="Quest title">`);
+    const descI = el(`<textarea class="${MSTYLE_AREA} mb-2" rows="2" aria-label="Description">${escapeHtml(q.description || '')}</textarea>`);
+    const xpI = el(`<input class="${MSTYLE_INPUT} mb-2" type="number" min="0" value="${Number(q.xp_reward || 0)}" aria-label="XP reward">`);
+    const stSel = el(`<select class="${MSTYLE_INPUT} mb-3" aria-label="Status">${QUEST_STATUS_OPTIONS.map(([v, l]) => `<option value="${v}"${q.status === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`);
+    panel.appendChild(titleI); panel.appendChild(descI); panel.appendChild(xpI); panel.appendChild(stSel);
+    const save = el(`<button type="button" class="${MSTYLE_BTN}">Save changes</button>`);
+    panel.appendChild(save);
+    save.addEventListener('click', async () => {
+      const title = titleI.value.trim();
+      if (!title) return toast('A quest title is required', true);
+      save.disabled = true;
+      const body = { title, description: descI.value, xp_reward: parseInt(xpI.value, 10) || 0 };
+      if (stSel.value !== q.status) body.status = stSel.value;
+      try {
+        await api.patch(`/api/v1/quests/${q.id}`, body);
+        toast('Quest saved');
+        window.QuestoraNav.refresh();
+      } catch (err) { toast(err.message, true); save.disabled = false; }
+    });
+    panel.dataset.built = '1';
+  }
+  panel.classList.remove('hidden');
 }
 
 // Campaign management table: search, status filter, sort, pagination, bulk
@@ -2730,6 +3212,7 @@ async function viewMyProjects() {
           <span class="block text-xs text-content-tertiary truncate">${members} ${members === 1 ? 'member' : 'members'} · ${escapeHtml(p.status || '')}</span>
         </a>
         ${statePill(roleLabel)}
+        ${canManage ? `<a href="/dashboard/projects/${encodeURIComponent(p.slug)}/manage" class="shrink-0 text-xs text-accent-text">Manage</a>` : ''}
         ${canManage ? `<a href="/dashboard/projects/${encodeURIComponent(p.slug)}" class="shrink-0 text-xs text-accent-text">Dashboard</a>` : ''}
       </div>`));
   }

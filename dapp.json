@@ -209,6 +209,27 @@
       "expectText": "Quest details"
     },
     {
+      "id": "manage.projects",
+      "name": "Manage lists the project with an inline edit and a delete",
+      "path": "/dashboard/projects/staging-demo-octra-builders/manage?demo=1",
+      "expectSelector": "button[aria-current='page']",
+      "expectText": "Staging demo Octra Builders",
+      "visual": true,
+      "impact": [
+        "public/views.js"
+      ]
+    },
+    {
+      "name": "Manage campaign tab lists a seeded campaign",
+      "path": "/dashboard/projects/staging-demo-octra-builders/manage?tab=campaigns&demo=1",
+      "expectText": "Staging demo Welcome Campaign"
+    },
+    {
+      "name": "Manage quest tab lists a seeded quest",
+      "path": "/dashboard/projects/staging-demo-octra-builders/manage?tab=quests&demo=1",
+      "expectText": "Connect Wallet"
+    },
+    {
       "id": "wallets.panel",
       "name": "Profile Wallets tab lists a linked wallet",
       "path": "/u/staging-demo-user-1?tab=wallets",
