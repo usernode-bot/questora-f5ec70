@@ -7,6 +7,7 @@ const risk = require('../risk');
 const { lockState } = require('../conditions');
 const engine = require('../verify/engine');
 const statusMod = require('../verify/status');
+const QB = require('../../public/quest-builder.js');
 
 const router = express.Router();
 function userId(req) { return req.user.db_id; }
@@ -28,6 +29,109 @@ function rateLimited(userIdVal) {
   recent.push(now);
   rateBuckets.set(userIdVal, recent);
   return false;
+}
+
+// ---- creator-side draft validation + answer hygiene ----
+// The one rule table for a quest draft lives in public/quest-builder.js
+// (questDraftRules / validateQuestDraft) so the browser and the server grade
+// the same inputs the same way. This adapter maps the API payload onto that
+// draft shape and overlays the structural checks a server must still own.
+function draftFromPayload(body) {
+  body = body || {};
+  var tasks = Array.isArray(body.tasks) ? body.tasks : [];
+  var t = tasks[0] || null;
+  var config = (t && t.config) || {};
+  return {
+    title: body.title,
+    xp_reward: body.xp_reward,
+    task_choice: t ? QB.choiceForTask(t) : null,
+    task_url: config.url !== undefined ? config.url : (t && t.type === 'url_proof' ? config.placeholder : ''),
+    task_network_id: config.network_id === undefined || config.network_id === null ? '' : String(config.network_id),
+    task_network_name: config.network_name || '',
+    task_instructions: config.instructions || '',
+    quiz_pass_score: config.pass_score,
+    quiz_questions: config.questions,
+  };
+}
+
+// Returns { ok, errors } for a create/update quest payload, or null when the
+// payload carries no tasks (an update that only touches quest fields, which the
+// per-task routes validate instead). The error keys are the same field names
+// public/quest-builder.js returns, so the client can place each message.
+//
+// Two tiers, matching the builder:
+//   - structural checks always apply (a quiz must be gradeable, a social task's
+//     link must be a link, an on-chain task must name a network and a method);
+//   - the builder's own field-level rules apply to a body the wizard sent
+//     (`draft: true`), so the two sides grade the same form the same way.
+function validateQuestPayload(body) {
+  if (!body || !Array.isArray(body.tasks) || !body.tasks.length) return null;
+  var tasks = body.tasks;
+  var errors = {};
+
+  for (var i = 0; i < tasks.length; i++) {
+    var t = tasks[i] || {};
+    var cfg = t.config || {};
+    if (t.type === 'quiz') {
+      // Reuse the shared rules for the gradeable shape and their exact messages.
+      var qRes = QB.validateQuestDraft({ title: 'x', xp_reward: 1, task_choice: 'quiz', quiz_questions: cfg.questions, quiz_pass_score: cfg.pass_score });
+      for (var qf in qRes.errors) if (!errors[qf]) errors[qf] = qRes.errors[qf];
+      if (!errors.quiz_questions && Array.isArray(cfg.questions)) {
+        if (cfg.questions.length > 100) errors.quiz_questions = 'A quiz can have at most 100 questions';
+        else for (var j = 0; j < cfg.questions.length; j++) {
+          var opts = (cfg.questions[j] || {}).options;
+          if (Array.isArray(opts) && opts.some(function (o) { return !String(o || '').trim(); })) {
+            errors['quiz_questions[' + j + ']'] = 'Question ' + (j + 1) + ': every option needs text';
+            break;
+          }
+        }
+      }
+    } else if (t.type === 'url_proof') {
+      // A builder-side placeholder is optional hint text, never required.
+      if (cfg.placeholder !== undefined && cfg.placeholder !== null && cfg.placeholder !== '' && typeof cfg.placeholder !== 'string') {
+        errors.task_url = 'The proof hint must be text';
+      }
+    } else if (t.type === 'social') {
+      if (cfg.url === undefined || cfg.url === null || cfg.url === '' || !QB.isValidHttpUrl(cfg.url)) {
+        errors.task_url = 'The social link must start with http:// or https://';
+      }
+      if (cfg.action !== undefined && cfg.action !== null && cfg.action !== '' && ['visit', 'join', 'follow'].indexOf(cfg.action) < 0) {
+        errors.task_action = 'Unknown social action';
+      }
+    } else if (t.type === 'on_chain') {
+      if (cfg.network_id === undefined || cfg.network_id === null || cfg.network_id === '' || !Number.isFinite(Number(cfg.network_id))) {
+        errors.task_network_id = 'Choose a network for this task';
+      }
+      if (!['native_balance', 'erc20_balance', 'transaction'].includes(cfg.method)) {
+        errors.task_network_id = 'Choose a supported verification method';
+      }
+    }
+  }
+  if (Object.keys(errors).length) return { ok: false, errors: errors };
+
+  if (body.draft !== true) return { ok: true, errors: {} };
+  var shared = QB.validateQuestDraft(draftFromPayload(body));
+  for (var f in shared.errors) if (!errors[f]) errors[f] = shared.errors[f];
+  return { ok: Object.keys(errors).length === 0, errors: errors };
+}
+
+// The correct-answer index must never leave the server: strip it from any quiz
+// config in a response body. Recurses through plain arrays and objects, so it
+// covers a task, a version row, a quest's task list and a nested payload.
+function stripQuizAnswersDeep(value, depth) {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(function (v) { return stripQuizAnswersDeep(v, (depth || 0) + 1); });
+  if (typeof value !== 'object') return value;
+  if ((depth || 0) > 8) return value;
+  var out = {};
+  for (var k in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, k)) continue;
+    out[k] = stripQuizAnswersDeep(value[k], (depth || 0) + 1);
+  }
+  if (out.type === 'quiz' && out.config && typeof out.config === 'object') {
+    out.config = QB.stripQuizAnswers(out.config);
+  }
+  return out;
 }
 
 // All my task states for one quest: which tasks are verified/pending/rejected.
@@ -269,3 +373,7 @@ router.post('/campaigns/:id/join', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.validateQuestDraft = QB.validateQuestDraft;
+module.exports.validateQuestPayload = validateQuestPayload;
+module.exports.stripQuizAnswersDeep = stripQuizAnswersDeep;
+module.exports.draftFromPayload = draftFromPayload;

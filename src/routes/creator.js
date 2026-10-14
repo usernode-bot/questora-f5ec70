@@ -7,6 +7,11 @@ const amount = require('../verify/amount');
 const { maskUrl } = require('../verify/evm/rpc-pool');
 const { adapterFor } = require('../verify/chain-adapter');
 const networkPresets = require('../network-presets');
+// The draft rules live in public/quest-builder.js and are re-exported by the
+// quests router, so the create/PATCH handlers below grade a payload with the
+// same rule shape the browser does, and every response that can carry a quiz
+// config is stripped of the correct-answer index before it is sent.
+const questRoutes = require('./quests');
 
 const router = express.Router();
 
@@ -775,6 +780,14 @@ router.post('/campaigns/:id/quests', async (req, res) => {
   }
   const { title, description, instructions, is_required, xp_reward, points_reward, tasks, badge_id } = req.body || {};
   if (!title || !String(title).trim()) return res.status(400).json({ error: 'A quest title is required' });
+  // Same rule shape the builder validates with (public/quest-builder.js via the
+  // quests router). A payload without tasks (a fields-only edit) is left to the
+  // per-task routes, which is why the check can return null.
+  const draftCheck = questRoutes.validateQuestPayload(req.body || {});
+  if (draftCheck && !draftCheck.ok) {
+    const firstKey = Object.keys(draftCheck.errors)[0];
+    return res.status(400).json({ error: draftCheck.errors[firstKey], fields: draftCheck.errors });
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -891,6 +904,14 @@ router.patch('/quests/:id', async (req, res) => {
     return res.status(403).json({ error: 'You do not have permission to manage this project' });
   }
   if (!sets.length && !managesRewards && !setsPrereqs) return res.status(400).json({ error: 'Nothing to update' });
+  // A payload that carries tasks is the builder's full draft, so it is graded
+  // with the shared rule shape (see public/quest-builder.js). Fields-only
+  // updates carry no tasks and are unchanged.
+  const draftCheck = questRoutes.validateQuestPayload(req.body || {});
+  if (draftCheck && !draftCheck.ok) {
+    const firstKey = Object.keys(draftCheck.errors)[0];
+    return res.status(400).json({ error: draftCheck.errors[firstKey], fields: draftCheck.errors });
+  }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -1509,7 +1530,7 @@ router.post('/quests/:id/tasks', async (req, res) => {
       [ins.rows[0].id, JSON.stringify(b.config || {}), userId(req)]);
     await client.query('UPDATE quest_tasks SET current_version_id = $2 WHERE id = $1', [ins.rows[0].id, ver.rows[0].id]);
     await client.query('COMMIT');
-    res.json({ task: { ...ins.rows[0], current_version_id: ver.rows[0].id } });
+    res.json({ task: questRoutes.stripQuizAnswersDeep({ ...ins.rows[0], current_version_id: ver.rows[0].id }) });
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -1693,8 +1714,11 @@ router.post('/quests/:id/tasks/reorder', async (req, res) => {
 // any RPC URL or credential.
 function sanitizeTaskForCreator(task, version) {
   const config = (version && version.config) || task.config || {};
-  const safe = { ...config };
+  let safe = { ...config };
   delete safe.__raw;
+  // A quiz's correct-answer index must never reach a browser: drop it from the
+  // creator-facing shape too (the participant route already does).
+  if (task && task.type === 'quiz') safe = questRoutes.stripQuizAnswersDeep(safe);
   return {
     id: task.id, quest_id: task.quest_id, project_id: task.project_id, campaign_id: task.campaign_id,
     type: task.type, title: task.title, sort_order: task.sort_order,

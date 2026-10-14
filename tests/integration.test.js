@@ -1493,6 +1493,103 @@ t('create wizard: a url_proof task needs no builder-side placeholder', async () 
   assert.deepEqual(hintedTask.rows[0].config, { placeholder: 'https://your-work.example' });
 }, { timeout: 30000 });
 
+t('guided quest builder: draft validation blocks a bad quiz and the answer index never leaves the server', async () => {
+  // Exercises the real API path the wizard uses: the builder's POST carries
+  // `draft: true`, so src/routes/quests.js grades it with the same rule shape
+  // public/quest-builder.js runs in the browser.
+  const db = require('../src/db');
+  pool = pool || db.pool;
+  await db.migrate();
+  if (!httpServer) {
+    process.env.PORT = '0';
+    const { start } = require('../server');
+    httpServer = await start();
+  }
+  const base = 'http://127.0.0.1:' + httpServer.address().port;
+  const uid = 860000000 + Math.floor(Math.random() * 50000000);
+  const token = jwt.sign(
+    { id: uid, username: 'staging-demo-quizbuilder-' + (Date.now() % 100000000), pur: 'iframe' },
+    testPrivateKey.export({ type: 'pkcs8', format: 'pem' }),
+    { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' });
+  const auth = { 'x-usernode-token': token, 'content-type': 'application/json' };
+
+  const proj = (await (await fetch(base + '/api/v1/projects', {
+    method: 'POST', headers: auth, body: JSON.stringify({ name: 'Staging demo guided builder project' }) })).json()).project;
+  const camp = (await (await fetch(base + `/api/v1/projects/${proj.id}/campaigns`, {
+    method: 'POST', headers: auth, body: JSON.stringify({ name: 'Staging demo guided builder campaign', status: 'active' }) })).json()).campaign;
+
+  // A quiz with two questions, the second unmarked, is rejected with 400 and a
+  // per-field message that names the offending question.
+  const badQuiz = await fetch(base + `/api/v1/campaigns/${camp.id}/quests`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({
+      draft: true, title: 'Staging demo broken quiz', xp_reward: 50, status: 'active',
+      tasks: [{ type: 'quiz', title: 'Quiz', config: {
+        pass_score: 80,
+        questions: [
+          { q: 'Question one', options: ['A', 'B', 'C'], answer: 0 },
+          { q: 'Question two', options: ['A', 'B', 'C'], answer: -1 },
+        ],
+      } }],
+    }),
+  });
+  assert.equal(badQuiz.status, 400, 'an unmarked answer is rejected server-side');
+  const badBody = await badQuiz.json();
+  assert.ok(badBody.error, 'a 400 carries a top-level error');
+  assert.ok(badBody.fields && badBody.fields['quiz_questions[1]'], 'the response names the offending question: ' + JSON.stringify(badBody));
+  assert.equal(badBody.fields['quiz_questions[1]'], 'Question 2: mark the correct option');
+
+  // The same payload with every answer marked is accepted.
+  const goodQuiz = await fetch(base + `/api/v1/campaigns/${camp.id}/quests`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({
+      draft: true, title: 'Staging demo good quiz', xp_reward: 50, status: 'active',
+      tasks: [{ type: 'quiz', title: 'Quiz', config: {
+        pass_score: 80,
+        questions: [
+          { q: 'Question one', options: ['A', 'B', 'C'], answer: 0 },
+          { q: 'Question two', options: ['A', 'B', 'C'], answer: 2 },
+        ],
+      } }],
+    }),
+  });
+  assert.equal(goodQuiz.status, 200, JSON.stringify(await goodQuiz.clone().json().catch(() => ({}))));
+  const quizQuestId = (await goodQuiz.json()).quest.id;
+
+  // A url_proof draft with a valid https link is accepted, and one with no
+  // link is rejected: the builder shows exactly one required URL field.
+  const goodProof = await fetch(base + `/api/v1/campaigns/${camp.id}/quests`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({
+      draft: true, title: 'Staging demo builder proof', xp_reward: 25, status: 'active',
+      tasks: [{ type: 'url_proof', title: 'Proof', config: { placeholder: 'https://work.example' }, xp_reward: 25 }],
+    }),
+  });
+  assert.equal(goodProof.status, 200, JSON.stringify(await goodProof.clone().json().catch(() => ({}))));
+  const noLink = await fetch(base + `/api/v1/campaigns/${camp.id}/quests`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({
+      draft: true, title: 'Staging demo builder proof with no link', xp_reward: 25, status: 'active',
+      tasks: [{ type: 'url_proof', title: 'Proof', config: {} }],
+    }),
+  });
+  assert.equal(noLink.status, 400);
+  assert.equal((await noLink.json()).fields.task_url, 'Add the link participants must submit');
+
+  // The correct-answer index must not appear in any creator-facing response.
+  const tasksRes = await (await fetch(base + `/api/v1/quests/${quizQuestId}/tasks`, { headers: auth })).json();
+  assert.equal(tasksRes.tasks.length, 1);
+  assert.equal(tasksRes.tasks[0].type, 'quiz');
+  assert.equal(tasksRes.tasks[0].config.questions.length, 2);
+  assert.equal(/'answer'\s*:/.test(JSON.stringify(tasksRes)), false, 'the quiz task list never carries an answer index');
+  const oneRes = await (await fetch(base + `/api/v1/tasks/${tasksRes.tasks[0].id}`, { headers: auth })).json();
+  assert.equal(/'answer'\s*:/.test(JSON.stringify(oneRes)), false, 'a single task read never carries an answer index');
+  // The stored row still has the answer, so grading keeps working (the verifier
+  // is not touched, this only strips the response body).
+  const stored = await pool.query('SELECT config FROM quest_tasks WHERE id = $1', [tasksRes.tasks[0].id]);
+  assert.equal(stored.rows[0].config.questions[1].answer, 2, 'the answer is still stored server-side');
+}, { timeout: 30000 });
+
 t('discover shows each project at most once across its sections', async () => {
   const jwtLib = require('jsonwebtoken');
   if (!httpServer) {

@@ -1,4 +1,6 @@
 const express = require('express');
+// The shared draft rules, including the quiz answer stripper used below.
+const QB = require('../../public/quest-builder.js');
 const { pool, IS_STAGING } = require('../db');
 const levels = require('../levels');
 const reputation = require('../reputation');
@@ -339,8 +341,9 @@ router.get('/quests/:id', async (req, res) => {
       verification_reason: myState[t.id].verification_reason,
     } : {}) };
     if (t.type === 'quiz') {
-      // Never ship the correct answer.
-      return { ...base, config: { ...(t.config || {}), questions: ((t.config || {}).questions || []).map(x => ({ q: x.q, options: x.options })) } };
+      // Never ship the correct answer. The one stripping helper lives with the
+      // shared draft rules, so every response body agrees.
+      return { ...base, config: QB.stripQuizAnswers(t.config || {}) };
     }
     if (t.type === 'on_chain') {
       // Allow-list only chain-neutral, non-secret config. RPC URLs and
