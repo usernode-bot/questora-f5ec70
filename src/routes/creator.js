@@ -1331,7 +1331,11 @@ router.post('/projects/:id/networks', async (req, res) => {
 router.get('/projects/:id/networks', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectPermission(req, res, p.id, 'verification.manage'))) return;
+  // The quest wizard's Task step lists these to fill its wallet-connect
+  // picker. The read-only staging ?demo=1 demo widens the read for the
+  // non-member capture identity exactly as the project read does; a real
+  // non-member still gets 403, and every write still resolves the real role.
+  if (!isDemoRead(req) && !(await rbac.requireProjectPermission(req, res, p.id, 'verification.manage'))) return;
   const nets = await pool.query('SELECT * FROM task_networks WHERE project_id = $1 ORDER BY id', [p.id]);
   const rpcs = nets.rows.length ? await pool.query(
     'SELECT * FROM task_rpcs WHERE network_id = ANY($1) ORDER BY is_primary DESC, priority', [nets.rows.map(n => n.id)]) : { rows: [] };
@@ -1483,7 +1487,9 @@ router.post('/projects/:id/tokens', async (req, res) => {
 router.get('/projects/:id/tokens', async (req, res) => {
   const p = await loadProject(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found' });
-  if (!(await rbac.requireProjectPermission(req, res, p.id, 'verification.manage'))) return;
+  // Same read-only staging ?demo=1 widening as the networks list above: the
+  // wizard needs the token list to render its picker for the capture identity.
+  if (!isDemoRead(req) && !(await rbac.requireProjectPermission(req, res, p.id, 'verification.manage'))) return;
   const { rows } = await pool.query('SELECT * FROM task_tokens WHERE project_id = $1 ORDER BY id', [p.id]);
   res.json({ tokens: rows });
 });

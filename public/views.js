@@ -1813,6 +1813,10 @@ function renderQuestEditor(sectionEl, ctx, questId, boot) {
     seedCampaign,
     storage: (() => { try { return window.localStorage; } catch (e) { return null; } })(),
     boot: boot || null,
+    // The staging ?demo=1 read is carried into the wizard so its network and
+    // token pickers load for the non-member capture identity (see
+    // public/quest-builder.js). Inert in production: the server ignores it.
+    demo: params && params.get('demo'),
     breadcrumb: breadcrumb([{ label: 'Quests', href: base + '/quests' }, { label: isEdit ? 'Edit quest' : 'New quest' }]),
     toast: (m, isError) => window.QUI.toast(m, isError),
     navigate: (path) => { cleanup(); window.QuestoraNav.go(path); },

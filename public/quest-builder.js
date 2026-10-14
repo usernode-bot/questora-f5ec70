@@ -541,6 +541,10 @@
     var questId = ctx.questId;
     var project = ctx.project || {};
     var projectId = project.id;
+    // The staging ?demo=1 read (views.js forwards it) rides along on the two
+    // reads the capture identity cannot otherwise pass, so the wizard's
+    // network and token pickers load for a screenshot instead of 403ing.
+    var demoQs = ctx.demo ? '?demo=' + encodeURIComponent(ctx.demo) : '';
 
     var STEPS = [
       { key: 'basics', label: 'Basics' },
@@ -572,8 +576,8 @@
     // ---- loading ----
     var reads = [
       api.get('/api/v1/network-presets').catch(function () { state.presetsError = true; return { presets: [] }; }),
-      api.get('/api/v1/projects/' + encodeURIComponent(projectId) + '/networks').catch(function () { return { networks: [] }; }),
-      api.get('/api/v1/projects/' + encodeURIComponent(projectId) + '/tokens').catch(function () { return { tokens: [] }; }),
+      api.get('/api/v1/projects/' + encodeURIComponent(projectId) + '/networks' + demoQs).catch(function () { return { networks: [] }; }),
+      api.get('/api/v1/projects/' + encodeURIComponent(projectId) + '/tokens' + demoQs).catch(function () { return { tokens: [] }; }),
       api.get('/api/v1/badges').catch(function () { return { badges: [] }; }),
       isEdit ? api.get('/api/v1/quests/' + encodeURIComponent(questId)) : Promise.resolve(null),
       isEdit ? api.get('/api/v1/quests/' + encodeURIComponent(questId) + '/tasks') : Promise.resolve({ tasks: [] }),

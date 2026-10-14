@@ -1783,6 +1783,21 @@ t('staging demo project read is permission-widened and carries its own overview'
   });
   assert.equal(reorder.status, 403, 'the demo read must not grant writes');
 
+  // The wizard's two secondary reads (the network and token pickers) widen the
+  // same way for the demo read, so its Task step loads without a 403 for the
+  // capture identity. A plain non-member read stays refused, so this is a
+  // demo-read allowance, not a removal of the permission.
+  const netPlain = await fetch(base + `/api/v1/projects/${projectId}/networks`, { headers: stranger });
+  assert.equal(netPlain.status, 403, 'the plain networks read still requires verification.manage');
+  const netDemo = await fetch(base + `/api/v1/projects/${projectId}/networks?demo=1`, { headers: stranger });
+  assert.equal(netDemo.status, 200, 'the demo read serves the network picker');
+  assert.ok(Array.isArray((await netDemo.json()).networks), 'the demo networks read returns a list');
+  const tokPlain = await fetch(base + `/api/v1/projects/${projectId}/tokens`, { headers: stranger });
+  assert.equal(tokPlain.status, 403, 'the plain tokens read still requires verification.manage');
+  const tokDemo = await fetch(base + `/api/v1/projects/${projectId}/tokens?demo=1`, { headers: stranger });
+  assert.equal(tokDemo.status, 200, 'the demo read serves the token picker');
+  assert.ok(Array.isArray((await tokDemo.json()).tokens), 'the demo tokens read returns a list');
+
   // /overview stays gated for the same non-member; only the demo project read
   // supplies the numbers.
   assert.equal((await fetch(base + `/api/v1/projects/${projectId}/overview`, { headers: stranger })).status, 403,
