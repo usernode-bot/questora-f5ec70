@@ -1289,7 +1289,15 @@ async function viewDashboard(slug, section, params) {
     sidebar.appendChild(el(`<a href="${base}${seg ? '/' + seg : ''}" class="shrink-0 px-3 py-2 min-h-[44px] rounded-lg text-sm font-medium ${active ? 'bg-accent text-accent-contrast' : 'bg-surface-container text-content-secondary hover:text-content-primary'}">${escapeHtml(label)}</a>`));
   }
 
-  const ctx = { p, data, stats, base, isCreator, perms, params, reload: () => viewDashboard(slug, section, params) };
+  const ctx = { p, data, stats, base, isCreator, perms, params, reload: () => viewDashboard(slug, section, params, boot) };
+  // A step deep link on the quest builder (?step=task&task=quiz) opens the
+  // wizard straight on that step with a labelled demo draft, so a screenshot or
+  // a check can reach a step that would otherwise need clicks. Parsed here
+  // because the URL is the state for this dashboard.
+  const boot = {
+    step: params.get('step') || null,
+    task: params.get('task') || null,
+  };
   // A section the viewer cannot reach falls back to the overview rather than
   // rendering a management surface the routes would reject anyway.
   const sectionPerm = (DASH_SECTIONS.find(([seg]) => seg === section || (seg === 'campaigns' && section.startsWith('campaigns/')) || (seg === 'quests' && section.startsWith('quests/'))));
@@ -1298,11 +1306,11 @@ async function viewDashboard(slug, section, params) {
   if (section && !allowed) return renderDashOverview(sectionEl, ctx);
   if (section === 'campaigns') return renderDashCampaigns(sectionEl, ctx);
   if (section.startsWith('campaigns/')) return renderDashCampaignQuests(sectionEl, ctx, section.slice('campaigns/'.length));
-  if (section === 'quests/new') return renderQuestEditor(sectionEl, ctx, null);
+  if (section === 'quests/new') return renderQuestEditor(sectionEl, ctx, null, boot);
   if (section.startsWith('quests/')) {
     // quests/<id>/edit and its quests/<id> alias open the same editor.
     const qid = decodeURIComponent(section.slice('quests/'.length).split('/')[0]);
-    return renderQuestEditor(sectionEl, ctx, qid);
+    return renderQuestEditor(sectionEl, ctx, qid, boot);
   }
   if (section === 'quests') return renderDashQuests(sectionEl, ctx);
   if (section === 'participants' || section === 'leaderboard') return renderDashLeaderboard(sectionEl, ctx, section);
@@ -1728,591 +1736,95 @@ function renderDashQuests(sectionEl, ctx, campaign) {
 // The single-page quest editor, shared by create and edit.
 //   questId null -> create (a campaign picker, tasks held until submit)
 //   questId set  -> edit (loaded quest + tasks + rewards/conditions)
-function renderQuestEditor(sectionEl, ctx, questId) {
+// The quest create/edit flow, delegated to the guided wizard in
+// public/quest-builder.js. This function only loads the project's campaigns
+// (plus the quests a prerequisite can point at), builds the wizard's context
+// from the shared view helpers, and wires the two navigation guards. All the
+// DOM, per-step rendering, validation, preview and draft storage live in
+// quest-builder.js.
+function renderQuestEditor(sectionEl, ctx, questId, boot) {
   const { p, data, base, params } = ctx;
   const QB = window.QuestoraQuestBuilder;
   const api = window.QuestoraAPI.api;
   const isEdit = questId !== null && questId !== undefined;
   const newCampaignId = params && params.get('campaign');
 
-  const wrap = el('<div class="pb-24"></div>');
+  const wrap = el('<div></div>');
   sectionEl.appendChild(wrap);
-  wrap.appendChild(el('<p class="text-sm text-content-secondary animate-pulse">Loading\u2026</p>'));
 
-  Promise.all([
-    isEdit ? api.get('/api/v1/quests/' + encodeURIComponent(questId)) : Promise.resolve(null),
-    isEdit ? api.get('/api/v1/quests/' + encodeURIComponent(questId) + '/tasks') : Promise.resolve({ tasks: [] }),
-    isEdit ? api.get('/api/v1/quests/' + encodeURIComponent(questId) + '/rewards').catch(() => ({ badge_id: null, credential_title: null, requires_quests: [], require_all: true })) : Promise.resolve({ badge_id: null, credential_title: null, requires_quests: [], require_all: true }),
-    api.get('/api/v1/badges').catch(() => ({ badges: [] })),
-  ]).then(([questData, taskData, rewardData, badgeData]) => {
-    const quest = questData ? questData.quest : {};
-    const tasks = (taskData.tasks || []).slice();
-    const badges = badgeData.badges || [];
-    const campaigns = data.campaigns || [];
-    const localTasks = [];           // create-mode task drafts
-    let pendingTasks = null;         // create-mode: which list the builder edits
-    const taskList = isEdit ? tasks : localTasks;
+  const campaigns = (data.campaigns || []).map((c) => ({ id: c.id, name: c.name }));
+  const allQuests = [];
+  for (const c of data.campaigns || []) {
+    for (const q of c.quests || []) {
+      if (isEdit && Number(q.id) === Number(questId)) continue;
+      allQuests.push({ id: q.id, title: q.title, campaign_name: c.name });
+    }
+  }
+  // A create link can name its campaign (?campaign=<id>); seed the draft so the
+  // Basics step opens with it chosen.
+  const seedCampaign = isEdit ? null : (newCampaignId || (campaigns[0] && campaigns[0].id) || null);
 
-    wrap.replaceChildren();
-    wrap.appendChild(el(`
-      <div class="mb-4">
-        ${breadcrumb([{ label: 'Quests', href: base + '/quests' }, { label: isEdit ? 'Edit quest' : 'New quest' }])}
-      </div>`));
-
-    if (!campaigns.length) {
-      wrap.appendChild(el(emptyState('This project has no campaigns yet. Create a campaign first.', 'Create campaign', base + '/campaigns?new=campaign')));
+  let wizard = null;
+  let leaving = false;
+  function onDirty(dirty) {
+    if (dirty) window.addEventListener('beforeunload', onBeforeUnload);
+    else window.removeEventListener('beforeunload', onBeforeUnload);
+  }
+  function onBeforeUnload(e) {
+    if (leaving || !wizard || !wizard.isDirty()) return;
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+  // In-app route changes go through window.QuestoraNav.go (app.js's click
+  // interceptor and the history hooks). Wrap it while the form is dirty so a
+  // route change prompts the same confirm a reload does, then re-check on
+  // popstate for the browser back button.
+  function onPopState() {
+    if (!wizard || !wizard.isDirty()) return;
+    if (!wizard.confirmLeave()) {
+      // Re-push the editor URL so the attempted navigation is undone.
+      window.history.pushState({}, '', window.location.pathname + window.location.search);
       return;
     }
+    cleanup();
+  }
+  function cleanup() {
+    leaving = true;
+    window.removeEventListener('beforeunload', onBeforeUnload);
+    window.removeEventListener('popstate', onPopState);
+    if (navGuard) navGuard.restore();
+    if (wizard && wizard.destroy) wizard.destroy();
+  }
+  const navGuard = window.QuestoraNav && window.QuestoraNav.guard
+    ? window.QuestoraNav.guard(() => (wizard && wizard.isDirty()) ? wizard.confirmLeave() : true)
+    : null;
+  window.addEventListener('popstate', onPopState);
 
-    const form = el(`
-      <div class="max-w-2xl space-y-5">
-        <section class="rounded-2xl border border-line bg-surface p-5">
-          <h3 class="font-semibold mb-3">Quest details</h3>
-          <div class="space-y-3">
-            <div>
-              <label class="block text-xs text-content-secondary mb-1" for="qe-title">Title</label>
-              <input id="qe-title" class="f-title w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" placeholder="Quest title" value="${escapeHtml(quest.title || '')}">
-            </div>
-            <div>
-              <label class="block text-xs text-content-secondary mb-1" for="qe-desc">Description</label>
-              <textarea id="qe-desc" class="f-desc w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm focus:outline-none focus:border-accent" rows="2" placeholder="What is this quest about?">${escapeHtml(quest.description || '')}</textarea>
-            </div>
-            <div>
-              <label class="block text-xs text-content-secondary mb-1" for="qe-image">Cover image URL</label>
-              <input id="qe-image" class="f-image w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" placeholder="https://\u2026" value="${escapeHtml(quest.image_url || '')}">
-            </div>
-            <div class="grid sm:grid-cols-2 gap-3">
-              <div>
-                <label class="block text-xs text-content-secondary mb-1" for="qe-start">Starts</label>
-                <input id="qe-start" class="f-start w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="date" value="${quest.starts_at ? new Date(quest.starts_at).toISOString().slice(0, 10) : ''}">
-              </div>
-              <div>
-                <label class="block text-xs text-content-secondary mb-1" for="qe-end">Ends</label>
-                <input id="qe-end" class="f-end w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="date" value="${quest.ends_at ? new Date(quest.ends_at).toISOString().slice(0, 10) : ''}">
-              </div>
-            </div>
-            <div class="grid sm:grid-cols-2 gap-3">
-              <div>
-                <label class="block text-xs text-content-secondary mb-1" for="qe-campaign">Campaign</label>
-                <select id="qe-campaign" class="f-campaign w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" ${isEdit ? 'disabled' : ''}></select>
-              </div>
-              <div>
-                <label class="block text-xs text-content-secondary mb-1" for="qe-xp">XP reward</label>
-                <input id="qe-xp" class="f-xp w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="0" value="${Number(quest.xp_reward || 0)}">
-              </div>
-            </div>
-            <div>
-              <label class="block text-xs text-content-secondary mb-1" for="qe-points">Points reward</label>
-              <input id="qe-points" class="f-points w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="0" value="${Number(quest.points_reward || 0)}">
-            </div>
-          </div>
-        </section>
-
-        <section class="rounded-2xl border border-line bg-surface p-5">
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="font-semibold">Tasks</h3>
-            <span class="text-xs text-content-secondary task-count"></span>
-          </div>
-          <div class="tb-cards space-y-3"></div>
-          <div class="tb-add mt-3"></div>
-        </section>
-
-        <details class="qe-more rounded-2xl border border-line bg-surface p-5">
-          <summary class="cursor-pointer font-semibold select-none">More options</summary>
-          <div class="mt-4 space-y-4">
-            <div>
-              <label class="block text-xs text-content-secondary mb-1" for="qe-instr">Instructions</label>
-              <textarea id="qe-instr" class="f-instr w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm focus:outline-none" rows="2" placeholder="How should participants complete this quest?">${escapeHtml(quest.instructions || '')}</textarea>
-            </div>
-            <div>
-              <label class="block text-xs text-content-secondary mb-1" for="qe-badge">Badge reward</label>
-              <select id="qe-badge" class="f-badge w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
-                <option value="">No badge</option>
-              </select>
-            </div>
-            <div>
-              <label class="block text-xs text-content-secondary mb-1" for="qe-cred">Credential title</label>
-              <input id="qe-cred" class="f-cred w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none focus:border-accent" placeholder="e.g. Basics Certified" value="${escapeHtml(rewardData.credential_title || '')}">
-            </div>
-            <div>
-              <label class="block text-xs text-content-secondary mb-1" for="qe-prereq">Prerequisite quests</label>
-              <select id="qe-prereq" class="f-prereq w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 text-sm focus:outline-none" multiple size="4"></select>
-              <label class="flex items-center gap-2 text-sm text-content-secondary mt-2"><input type="checkbox" class="f-require-all accent-[var(--q-accent)]"> Require all selected quests</label>
-            </div>
-            <div class="grid sm:grid-cols-2 gap-3">
-              <div>
-                <label class="block text-xs text-content-secondary mb-1" for="qe-vis">Visibility</label>
-                <select id="qe-vis" class="f-vis w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none">
-                  <option value="public">Public</option>
-                  <option value="unlisted">Unlisted</option>
-                </select>
-              </div>
-              <div>
-                <label class="block text-xs text-content-secondary mb-1" for="qe-max">Max participants</label>
-                <input id="qe-max" class="f-max w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="1" placeholder="No limit" value="${quest.max_participants == null ? '' : Number(quest.max_participants)}">
-              </div>
-              <div>
-                <label class="block text-xs text-content-secondary mb-1" for="qe-limit">Completion limit</label>
-                <input id="qe-limit" class="f-limit w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm focus:outline-none" type="number" min="1" value="${Number(quest.completion_limit || 1)}">
-              </div>
-              <label class="flex items-center gap-2 text-sm text-content-secondary self-end">
-                <input type="checkbox" class="f-required accent-[var(--q-accent)]" ${quest.is_required === false ? '' : 'checked'}> Required to finish the campaign
-              </label>
-            </div>
-          </div>
-        </details>
-      </div>`);
-    wrap.appendChild(form);
-
-    // Campaign picker
-    const campSel = form.querySelector('.f-campaign');
-    for (const c of campaigns) campSel.appendChild(el(`<option value="${c.id}">${escapeHtml(c.name)}</option>`));
-    const chosenCampaign = isEdit ? quest.campaign_id : (newCampaignId || (campaigns[0] && campaigns[0].id));
-    if (chosenCampaign != null) campSel.value = String(chosenCampaign);
-
-    // Badges
-    const badgeSel = form.querySelector('.f-badge');
-    for (const b of badges) badgeSel.appendChild(el(`<option value="${b.id}">${escapeHtml(b.name)}${b.project_id ? '' : ' (platform)'}</option>`));
-    if (rewardData.badge_id) badgeSel.value = String(rewardData.badge_id);
-
-    // Prerequisites: every other quest in the project.
-    const prereqSel = form.querySelector('.f-prereq');
-    const allQuests = [];
-    for (const c of campaigns) for (const q of (c.quests || [])) if (!isEdit || Number(q.id) !== Number(questId)) allQuests.push({ ...q, campaign_name: c.name });
-    for (const q of allQuests) prereqSel.appendChild(el(`<option value="${q.id}">${escapeHtml(q.title)} \u2014 ${escapeHtml(q.campaign_name)}</option>`));
-    const selectedPrereqs = new Set((rewardData.requires_quests || []).map(Number));
-    prereqSel.querySelectorAll('option').forEach((o) => { if (selectedPrereqs.has(Number(o.value))) o.selected = true; });
-    form.querySelector('.f-require-all').checked = rewardData.require_all !== false;
-
-    function serialize() {
-      const v = (s) => form.querySelector(s).value.trim();
-      return JSON.stringify({
-        title: v('.f-title'), desc: v('.f-desc'), image: v('.f-image'), start: v('.f-start'), end: v('.f-end'),
-        campaign: campSel.value, xp: v('.f-xp'), points: v('.f-points'),
-        instr: v('.f-instr'), badge: badgeSel.value, cred: v('.f-cred'),
-        prereqs: [...prereqSel.selectedOptions].map(o => o.value).sort(), requireAll: form.querySelector('.f-require-all').checked,
-        vis: v('.f-vis'), max: v('.f-max'), limit: v('.f-limit'), required: form.querySelector('.f-required').checked,
-        tasks: JSON.stringify(taskList.map(t => ({ type: t.type, title: t.title, config: t.config, xp_reward: t.xp_reward }))),
-      });
-    }
-    const initial = serialize();
-
-    // Sticky action bar with the unsaved indicator.
-    const bar = el(`
-      <div class="fixed bottom-0 left-0 right-0 z-30 border-t border-line bg-surface/95 backdrop-blur px-4 py-3">
-        <div class="max-w-2xl mx-auto flex items-center gap-2 flex-wrap">
-          <span class="dirty text-xs text-warning hidden">Unsaved changes</span>
-          <span class="flex-1"></span>
-          <a href="${base}/quests" class="inline-flex items-center justify-center min-h-[44px] px-4 py-2.5 rounded-lg bg-surface-container border border-line-strong hover:bg-surface-container-high text-content-primary text-sm font-medium">Cancel</a>
-          ${isEdit
-            ? `<button class="save-changes font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save Changes</button>`
-            : `<button class="save-draft inline-flex items-center justify-center min-h-[44px] px-4 py-2.5 rounded-lg bg-surface-container border border-line-strong hover:bg-surface-container-high text-content-primary text-sm font-medium">Save Draft</button>
-               <button class="publish-btn font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Publish</button>`}
-        </div>
-      </div>`);
-    wrap.appendChild(bar);
-    const dirtyEl = bar.querySelector('.dirty');
-    const markDirty = () => { dirtyEl.classList.toggle('hidden', serialize() === initial); };
-    form.addEventListener('input', markDirty);
-    form.addEventListener('change', markDirty);
-
-    bar.querySelector('.cancel') && bar.querySelector('.cancel').addEventListener('click', () => {});
-
-    wrap.addEventListener('click', (e) => {
-      const a = e.target.closest('a');
-      if (a && a.getAttribute('href') === base + '/quests' && serialize() !== initial) {
-        if (!window.confirm('You have unsaved changes. Leave without saving?')) { e.preventDefault(); e.stopPropagation(); }
-      }
-    }, true);
-
-    // Task builder
-    const cards = form.querySelector('.tb-cards');
-    const addSlot = form.querySelector('.tb-add');
-    const taskCountEl = form.querySelector('.task-count');
-    const builder = renderTaskBuilder({
-      cards, addSlot, ctx, isEdit, questId,
-      getTasks: () => taskList,
-      setTasks: (list) => { taskList.length = 0; taskList.push(...list); taskCountEl.textContent = taskList.length + ' task' + (taskList.length === 1 ? '' : 's'); markDirty(); },
-      onPersisted: () => ctx.reload(),
-    });
-    builder.render();
-
-    async function collectQuestBody(status) {
-      const v = (s) => form.querySelector(s).value.trim();
-      if (!v('.f-title')) throw new Error('A quest title is required');
-      if (!isEdit && !taskList.length) throw new Error('A quest needs at least one task');
-      const body = {
-        title: v('.f-title'), description: v('.f-desc') || undefined, image_url: v('.f-image') || undefined,
-        instructions: v('.f-instr') || undefined, quest_type: quest.quest_type || undefined,
-        xp_reward: parseInt(v('.f-xp'), 10) || 0, points_reward: parseInt(v('.f-points'), 10) || 0,
-        starts_at: v('.f-start') || null, ends_at: v('.f-end') || null,
-        visibility: v('.f-vis'), max_participants: v('.f-max') || null, completion_limit: parseInt(v('.f-limit'), 10) || 1,
-        is_required: form.querySelector('.f-required').checked,
-        badge_id: badgeSel.value || null,
-        credential_title: v('.f-cred') || null,
-        requires_quests: [...prereqSel.selectedOptions].map(o => Number(o.value)),
-        require_all: form.querySelector('.f-require-all').checked,
-      };
-      if (status) body.status = status;
-      return body;
-    }
-
-    bar.querySelector('.publish-btn') && bar.querySelector('.publish-btn').addEventListener('click', async () => {
-      try {
-        const body = await collectQuestBody('active');
-        body.tasks = taskList;
-        body.campaign_id = Number(campSel.value);
-        const key = 'quest-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
-        const r = await api.post(`/api/v1/campaigns/${campSel.value}/quests`, body, { headers: { 'Idempotency-Key': key } });
-        toast('Quest published');
-        window.QuestoraNav.go(base + '/quests/' + encodeURIComponent(r.quest.id) + '/edit');
-      } catch (err) { toast(err.message, true); }
-    });
-    bar.querySelector('.save-draft') && bar.querySelector('.save-draft').addEventListener('click', async () => {
-      try {
-        const body = await collectQuestBody('draft');
-        body.tasks = taskList;
-        body.campaign_id = Number(campSel.value);
-        const key = 'quest-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
-        const r = await api.post(`/api/v1/campaigns/${campSel.value}/quests`, body, { headers: { 'Idempotency-Key': key } });
-        toast('Quest saved as a draft');
-        window.QuestoraNav.go(base + '/quests/' + encodeURIComponent(r.quest.id) + '/edit');
-      } catch (err) { toast(err.message, true); }
-    });
-    bar.querySelector('.save-changes') && bar.querySelector('.save-changes').addEventListener('click', async () => {
-      try {
-        const body = await collectQuestBody(null);
-        delete body.campaign_id;
-        await api.patch(`/api/v1/quests/${questId}`, body);
-        toast('Changes saved');
-        ctx.reload();
-      } catch (err) { toast(err.message, true); }
-    });
-    taskCountEl.textContent = taskList.length + ' task' + (taskList.length === 1 ? '' : 's');
-  }).catch((err) => {
-    wrap.replaceChildren(el(`<div class="rounded-xl border border-error/40 bg-error-bg p-4 text-sm text-error">${escapeHtml(err.message)}</div>`));
+  wizard = QB.renderQuestWizard(wrap, {
+    QUI: window.QUI,
+    api,
+    base,
+    project: p,
+    campaigns,
+    allQuests,
+    isEdit,
+    questId,
+    seedCampaign,
+    storage: (() => { try { return window.localStorage; } catch (e) { return null; } })(),
+    boot: boot || null,
+    // The staging ?demo=1 read is carried into the wizard so its network and
+    // token pickers load for the non-member capture identity (see
+    // public/quest-builder.js). Inert in production: the server ignores it.
+    demo: params && params.get('demo'),
+    breadcrumb: breadcrumb([{ label: 'Quests', href: base + '/quests' }, { label: isEdit ? 'Edit quest' : 'New quest' }]),
+    toast: (m, isError) => window.QUI.toast(m, isError),
+    navigate: (path) => { cleanup(); window.QuestoraNav.go(path); },
+    reload: () => { cleanup(); ctx.reload(); },
+    onDirty,
   });
 }
 
-// The reorderable task builder. In create mode it owns a local array; in edit
-// mode every add/edit/duplicate/delete/reorder persists through the API.
-function renderTaskBuilder(opts) {
-  const { cards, addSlot, ctx, isEdit, questId } = opts;
-  const QB = window.QuestoraQuestBuilder;
-  const api = window.QuestoraAPI.api;
-  const { p } = ctx;
-  let networks = null, tokens = null;
-  const editingKey = { id: null };
-
-  function summary(t) {
-    const label = TASK_LABEL[t.type] || t.type;
-    const bits = [label];
-    if (t.type === 'on_chain' && t.config) {
-      if (t.config.method) bits.push(t.config.method.replace('_', ' '));
-      const line = requirementLine(t);
-      if (line) bits.push(line);
-    }
-    bits.push('+' + (t.xp_reward || 0) + ' XP');
-    return bits.join(' \u00b7 ');
-  }
-
-  function render() {
-    const list = opts.getTasks();
-    cards.replaceChildren();
-    if (!list.length) {
-      cards.appendChild(el('<p class="text-sm text-content-tertiary">No tasks yet. Add the first one below.</p>'));
-    }
-    list.forEach((t, i) => {
-      const key = t.id || t._localId;
-      const card = el(`
-        <div class="tb-card rounded-xl border border-line bg-surface-container-high p-3">
-          <div class="flex items-center gap-2">
-            <span class="drag-handle cursor-grab text-content-tertiary select-none min-w-[24px] min-h-[44px] inline-flex items-center justify-center" role="button" tabindex="0" title="Drag or use arrow keys to reorder" aria-label="Reorder ${escapeHtml(t.title || 'task')}">${icon('drag_indicator')}</span>
-            <span class="min-w-0 flex-1">
-              <span class="block font-medium truncate">${escapeHtml(t.title || 'Task')}</span>
-              <span class="block text-xs text-content-tertiary">${escapeHtml(summary(t))}</span>
-            </span>
-            <span class="tb-actions flex items-center gap-1 shrink-0"></span>
-          </div>
-          <div class="tb-form mt-3 hidden"></div>
-        </div>`);
-      const actions = card.querySelector('.tb-actions');
-      const editBtn = el(`<button class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container hover:bg-surface-container-high text-content-secondary" aria-label="Edit task">${icon('edit')}</button>`);
-      tooltip(editBtn, 'Edit task');
-      editBtn.addEventListener('click', () => openForm(card, t, i));
-      const dupBtn = el(`<button class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container hover:bg-surface-container-high text-content-secondary" aria-label="Duplicate task">${icon('content_copy')}</button>`);
-      tooltip(dupBtn, 'Duplicate task');
-      dupBtn.addEventListener('click', () => duplicateTask(t));
-      const delBtn = el(`<button class="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg bg-surface-container hover:bg-surface-container-high text-error" aria-label="Delete task">${icon('delete')}</button>`);
-      tooltip(delBtn, 'Delete task');
-      delBtn.addEventListener('click', () => deleteTask(t));
-      actions.appendChild(editBtn); actions.appendChild(dupBtn); actions.appendChild(delBtn);
-      // Drag and keyboard reorder.
-      card.setAttribute('draggable', 'true');
-      card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', String(i)); });
-      card.addEventListener('dragover', (e) => e.preventDefault());
-      card.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        const from = Number(e.dataTransfer.getData('text/plain'));
-        if (Number.isNaN(from) || from === i) return;
-        move(from, i);
-      });
-      const handle = card.querySelector('.drag-handle');
-      let held = false;
-      handle.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); held = !held; handle.classList.toggle('text-accent-text', held); return; }
-        if (e.key === 'Escape') { held = false; handle.classList.remove('text-accent-text'); return; }
-        if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && held) { e.preventDefault(); move(i, i + (e.key === 'ArrowUp' ? -1 : 1)); }
-      });
-      cards.appendChild(card);
-    });
-    renderAdd();
-  }
-
-  function move(from, to) {
-    const list = opts.getTasks().slice();
-    if (to < 0 || to >= list.length || from < 0 || from >= list.length) return;
-    const [moved] = list.splice(from, 1); list.splice(to, 0, moved);
-    opts.setTasks(list);
-    persistOrder(list);
-    render();
-  }
-
-  async function persistOrder(list) {
-    if (!isEdit) return;
-    try { await api.post(`/api/v1/quests/${questId}/tasks/reorder`, { order: list.map(t => t.id) }); }
-    catch (e) { toast(e.message, true); }
-  }
-
-  async function duplicateTask(t) {
-    // Duplicate is a pure client-side copy: read the task, then create one.
-    try {
-      if (isEdit) {
-        const d = await api.get(`/api/v1/tasks/${t.id}`);
-        const s = d.task;
-        await api.post(`/api/v1/quests/${questId}/tasks`, {
-          type: s.type, title: s.title + ' copy', config: s.config || {}, xp_reward: s.xp_reward,
-          completion_mode: s.completion_mode, max_completions: s.max_completions,
-          attempt_limit: s.attempt_limit, cooldown_seconds: s.cooldown_seconds,
-        });
-        toast('Task duplicated'); opts.onPersisted();
-      } else {
-        const list = opts.getTasks().slice();
-        list.splice(list.indexOf(t) + 1, 0, { _localId: 't' + Date.now() + Math.random(), type: t.type, title: t.title + ' copy', config: JSON.parse(JSON.stringify(t.config || {})), xp_reward: t.xp_reward });
-        opts.setTasks(list); render();
-      }
-    } catch (e) { toast(e.message, true); }
-  }
-
-  function deleteTask(t) {
-    confirmDialog({
-      title: 'Delete task?',
-      body: `${escapeHtml(t.title || 'This task')} will be removed from the quest.`,
-      confirmLabel: 'Delete', danger: true,
-      onConfirm: async () => {
-        if (isEdit) { await api.del(`/api/v1/tasks/${t.id}`); toast('Task deleted'); opts.onPersisted(); }
-        else { const list = opts.getTasks().filter(x => x !== t); opts.setTasks(list); render(); toast('Task removed'); }
-      },
-    });
-  }
-
-  async function ensureChainData() {
-    if (networks === null) {
-      try { networks = (await api.get(`/api/v1/projects/${p.id}/networks`)).networks || []; } catch { networks = []; }
-    }
-    if (tokens === null) {
-      try { tokens = (await api.get(`/api/v1/projects/${p.id}/tokens`)).tokens || []; } catch { tokens = []; }
-    }
-  }
-
-  function taskTypeForm(choiceKey, values, host) {
-    host.replaceChildren();
-    const info = QB.TYPE_CHOICES.find(c => c.key === choiceKey) || QB.TYPE_CHOICES[QB.TYPE_CHOICES.length - 1];
-    host.appendChild(el(`<p class="text-xs text-content-secondary mb-2">${escapeHtml(info.hint)}</p>`));
-    const grid = el('<div class="grid sm:grid-cols-2 gap-2"></div>');
-    host.appendChild(grid);
-    const add = (html) => { grid.appendChild(el(html)); return grid.lastElementChild; };
-    if (choiceKey === 'social') {
-      add(`<input class="tf-url w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Link to visit (https://\u2026)" value="${escapeHtml(values.url || '')}">`);
-    } else if (choiceKey === 'url_proof' || choiceKey === 'custom_manual') {
-      add(`<input class="tf-placeholder w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Hint text shown to users (optional)" value="${escapeHtml(values.placeholder || '')}">`);
-    } else if (choiceKey === 'wallet_connect') {
-      add('<p class="text-sm text-content-secondary sm:col-span-2">No extra setup. Users sign a message with their browser wallet.</p>');
-    } else {
-      // on_chain family
-      const netSel = add('<select class="tf-network w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>');
-      netSel.appendChild(el('<option value="">Choose a network</option>'));
-      for (const n of (networks || [])) netSel.appendChild(el(`<option value="${n.id}">${escapeHtml(n.name)}</option>`));
-      if (values.network_id) netSel.value = String(values.network_id);
-      if (choiceKey === 'token_balance' || choiceKey === 'hold_token') {
-        const tokSel = add('<select class="tf-token w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>');
-        tokSel.appendChild(el('<option value="">Choose a token</option>'));
-        for (const tk of (tokens || [])) tokSel.appendChild(el(`<option value="${tk.id}">${escapeHtml(tk.symbol || tk.contract_address)}</option>`));
-        if (values.token_id) tokSel.value = String(values.token_id);
-      }
-      if (choiceKey === 'contract_interaction') {
-        add(`<input class="tf-contract w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Contract address (0x\u2026)" value="${escapeHtml(values.contract || '')}">`);
-      }
-      if (choiceKey !== 'on_chain_transaction' && choiceKey !== 'contract_interaction') {
-        add(`<input class="tf-amount w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Required amount (100)" value="${escapeHtml(values.amount || '')}">`);
-        const opSel = add('<select class="tf-operator w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"><option value="gte">At least</option><option value="gt">More than</option><option value="lte">At most</option><option value="lt">Less than</option><option value="eq">Exactly</option></select>');
-        if (values.operator) opSel.value = values.operator;
-      }
-      if (choiceKey === 'on_chain_transaction' || choiceKey === 'contract_interaction') {
-        add(`<input class="tf-confirmations w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="1" placeholder="Confirmations" value="${values.confirmations != null ? values.confirmations : 1}">`);
-      }
-    }
-    return grid;
-  }
-
-  function readForm(host, choiceKey) {
-    const val = (s) => { const n = host.querySelector(s); return n ? n.value.trim() : ''; };
-    return {
-      url: val('.tf-url'), placeholder: val('.tf-placeholder'),
-      network_id: val('.tf-network'), token_id: val('.tf-token'),
-      contract: val('.tf-contract'), amount: val('.tf-amount'), operator: val('.tf-operator') || 'gte',
-      confirmations: val('.tf-confirmations'),
-    };
-  }
-
-  function formValuesForTask(t) {
-    const c = t.config || {};
-    const choice = QB.choiceForTask(t);
-    return {
-      url: c.url, placeholder: c.placeholder, network_id: c.network_id, token_id: c.token_id,
-      contract: c.contract, amount: c.requirement ? c.requirement.amount : '', operator: c.requirement ? c.requirement.operator : 'gte',
-      confirmations: c.confirmations,
-    };
-  }
-
-  function openForm(card, t, i) {
-    const host = card.querySelector('.tb-form');
-    if (!host.classList.contains('hidden') && editingKey.id === (t.id || t._localId)) { host.classList.add('hidden'); host.replaceChildren(); editingKey.id = null; return; }
-    editingKey.id = t.id || t._localId;
-    host.classList.remove('hidden');
-    const isChain = ['on_chain'].includes(t.type);
-    const form = el(`
-      <div class="space-y-2">
-        <div class="grid sm:grid-cols-2 gap-2">
-          <input class="ef-title w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Task title" value="${escapeHtml(t.title || '')}">
-          <select class="ef-type w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
-          <input class="ef-xp w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" type="number" min="0" placeholder="Task XP" value="${Number(t.xp_reward || 0)}">
-          <select class="ef-completion w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm">
-            <option value="one_time">One time</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
-          </select>
-        </div>
-        <div class="tf-host"></div>
-        <div class="flex gap-2">
-          <button class="ef-save font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Save task</button>
-          <button class="ef-cancel text-sm px-4 py-2.5 min-h-[44px] rounded-lg bg-surface-container text-content-secondary">Cancel</button>
-        </div>
-        <p class="ef-hint text-xs text-content-secondary"></p>
-      </div>`);
-    host.replaceChildren(form);
-    const typeSel = form.querySelector('.ef-type');
-    const currentChoice = QB.choiceForTask(t);
-    for (const c of QB.TYPE_CHOICES) typeSel.appendChild(el(`<option value="${c.key}" ${c.key === currentChoice ? 'selected' : ''}>${escapeHtml(c.label)}</option>`));
-    form.querySelector('.ef-completion').value = t.completion_mode || 'one_time';
-    const tfHost = form.querySelector('.tf-host');
-    let values = formValuesForTask(t);
-    const draw = () => taskTypeForm(typeSel.value, values, tfHost);
-    draw();
-    if (['on_chain_transaction', 'token_balance', 'hold_token', 'contract_interaction'].includes(currentChoice)) {
-      ensureChainData().then(() => taskTypeForm(typeSel.value, values, tfHost));
-    }
-    typeSel.addEventListener('change', () => {
-      const chainNow = ['on_chain_transaction', 'token_balance', 'hold_token', 'contract_interaction'].includes(typeSel.value);
-      if (chainNow) ensureChainData().then(() => taskTypeForm(typeSel.value, values, tfHost));
-      else taskTypeForm(typeSel.value, values, tfHost);
-    });
-    form.querySelector('.ef-cancel').addEventListener('click', () => { host.classList.add('hidden'); host.replaceChildren(); editingKey.id = null; });
-    form.querySelector('.ef-save').addEventListener('click', async () => {
-      const choice = typeSel.value;
-      const fields = readForm(tfHost, choice);
-      const mapped = QB.taskTypeToConfig(choice, fields);
-      const title = form.querySelector('.ef-title').value.trim() || 'Task';
-      const xp = parseInt(form.querySelector('.ef-xp').value, 10) || 0;
-      const completion = form.querySelector('.ef-completion').value;
-      const hint = form.querySelector('.ef-hint');
-      hint.textContent = 'Saving\u2026'; hint.className = 'ef-hint text-xs text-content-secondary';
-      try {
-        if (isEdit) {
-          await api.patch(`/api/v1/tasks/${t.id}`, { title, xp_reward: xp, completion_mode: completion, config: mapped.config });
-          toast('Task updated'); opts.onPersisted();
-        } else {
-          const list = opts.getTasks().slice();
-          const idx = list.indexOf(t);
-          list[idx] = { ...t, type: mapped.type, config: mapped.config, title, xp_reward: xp, completion_mode: completion };
-          opts.setTasks(list); render();
-          toast('Task updated');
-        }
-        host.classList.add('hidden'); host.replaceChildren(); editingKey.id = null;
-      } catch (err) { hint.textContent = err.message; hint.className = 'ef-hint text-xs text-error'; }
-    });
-  }
-
-  function renderAdd() {
-    addSlot.replaceChildren();
-    const wrapEl = el(`
-      <div class="tb-add-panel">
-        <button class="tb-open inline-flex items-center gap-1.5 font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-surface-container border border-line-strong hover:bg-surface-container-high text-content-primary text-sm">${icon('add', { class: 'w-4 h-4' })}<span>Add Task</span></button>
-        <div class="tb-chooser mt-2 hidden rounded-xl border border-line bg-surface-container-high p-3 space-y-2">
-          <label class="block text-xs text-content-secondary">Task type</label>
-          <select class="tb-type w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm"></select>
-          <input class="tb-title w-full rounded-lg bg-surface-container-high border border-line-strong px-3 py-2.5 min-h-[44px] text-sm" placeholder="Task title">
-          <div class="tb-fields"></div>
-          <div class="flex gap-2">
-            <button class="tb-create font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Add task</button>
-            <button class="tb-cancel text-sm px-4 py-2.5 min-h-[44px] rounded-lg bg-surface-container text-content-secondary">Cancel</button>
-          </div>
-          <p class="tb-hint text-xs text-content-secondary"></p>
-        </div>
-      </div>`);
-    addSlot.appendChild(wrapEl);
-    const typeSel = wrapEl.querySelector('.tb-type');
-    for (const c of QB.TYPE_CHOICES) typeSel.appendChild(el(`<option value="${c.key}">${escapeHtml(c.label)}</option>`));
-    const chooser = wrapEl.querySelector('.tb-chooser');
-    const titleInput = wrapEl.querySelector('.tb-title');
-    const fieldsHost = wrapEl.querySelector('.tb-fields');
-    const CHAIN = ['on_chain_transaction', 'token_balance', 'hold_token', 'contract_interaction'];
-    const draw = () => {
-      if (CHAIN.includes(typeSel.value)) ensureChainData().then(() => taskTypeForm(typeSel.value, {}, fieldsHost));
-      else taskTypeForm(typeSel.value, {}, fieldsHost);
-    };
-    wrapEl.querySelector('.tb-open').addEventListener('click', () => {
-      chooser.classList.toggle('hidden');
-      if (!chooser.classList.contains('hidden')) {
-        titleInput.value = (QB.TYPE_CHOICES.find(c => c.key === typeSel.value) || {}).label || '';
-        draw();
-      }
-    });
-    wrapEl.querySelector('.tb-cancel').addEventListener('click', () => chooser.classList.add('hidden'));
-    typeSel.addEventListener('change', () => {
-      titleInput.value = (QB.TYPE_CHOICES.find(c => c.key === typeSel.value) || {}).label || '';
-      draw();
-    });
-    wrapEl.querySelector('.tb-create').addEventListener('click', async () => {
-      const choice = typeSel.value;
-      const fields = readForm(fieldsHost, choice);
-      const mapped = QB.taskTypeToConfig(choice, fields);
-      const title = titleInput.value.trim() || (QB.TYPE_CHOICES.find(c => c.key === choice) || {}).label || 'Task';
-      const hint = wrapEl.querySelector('.tb-hint');
-      hint.textContent = 'Saving\u2026'; hint.className = 'tb-hint text-xs text-content-secondary';
-      if (isEdit) {
-        try {
-          await api.post(`/api/v1/quests/${questId}/tasks`, { type: mapped.type, title, config: mapped.config, xp_reward: 0 });
-          toast('Task added'); opts.onPersisted();
-        } catch (e) { hint.textContent = e.message; hint.className = 'tb-hint text-xs text-error'; }
-      } else {
-        const list = opts.getTasks().slice();
-        list.push({ _localId: 't' + Date.now() + Math.random(), type: mapped.type, title, config: mapped.config, xp_reward: 0, completion_mode: 'one_time' });
-        opts.setTasks(list); chooser.classList.add('hidden'); render();
-      }
-    });
-  }
-
-  return { render: () => render() };
-}
 
 async function renderDashLeaderboard(sectionEl, ctx, which) {
   const { p } = ctx;

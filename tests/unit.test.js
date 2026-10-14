@@ -707,6 +707,120 @@ test('the task reorder payload orders ids to sort_order indices', () => {
   assert.deepEqual(questBuilder.reorderSortOrders([]), []);
 });
 
+// ---- Guided quest builder: per-step fields, validation, preview, drafts ----
+
+test('a url_proof task renders exactly one URL field and no placeholder field', () => {
+  // The build must never ask for the builder-side placeholder that commit #26
+  // removed: the participant supplies the URL at submit time.
+  const fields = questBuilder.taskFields('url_proof');
+  assert.equal(fields.length, 1, 'url_proof has exactly one field');
+  assert.equal(fields[0].key, 'task_url');
+  assert.equal(fields[0].kind, 'url');
+  assert.ok(!fields.some((f) => /placeholder/.test(f.key)), 'no placeholder field is rendered');
+});
+
+test('each guided task type renders its own fields', () => {
+  assert.deepEqual(questBuilder.taskFields('social').map((f) => f.key), ['task_url', 'task_action']);
+  assert.deepEqual(questBuilder.taskFields('quiz').map((f) => f.key), ['quiz_questions', 'quiz_pass_score']);
+  assert.deepEqual(questBuilder.taskFields('wallet_connect').map((f) => f.key), ['task_network_name']);
+  assert.deepEqual(questBuilder.taskFields('manual').map((f) => f.key), ['task_instructions']);
+});
+
+test('validateQuestDraft: a url_proof quest requires exactly one valid URL', () => {
+  const base = { title: 'Proof', xp_reward: '100', task_choice: 'url_proof' };
+  assert.deepEqual(questBuilder.validateQuestDraft({ ...base, task_url: '' }).errors.task_url,
+    'Add the link participants must submit');
+  assert.deepEqual(questBuilder.validateQuestDraft({ ...base, task_url: 'ftp://x' }).errors.task_url,
+    'The link must start with http:// or https://');
+  assert.equal(questBuilder.validateQuestDraft({ ...base, task_url: 'https://ok.example' }).ok, true);
+});
+
+test('validateQuestDraft: a quiz with one unmarked answer is blocked inline', () => {
+  const draft = {
+    title: 'Quiz', xp_reward: '50', task_choice: 'quiz', quiz_pass_score: 80,
+    quiz_questions: [
+      { q: 'Question one', options: ['A', 'B'], answer: 0 },
+      { q: 'Question two', options: ['A', 'B'], answer: -1 },
+    ],
+  };
+  const res = questBuilder.validateQuestDraft(draft);
+  assert.equal(res.ok, false);
+  assert.equal(res.errors['quiz_questions[1]'], 'Question 2: mark the correct option');
+  assert.equal(questBuilder.validateQuestDraft({ ...draft, quiz_questions: draft.quiz_questions.map((q, i) => ({ ...q, answer: i })) }).ok, true);
+});
+
+test('validateQuestDraft: pass_score is bounded 0..100 and reward XP must be a positive whole number', () => {
+  const draft = { title: 'T', xp_reward: '10', task_choice: 'quiz', quiz_pass_score: 80, quiz_questions: [{ q: 'q', options: ['a', 'b'], answer: 0 }] };
+  assert.equal(questBuilder.validateQuestDraft({ ...draft, quiz_pass_score: 100 }).ok, true);
+  assert.equal(questBuilder.validateQuestDraft({ ...draft, quiz_pass_score: 0 }).ok, true);
+  assert.equal(questBuilder.validateQuestDraft({ ...draft, quiz_pass_score: 101 }).errors.quiz_pass_score,
+    'Pass score must be between 0 and 100');
+  for (const bad of ['0', '-5', '2.5', '', 'abc']) {
+    assert.equal(questBuilder.validateQuestDraft({ ...draft, xp_reward: bad }).errors.xp_reward,
+      'Reward XP must be a positive whole number', 'xp_reward ' + JSON.stringify(bad) + ' is rejected');
+  }
+  assert.equal(questBuilder.validateQuestDraft({ ...draft, xp_reward: 1 }).ok, true);
+});
+
+test('validateQuestDraft: a manual task needs reviewer instructions and a wallet task needs a network', () => {
+  assert.equal(questBuilder.validateQuestDraft({ title: 'T', xp_reward: '5', task_choice: 'manual' }).errors.task_instructions,
+    'Tell participants what proof to send');
+  assert.equal(questBuilder.validateQuestDraft({ title: 'T', xp_reward: '5', task_choice: 'wallet_connect' }).errors.task_network_name,
+    'Choose or name the network participants connect on');
+});
+
+test('the saved payload carries a quiz answer index; nothing a preview reads does', () => {
+  const draft = questBuilder.defaultDraft();
+  Object.assign(draft, {
+    title: 'Knowledge check', xp_reward: '100', task_choice: 'quiz', quiz_pass_score: 80,
+    quiz_questions: [{ q: 'Q1', options: ['A', 'B', 'C'], answer: 2 }],
+  });
+  const body = questBuilder.questFromDraft(draft);
+  assert.equal(body.tasks[0].type, 'quiz');
+  assert.deepEqual(body.tasks[0].config.questions, [{ q: 'Q1', options: ['A', 'B', 'C'], answer: 2 }], 'the intended create/update call carries the answer');
+  // The preview model, which is what the live card renders, drops the config
+  // entirely, so no answer can reach the DOM or a DOM attribute.
+  const preview = questBuilder.previewModel(draft);
+  assert.equal(JSON.stringify(preview).includes('answer'), false);
+  assert.equal(JSON.stringify(preview).includes('"A"'), false, 'a preview never carries the options either');
+});
+
+test('stripQuizAnswers drops the index from a quiz config and leaves other configs alone', () => {
+  const config = { pass_score: 80, questions: [{ q: 'Q', options: ['A', 'B'], answer: 1 }] };
+  assert.deepEqual(questBuilder.stripQuizAnswers(config), { pass_score: 80, questions: [{ q: 'Q', options: ['A', 'B'] }] });
+  assert.equal(questBuilder.configLeaksAnswer(questBuilder.stripQuizAnswers(config)), false);
+  const social = { url: 'https://x.example', action: 'visit' };
+  assert.deepEqual(questBuilder.stripQuizAnswers(social), social);
+});
+
+test('a draft round-trips through storage and is cleared', () => {
+  const store = (() => { const m = new Map(); return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, v), removeItem: (k) => m.delete(k) }; })();
+  const draft = questBuilder.defaultDraft();
+  draft.title = 'Round trip';
+  draft.task_choice = 'quiz';
+  draft.quiz_questions = [{ q: 'Q', options: ['A', 'B'], answer: 1 }];
+  assert.equal(questBuilder.saveDraft(7, draft, store), true);
+  const loaded = questBuilder.loadDraft(7, store);
+  assert.equal(loaded.title, 'Round trip');
+  assert.deepEqual(loaded.quiz_questions[0], { q: 'Q', options: ['A', 'B'], answer: 1 });
+  assert.equal(questBuilder.clearDraft(7, store), true);
+  assert.equal(questBuilder.loadDraft(7, store), null, 'a successful save clears the draft');
+});
+
+test('mounting the wizard must not autosave over an unanswered restore banner', () => {
+  // Regression: the wizard used to schedule an autosave on mount, which wrote
+  // the empty form over the stored draft ~400ms later, and a reload then found
+  // an empty draft instead of the creator's work.
+  assert.equal(questBuilder.shouldAutoSaveOnMount({ demoMode: false, hasSavedDraft: false }), true, 'a fresh form autosaves from the first edit');
+  assert.equal(questBuilder.shouldAutoSaveOnMount({ demoMode: false, hasSavedDraft: true }), false, 'a stored draft is not overwritten before the banner is answered');
+  assert.equal(questBuilder.shouldAutoSaveOnMount({ demoMode: true, hasSavedDraft: false }), false, 'a demo deep link never writes a draft');
+});
+
+test('the draft key is namespaced per project', () => {
+  assert.equal(questBuilder.draftKey(42), 'questora:quest-draft:42');
+  assert.notEqual(questBuilder.draftKey(1), questBuilder.draftKey(2));
+});
+
 // ---- Navigation audit: Create menu permissions and orphan cleanup ----
 const navMenu = require('../public/nav-menu.js');
 
@@ -866,7 +980,7 @@ test('design tokens meet WCAG AA in both themes', () => {
 test('the app markup has no raw palette colours left and status is never colour alone', () => {
   const fs = require('node:fs');
   const path = require('node:path');
-  const files = ['public/index.html', 'public/app.js', 'public/components.js', 'public/views.js', 'public/wallets/ui.js'];
+  const files = ['public/index.html', 'public/app.js', 'public/components.js', 'public/views.js', 'public/quest-builder.js', 'public/wallets/ui.js'];
   const banned = /\b(?:bg|text|border|placeholder:text|hover:bg|hover:text|hover:border|focus:border)-(?:zinc|violet|emerald|amber|red|sky|slate|gray)-(?:[0-9]{2,3})(?:\/[0-9]+)?/;
   for (const f of files) {
     const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
