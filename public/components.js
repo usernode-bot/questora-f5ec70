@@ -39,8 +39,9 @@ function campaignCard(c) {
       </div>
       <h3 class="font-semibold text-content-primary mb-1 leading-snug">${escapeHtml(c.name)}</h3>
       <p class="text-sm text-content-secondary line-clamp-2 mb-3">${escapeHtml(c.description || '')}</p>
-      <!-- Each stat stays on one line; the row wraps between stats instead. -->
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-content-secondary">
+      <!-- One line, always: without flex-wrap the card grows to fit its footer
+           instead of letting "left" drop to a second line. -->
+      <div class="flex items-center gap-x-2 text-xs text-content-secondary">
         <span class="text-accent-text font-medium whitespace-nowrap">+${c.total_xp} XP</span>
         <span class="whitespace-nowrap">${c.quest_count} quests</span>
         <span class="whitespace-nowrap">${c.participants} joined</span>

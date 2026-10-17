@@ -49,10 +49,11 @@ async function viewDiscover() {
   const body = el('<div class="discover-body"></div>');
   wrap.appendChild(body);
   // Skeleton while the discover read is in flight: the two headings the screen
-  // leads with, each over grey blocks the size of a campaign card.
+  // leads with, each over a sideways row of card-shaped blocks in the card
+  // surface colour, matching sectionRow's layout on a phone.
   body.appendChild(el(`<div class="animate-pulse">
-    <section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Featured</h2><div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4"><div class="h-44 rounded-2xl bg-surface-container"></div><div class="h-44 rounded-2xl bg-surface-container"></div></div></section>
-    <section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Trending</h2><div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4"><div class="h-44 rounded-2xl bg-surface-container"></div><div class="h-44 rounded-2xl bg-surface-container"></div></div></section>
+    <section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Featured</h2><div class="flex gap-4 overflow-x-auto pb-2 -mx-1 px-1"><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div></div></section>
+    <section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Trending</h2><div class="flex gap-4 overflow-x-auto pb-2 -mx-1 px-1"><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div></div></section>
   </div>`));
   let data;
   try {
