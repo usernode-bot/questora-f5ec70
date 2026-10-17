@@ -11,12 +11,22 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 
 async function upsertUser(username, display_name) {
   const idr = username.replace(/\D/g, '');
+  // Match by name first so re-running the seed never trips the username
+  // unique index on an older copy of the demo rows.
+  const byName = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
+  if (byName.rows.length) {
+    await pool.query('UPDATE users SET display_name = $2 WHERE id = $1', [byName.rows[0].id, display_name]);
+    return byName.rows[0].id;
+  }
+  // Synthetic platform ids, outside the 900000+i range the staging sign-in
+  // fixture uses: sharing an id would let that account rename a demo user
+  // (the mirror upserts the JWT username for its id) and break /u/<demo>.
   const { rows } = await pool.query(
     `INSERT INTO users (usernode_id, username, display_name)
      VALUES ($1, $2, $3)
      ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    [1000000 + Number(idr), username, display_name]
   );
   return rows[0].id;
 }

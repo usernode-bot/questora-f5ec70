@@ -85,6 +85,10 @@
     }
   }
 
+  // Views.js owns window.QV and runs before this file; expose the router so
+  // its handlers can navigate in-app (e.g. after publishing a campaign).
+  window.QV.router = router;
+
   // /quests is a convenience list: reuse the discover data grouped flat.
   async function viewQuestsList() {
     const el = window.QUI.el;
