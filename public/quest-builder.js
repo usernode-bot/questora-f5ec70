@@ -106,6 +106,77 @@
     return 'manual';
   }
 
+  // Starter templates for the New quest screen, pure data like the network
+  // preset catalog. Every task goes through taskTypeToConfig at draft time, so
+  // a template can only ever produce types the server already verifies.
+  // Tasks that need the creator's own link, network or token are left blank
+  // and flagged client-side by taskNeedsSetup (mirroring the server rules).
+  var QUEST_TEMPLATES = [
+    {
+      key: 'community_follow', name: 'Community follow', summary: 'Visit your site, follow you and share a post.',
+      title: 'Join our community', description: 'Get to know us and help spread the word.',
+      tasks: [
+        { choice: 'social', title: 'Visit our website', fields: {} },
+        { choice: 'social', title: 'Follow us on social media', fields: {} },
+        { choice: 'url_proof', title: 'Share a post about us', fields: { placeholder: 'https://…' } },
+      ],
+    },
+    {
+      key: 'wallet_activity', name: 'Wallet activity', summary: 'Connect a wallet and make a transaction.',
+      title: 'Make your first transaction', description: 'Connect your wallet and make a transaction on our network.',
+      tasks: [
+        { choice: 'wallet_connect', title: 'Connect your wallet', fields: {} },
+        { choice: 'on_chain_transaction', title: 'Make a transaction', fields: { confirmations: '1' } },
+      ],
+    },
+    {
+      key: 'hold_token', name: 'Hold a token', summary: 'Connect a wallet and hold your token.',
+      title: 'Hold our token', description: 'Connect your wallet and hold at least 1 of our token.',
+      tasks: [
+        { choice: 'wallet_connect', title: 'Connect your wallet', fields: {} },
+        { choice: 'token_balance', title: 'Hold at least 1 token', fields: { amount: '1', operator: 'gte' } },
+      ],
+    },
+    {
+      key: 'form_review', name: 'Form with review', summary: 'A short written answer and a link you review.',
+      title: 'Tell us about yourself', description: 'Answer a short question and share a link. We review every answer.',
+      tasks: [
+        { choice: 'manual', title: 'Introduce yourself', fields: {} },
+        { choice: 'url_proof', title: 'Share a link to your work', fields: { placeholder: 'https://…' } },
+      ],
+    },
+  ];
+
+  // Map a template key to a create-form draft: { title, description, tasks },
+  // where each task is the server shape taskTypeToConfig produces. Pure and
+  // fresh on every call. Unknown keys return null. views.js adds the local id.
+  function templateToDraft(key) {
+    var t = QUEST_TEMPLATES.find(function (x) { return x.key === key; });
+    if (!t) return null;
+    return {
+      title: t.title,
+      description: t.description,
+      tasks: t.tasks.map(function (task) {
+        var m = taskTypeToConfig(task.choice, task.fields);
+        return { type: m.type, title: task.title, config: m.config, xp_reward: 10, completion_mode: 'one_time' };
+      }),
+    };
+  }
+
+  // True when a drafted task is still missing a field the server requires
+  // (url, network_id, token_id), so the save guard can explain that in plain
+  // words instead of the server's validation error.
+  function taskNeedsSetup(task) {
+    var t = task || {};
+    var c = t.config || {};
+    if (t.type === 'social') return !c.url;
+    if (t.type === 'on_chain') {
+      if (!Number.isFinite(c.network_id)) return true;
+      if (c.method === 'erc20_balance' && !c.token_id) return true;
+    }
+    return false;
+  }
+
   // A duplicated quest is titled "<title> Copy" (no parentheses), matching the
   // button copy.
   function duplicateTitle(title) {
@@ -122,5 +193,6 @@
     STATUS_MAP: STATUS_MAP, statusBucket: statusBucket, statusPill: statusPill, STATUS_BUCKETS: STATUS_BUCKETS,
     TYPE_CHOICES: TYPE_CHOICES, taskTypeToConfig: taskTypeToConfig, choiceForTask: choiceForTask,
     duplicateTitle: duplicateTitle, reorderSortOrders: reorderSortOrders,
+    QUEST_TEMPLATES: QUEST_TEMPLATES, templateToDraft: templateToDraft, taskNeedsSetup: taskNeedsSetup,
   };
 });

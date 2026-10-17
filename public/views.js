@@ -24,6 +24,15 @@ async function loadMe() {
 }
 
 // ---------- discovery ----------
+// A search form must stay inside the SPA: a plain GET submit would reload the
+// whole document and leave the app shell (and its session) behind.
+function wireSearchForm(form) {
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = form.querySelector('input[name="q"]').value.trim();
+    window.QuestoraNav.go(q ? '/search?q=' + encodeURIComponent(q) : '/search');
+  });
+}
 async function viewDiscover() {
   const wrap = el('<div></div>');
   mount(wrap);
@@ -34,6 +43,18 @@ async function viewDiscover() {
       <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Search</button>
     </form>`);
   wrap.appendChild(searchForm);
+  wireSearchForm(searchForm);
+  // Everything below the header and the search bar loads or fails inside this
+  // container, so a failed read can never take the header with it.
+  const body = el('<div class="discover-body"></div>');
+  wrap.appendChild(body);
+  // Skeleton while the discover read is in flight: the two headings the screen
+  // leads with, each over a sideways row of card-shaped blocks in the card
+  // surface colour, matching sectionRow's layout on a phone.
+  body.appendChild(el(`<div class="animate-pulse">
+    <section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Featured</h2><div class="flex gap-4 overflow-x-auto pb-2 -mx-1 px-1"><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div></div></section>
+    <section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Trending</h2><div class="flex gap-4 overflow-x-auto pb-2 -mx-1 px-1"><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div><div class="h-44 w-[260px] shrink-0 rounded-2xl bg-surface border border-line"></div></div></section>
+  </div>`));
   let data;
   try {
     data = await window.QuestoraAPI.api.get('/api/v1/discover');
@@ -42,10 +63,11 @@ async function viewDiscover() {
     // supersedes this one, the request is aborted; leave what is on screen
     // alone instead of painting the browser's raw abort text as an error.
     if (window.QuestoraAPI.isCancelled(err)) return;
-    wrap.replaceChildren(el(`<div class="rounded-2xl border border-line bg-surface p-6 text-center"><p class="text-content-secondary mb-2">${escapeHtml(err.message)}</p><button class="retry text-accent-text text-sm font-medium">Try again</button></div>`));
-    wrap.querySelector('.retry').addEventListener('click', viewDiscover);
+    body.replaceChildren(el(`<div class="rounded-2xl border border-line bg-surface p-6 text-center"><p class="text-content-secondary mb-2">Couldn't load campaigns. Check your connection and try again.</p><button class="retry text-accent-text text-sm font-medium">Try again</button></div>`));
+    body.querySelector('.retry').addEventListener('click', viewDiscover);
     return;
   }
+  body.replaceChildren();
   // The API now sends one card per project across the whole payload, so a
   // heading can arrive with nothing under it (every project it named is
   // already shown above it). Drop those rows rather than print an empty one.
@@ -56,9 +78,9 @@ async function viewDiscover() {
     ['Ending soon', data.ending],
   ].filter(([, cards]) => cards.length);
   if (!sections.length) {
-    wrap.appendChild(el(emptyState('No campaigns yet. Create the first one to get started.', 'Create a campaign', '/create')));
+    body.appendChild(el(emptyState('No campaigns yet. Create the first one to get started.', 'Create a campaign', '/create')));
   } else {
-    for (const [label, cards] of sections) wrap.appendChild(sectionRow(label, cards, ''));
+    for (const [label, cards] of sections) body.appendChild(sectionRow(label, cards, ''));
   }
   if (data.categories.length) {
     const chips = el(`<section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Categories</h2><div class="flex flex-wrap gap-2 px-1"></div></section>`);
@@ -66,7 +88,7 @@ async function viewDiscover() {
     for (const cat of data.categories) {
       holder.appendChild(el(`<a href="/campaigns?category=${encodeURIComponent(cat)}" class="text-sm px-3 py-1.5 rounded-full bg-surface-container hover:bg-accent/20 hover:text-accent-text text-content-secondary transition-colors">${escapeHtml(cat)}</a>`));
     }
-    wrap.appendChild(chips);
+    body.appendChild(chips);
   }
 }
 
@@ -1864,6 +1886,60 @@ function renderQuestEditor(sectionEl, ctx, questId) {
       </div>`);
     wrap.appendChild(form);
 
+    // Starter templates: create mode only, a row of cards above Quest details.
+    // Picking one prefills title, description and the local task list; blank
+    // start-from-scratch is untouched.
+    if (!isEdit) {
+      const tplSection = el(`
+        <section class="qe-templates rounded-2xl border border-line bg-surface p-5">
+          <h3 class="font-semibold mb-1">Start from a template</h3>
+          <p class="text-xs text-content-secondary mb-3">Pick one to fill in the title, description and tasks. You can change everything after.</p>
+          <div class="grid sm:grid-cols-2 gap-2">
+            ${QB.QUEST_TEMPLATES.map((t) => `
+              <button type="button" class="qe-template text-left rounded-xl border border-line bg-surface-container-high hover:bg-surface-container p-3 min-h-[44px]" aria-pressed="false" data-key="${escapeHtml(t.key)}">
+                <span class="block font-medium text-sm">${escapeHtml(t.name)}</span>
+                <span class="block text-xs text-content-secondary">${escapeHtml(t.summary)}</span>
+                <span class="block text-xs text-content-tertiary mt-1">${t.tasks.length} task${t.tasks.length === 1 ? '' : 's'}</span>
+              </button>`).join('')}
+          </div>
+        </section>`);
+      form.insertBefore(tplSection, form.firstChild);
+      tplSection.addEventListener('click', (e) => {
+        const tile = e.target.closest('.qe-template');
+        if (!tile) return;
+        const draft = QB.templateToDraft(tile.getAttribute('data-key'));
+        if (!draft) return;
+        const apply = () => {
+          form.querySelector('.f-title').value = draft.title;
+          form.querySelector('.f-desc').value = draft.description;
+          // The builder owns opts.setTasks, not a returned method, so update the
+          // local list the same way setTasks does.
+          const list = draft.tasks.map((t) => ({ ...t, _localId: 't' + Date.now() + Math.random() }));
+          taskList.length = 0; taskList.push(...list);
+          taskCountEl.textContent = list.length + ' task' + (list.length === 1 ? '' : 's');
+          markDirty();
+          builder.render();
+          tplSection.querySelectorAll('.qe-template').forEach((b) => {
+            const on = b === tile;
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            // Toggle border-line too: two same-specificity border-color
+            // utilities resolve by stylesheet order, not class order, so
+            // leaving border-line on would keep the grey border.
+            b.classList.toggle('border-line', !on);
+            b.classList.toggle('border-accent', on);
+          });
+          form.querySelector('.f-title').focus();
+        };
+        const hasWork = form.querySelector('.f-title').value.trim() || form.querySelector('.f-desc').value.trim() || taskList.length > 0;
+        if (!hasWork) { apply(); return; }
+        confirmDialog({
+          title: 'Replace your quest?',
+          body: 'Your title, description and tasks will be replaced by this template.',
+          confirmLabel: 'Replace',
+        }).then((ok) => { if (ok) apply(); });
+      });
+    }
+
     // Campaign picker
     const campSel = form.querySelector('.f-campaign');
     for (const c of campaigns) campSel.appendChild(el(`<option value="${c.id}">${escapeHtml(c.name)}</option>`));
@@ -1941,6 +2017,13 @@ function renderQuestEditor(sectionEl, ctx, questId) {
       const v = (s) => form.querySelector(s).value.trim();
       if (!v('.f-title')) throw new Error('A quest title is required');
       if (!isEdit && !taskList.length) throw new Error('A quest needs at least one task');
+      // Template tasks can be drafted with the creator's link, network or
+      // token still blank; say that in plain words before the server would
+      // reject the payload.
+      if (!isEdit) {
+        const needs = taskList.find((t) => QB.taskNeedsSetup(t));
+        if (needs) throw new Error('Finish setting up “' + (needs.title || 'task') + '” before saving');
+      }
       const body = {
         title: v('.f-title'), description: v('.f-desc') || undefined, image_url: v('.f-image') || undefined,
         instructions: v('.f-instr') || undefined, quest_type: quest.quest_type || undefined,
@@ -2031,6 +2114,7 @@ function renderTaskBuilder(opts) {
             <span class="min-w-0 flex-1">
               <span class="block font-medium truncate">${escapeHtml(t.title || 'Task')}</span>
               <span class="block text-xs text-content-tertiary">${escapeHtml(summary(t))}</span>
+              ${QB.taskNeedsSetup(t) ? '<span class="block text-xs text-warning">Needs setup</span>' : ''}
             </span>
             <span class="tb-actions flex items-center gap-1 shrink-0"></span>
           </div>
@@ -2760,6 +2844,7 @@ async function viewSearch(params) {
       <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Search</button>
     </form>`);
   wrap.appendChild(form);
+  wireSearchForm(form);
   if (!q.trim()) {
     wrap.appendChild(el('<p class="text-sm text-content-tertiary">Type something to search across projects, campaigns, quests and people.</p>'));
     return;
