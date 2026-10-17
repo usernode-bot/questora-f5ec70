@@ -85,6 +85,10 @@
     }
   }
 
+  // Handlers in views.js (e.g. the Create screen's publish redirect) need to
+  // re-run routing; window.QV is created by views.js, which loads before us.
+  window.QV.router = router;
+
   // /quests is a convenience list: reuse the discover data grouped flat.
   async function viewQuestsList() {
     const el = window.QUI.el;

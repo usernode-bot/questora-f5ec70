@@ -10,13 +10,32 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 }));
 
 async function upsertUser(username, display_name) {
-  const idr = username.replace(/\D/g, '');
+  const n = Number(username.replace(/\D/g, ''));
+  // Seed users are fake people, so they live on a high usernode_id range
+  // that no real platform sign-in uses. The old mapping (900000 + i) gave
+  // staging-demo-user-1 the capture identity's own id (900001); the first
+  // signed-in request then renamed the seeded row into the visitor and
+  // broke every staging-demo-user-1 deep link. The second candidate keeps
+  // databases seeded before the change idempotent.
+  for (const nid of [910000 + n, 900000 + n]) {
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO users (usernode_id, username, display_name)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
+         RETURNING id, username`,
+        [nid, username, display_name]
+      );
+      if (rows[0].username === username) return rows[0].id;
+      // This usernode_id belongs to a different username: not our row.
+    } catch (err) {
+      if (err.code !== '23505') throw err;
+      // The username is already taken under the old mapping; fall through.
+    }
+  }
   const { rows } = await pool.query(
-    `INSERT INTO users (usernode_id, username, display_name)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
-     RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    'UPDATE users SET display_name = $2 WHERE username = $1 RETURNING id',
+    [username, display_name]
   );
   return rows[0].id;
 }
