@@ -1864,6 +1864,56 @@ function renderQuestEditor(sectionEl, ctx, questId) {
       </div>`);
     wrap.appendChild(form);
 
+    // Starter templates: create mode only, a row of cards above Quest details.
+    // Picking one prefills title, description and the local task list; blank
+    // start-from-scratch is untouched.
+    if (!isEdit) {
+      const tplSection = el(`
+        <section class="qe-templates rounded-2xl border border-line bg-surface p-5">
+          <h3 class="font-semibold mb-1">Start from a template</h3>
+          <p class="text-xs text-content-secondary mb-3">Pick one to fill in the title, description and tasks. You can change everything after.</p>
+          <div class="grid sm:grid-cols-2 gap-2">
+            ${QB.QUEST_TEMPLATES.map((t) => `
+              <button type="button" class="qe-template text-left rounded-xl border border-line bg-surface-container-high hover:bg-surface-container p-3 min-h-[44px]" aria-pressed="false" data-key="${escapeHtml(t.key)}">
+                <span class="block font-medium text-sm">${escapeHtml(t.name)}</span>
+                <span class="block text-xs text-content-secondary">${escapeHtml(t.summary)}</span>
+                <span class="block text-xs text-content-tertiary mt-1">${t.tasks.length} task${t.tasks.length === 1 ? '' : 's'}</span>
+              </button>`).join('')}
+          </div>
+        </section>`);
+      form.insertBefore(tplSection, form.firstChild);
+      tplSection.addEventListener('click', (e) => {
+        const tile = e.target.closest('.qe-template');
+        if (!tile) return;
+        const draft = QB.templateToDraft(tile.getAttribute('data-key'));
+        if (!draft) return;
+        const apply = () => {
+          form.querySelector('.f-title').value = draft.title;
+          form.querySelector('.f-desc').value = draft.description;
+          // The builder owns opts.setTasks, not a returned method, so update the
+          // local list the same way setTasks does.
+          const list = draft.tasks.map((t) => ({ ...t, _localId: 't' + Date.now() + Math.random() }));
+          taskList.length = 0; taskList.push(...list);
+          taskCountEl.textContent = list.length + ' task' + (list.length === 1 ? '' : 's');
+          markDirty();
+          builder.render();
+          tplSection.querySelectorAll('.qe-template').forEach((b) => {
+            const on = b === tile;
+            b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            b.classList.toggle('border-accent', on);
+          });
+          form.querySelector('.f-title').focus();
+        };
+        const hasWork = form.querySelector('.f-title').value.trim() || form.querySelector('.f-desc').value.trim() || taskList.length > 0;
+        if (!hasWork) { apply(); return; }
+        confirmDialog({
+          title: 'Replace your quest?',
+          body: 'Your title, description and tasks will be replaced by this template.',
+          confirmLabel: 'Replace',
+        }).then((ok) => { if (ok) apply(); });
+      });
+    }
+
     // Campaign picker
     const campSel = form.querySelector('.f-campaign');
     for (const c of campaigns) campSel.appendChild(el(`<option value="${c.id}">${escapeHtml(c.name)}</option>`));
@@ -1941,6 +1991,13 @@ function renderQuestEditor(sectionEl, ctx, questId) {
       const v = (s) => form.querySelector(s).value.trim();
       if (!v('.f-title')) throw new Error('A quest title is required');
       if (!isEdit && !taskList.length) throw new Error('A quest needs at least one task');
+      // Template tasks can be drafted with the creator's link, network or
+      // token still blank; say that in plain words before the server would
+      // reject the payload.
+      if (!isEdit) {
+        const needs = taskList.find((t) => QB.taskNeedsSetup(t));
+        if (needs) throw new Error('Finish setting up “' + (needs.title || 'task') + '” before saving');
+      }
       const body = {
         title: v('.f-title'), description: v('.f-desc') || undefined, image_url: v('.f-image') || undefined,
         instructions: v('.f-instr') || undefined, quest_type: quest.quest_type || undefined,
@@ -2031,6 +2088,7 @@ function renderTaskBuilder(opts) {
             <span class="min-w-0 flex-1">
               <span class="block font-medium truncate">${escapeHtml(t.title || 'Task')}</span>
               <span class="block text-xs text-content-tertiary">${escapeHtml(summary(t))}</span>
+              ${QB.taskNeedsSetup(t) ? '<span class="block text-xs text-warning">Needs setup</span>' : ''}
             </span>
             <span class="tb-actions flex items-center gap-1 shrink-0"></span>
           </div>
