@@ -206,6 +206,7 @@
     {
       "name": "Create Quest form opens from the Quests manager",
       "path": "/dashboard/projects/staging-demo-octra-builders/quests/new?demo=1",
+      "expectSelector": ".qe-template",
       "expectText": "Start from a template"
     },
     {

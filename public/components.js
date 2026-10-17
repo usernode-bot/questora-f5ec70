@@ -33,17 +33,18 @@ function campaignCard(c) {
   return el(`
     <a href="/campaigns/${c.slug}" class="block rounded-2xl border border-line bg-surface hover:bg-surface-container hover:border-accent/40 transition-colors p-5 min-w-[260px] md:min-w-0">
       <div class="flex items-center gap-2 mb-2">
-        ${c.project_logo ? `<img src="${escapeHtml(c.project_logo)}" alt="" class="w-5 h-5 rounded-full">` : `<span class="w-5 h-5 rounded-full bg-accent/30 inline-block"></span>`}
+        ${c.project_logo ? `<img src="${escapeHtml(c.project_logo)}" alt="" class="w-5 h-5 rounded-full">` : ''}
         <span class="text-xs text-content-secondary">${escapeHtml(c.project_name)}</span>
-        ${c.status !== 'active' ? `<span class="ml-auto text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-surface-container-high text-content-secondary">${escapeHtml(c.status)}</span>` : ''}
+        ${c.status && c.status !== 'active' ? `<span class="ml-auto text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full bg-surface-container-high text-content-secondary">${escapeHtml(c.status)}</span>` : ''}
       </div>
       <h3 class="font-semibold text-content-primary mb-1 leading-snug">${escapeHtml(c.name)}</h3>
       <p class="text-sm text-content-secondary line-clamp-2 mb-3">${escapeHtml(c.description || '')}</p>
-      <div class="flex items-center gap-3 text-xs text-content-secondary">
-        <span class="text-accent-text font-medium">+${c.total_xp} XP</span>
-        <span>${c.quest_count} quests</span>
-        <span>${c.participants} joined</span>
-        ${endsIn ? `<span class="ml-auto">${endsIn}</span>` : ''}
+      <!-- Each stat stays on one line; the row wraps between stats instead. -->
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-content-secondary">
+        <span class="text-accent-text font-medium whitespace-nowrap">+${c.total_xp} XP</span>
+        <span class="whitespace-nowrap">${c.quest_count} quests</span>
+        <span class="whitespace-nowrap">${c.participants} joined</span>
+        ${endsIn ? `<span class="ml-auto whitespace-nowrap">${endsIn}</span>` : ''}
       </div>
     </a>`);
 }

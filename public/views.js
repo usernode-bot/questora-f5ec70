@@ -24,6 +24,15 @@ async function loadMe() {
 }
 
 // ---------- discovery ----------
+// A search form must stay inside the SPA: a plain GET submit would reload the
+// whole document and leave the app shell (and its session) behind.
+function wireSearchForm(form) {
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = form.querySelector('input[name="q"]').value.trim();
+    window.QuestoraNav.go(q ? '/search?q=' + encodeURIComponent(q) : '/search');
+  });
+}
 async function viewDiscover() {
   const wrap = el('<div></div>');
   mount(wrap);
@@ -34,6 +43,17 @@ async function viewDiscover() {
       <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Search</button>
     </form>`);
   wrap.appendChild(searchForm);
+  wireSearchForm(searchForm);
+  // Everything below the header and the search bar loads or fails inside this
+  // container, so a failed read can never take the header with it.
+  const body = el('<div class="discover-body"></div>');
+  wrap.appendChild(body);
+  // Skeleton while the discover read is in flight: the two headings the screen
+  // leads with, each over grey blocks the size of a campaign card.
+  body.appendChild(el(`<div class="animate-pulse">
+    <section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Featured</h2><div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4"><div class="h-44 rounded-2xl bg-surface-container"></div><div class="h-44 rounded-2xl bg-surface-container"></div></div></section>
+    <section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Trending</h2><div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4"><div class="h-44 rounded-2xl bg-surface-container"></div><div class="h-44 rounded-2xl bg-surface-container"></div></div></section>
+  </div>`));
   let data;
   try {
     data = await window.QuestoraAPI.api.get('/api/v1/discover');
@@ -42,10 +62,11 @@ async function viewDiscover() {
     // supersedes this one, the request is aborted; leave what is on screen
     // alone instead of painting the browser's raw abort text as an error.
     if (window.QuestoraAPI.isCancelled(err)) return;
-    wrap.replaceChildren(el(`<div class="rounded-2xl border border-line bg-surface p-6 text-center"><p class="text-content-secondary mb-2">${escapeHtml(err.message)}</p><button class="retry text-accent-text text-sm font-medium">Try again</button></div>`));
-    wrap.querySelector('.retry').addEventListener('click', viewDiscover);
+    body.replaceChildren(el(`<div class="rounded-2xl border border-line bg-surface p-6 text-center"><p class="text-content-secondary mb-2">Couldn't load campaigns. Check your connection and try again.</p><button class="retry text-accent-text text-sm font-medium">Try again</button></div>`));
+    body.querySelector('.retry').addEventListener('click', viewDiscover);
     return;
   }
+  body.replaceChildren();
   // The API now sends one card per project across the whole payload, so a
   // heading can arrive with nothing under it (every project it named is
   // already shown above it). Drop those rows rather than print an empty one.
@@ -56,9 +77,9 @@ async function viewDiscover() {
     ['Ending soon', data.ending],
   ].filter(([, cards]) => cards.length);
   if (!sections.length) {
-    wrap.appendChild(el(emptyState('No campaigns yet. Create the first one to get started.', 'Create a campaign', '/create')));
+    body.appendChild(el(emptyState('No campaigns yet. Create the first one to get started.', 'Create a campaign', '/create')));
   } else {
-    for (const [label, cards] of sections) wrap.appendChild(sectionRow(label, cards, ''));
+    for (const [label, cards] of sections) body.appendChild(sectionRow(label, cards, ''));
   }
   if (data.categories.length) {
     const chips = el(`<section class="mb-8"><h2 class="text-sm font-medium text-content-secondary mb-2 px-1">Categories</h2><div class="flex flex-wrap gap-2 px-1"></div></section>`);
@@ -66,7 +87,7 @@ async function viewDiscover() {
     for (const cat of data.categories) {
       holder.appendChild(el(`<a href="/campaigns?category=${encodeURIComponent(cat)}" class="text-sm px-3 py-1.5 rounded-full bg-surface-container hover:bg-accent/20 hover:text-accent-text text-content-secondary transition-colors">${escapeHtml(cat)}</a>`));
     }
-    wrap.appendChild(chips);
+    body.appendChild(chips);
   }
 }
 
@@ -1900,6 +1921,10 @@ function renderQuestEditor(sectionEl, ctx, questId) {
           tplSection.querySelectorAll('.qe-template').forEach((b) => {
             const on = b === tile;
             b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            // Toggle border-line too: two same-specificity border-color
+            // utilities resolve by stylesheet order, not class order, so
+            // leaving border-line on would keep the grey border.
+            b.classList.toggle('border-line', !on);
             b.classList.toggle('border-accent', on);
           });
           form.querySelector('.f-title').focus();
@@ -2818,6 +2843,7 @@ async function viewSearch(params) {
       <button type="submit" class="font-medium px-4 py-2.5 min-h-[44px] rounded-lg bg-accent hover:bg-accent-hover text-accent-contrast text-sm">Search</button>
     </form>`);
   wrap.appendChild(form);
+  wireSearchForm(form);
   if (!q.trim()) {
     wrap.appendChild(el('<p class="text-sm text-content-tertiary">Type something to search across projects, campaigns, quests and people.</p>'));
     return;
