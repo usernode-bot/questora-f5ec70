@@ -198,3 +198,18 @@ test('quest lock evaluator: pure logic over completed sets', () => {
   // No prerequisites: never locked.
   assert.equal(conditions.evaluateLock(7, 'all', [], new Set()), false);
 });
+
+// Regression for issue #11 ("router is not defined"): views.js is a separate
+// IIFE from app.js, so it can only reach the router through window.QV.
+const fs = require('node:fs');
+
+test('views.js never calls the router bare; app.js exports it on QV', () => {
+  const views = fs.readFileSync('public/views.js', 'utf8');
+  const app = fs.readFileSync('public/app.js', 'utf8');
+  // Every `router()` occurrence in views.js is namespaced; a bare call here
+  // throws after publishing a campaign.
+  for (const m of views.matchAll(/(?![\w.$])router\(\)/g)) {
+    assert.equal(views.slice(Math.max(0, m.index - 10), m.index), 'window.QV.', 'bare router() in views.js');
+  }
+  assert.match(app, /window\.QV\.router\s*=\s*router\b/, 'app.js must export router on window.QV');
+});

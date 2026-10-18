@@ -149,6 +149,10 @@
     router();
   }
 
+  // views.js handlers that change the URL (e.g. after publishing a campaign)
+  // re-render through this; router is private to this IIFE otherwise.
+  window.QV.router = router;
+
   window.addEventListener('popstate', router);
   document.addEventListener('click', (e) => {
     const a = e.target.closest('a');

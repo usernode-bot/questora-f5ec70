@@ -9,14 +9,30 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
   username: `staging-demo-user-${i}`, display_name: `Staging demo user ${i}`,
 }));
 
+// Fake identities get a dedicated usernode_id block well above the ids the
+// platform hands out to fixture accounts (the local sign-in fixture is
+// 900001). Sharing an id with a real visitor would make ensureUser rename
+// the seeded row to the visitor's username on their first request, erasing
+// the seeded identity.
+const SEED_USERNODE_BASE = 9900000;
+
 async function upsertUser(username, display_name) {
   const idr = username.replace(/\D/g, '');
+  const usernodeId = SEED_USERNODE_BASE + Number(idr);
+  // Idempotent across the id-block change: a copy seeded by an older version
+  // holds the username under the old id. Claim the name by moving that row
+  // to the seed id, so its content stays attached to the seeded identity
+  // instead of colliding on the unique username index.
+  await pool.query(
+    'UPDATE users SET usernode_id = $1 WHERE username = $2 AND (usernode_id IS NULL OR usernode_id <> $1)',
+    [usernodeId, username]
+  );
   const { rows } = await pool.query(
     `INSERT INTO users (usernode_id, username, display_name)
      VALUES ($1, $2, $3)
      ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    [usernodeId, username, display_name]
   );
   return rows[0].id;
 }
@@ -144,7 +160,14 @@ async function seed() {
   const userIds = {};
   for (const u of USERS) userIds[u.username] = await upsertUser(u.username, u.display_name);
   // Deterministic invite codes for the demo users (Phase 2 referral demo).
+  // Release first: a copy seeded by an older version can carry the code on a
+  // row that no longer holds the demo username (it was renamed by a visitor
+  // whose platform id collided with the old seed ids), which would violate
+  // the unique ref_code index when re-assigned.
   for (let i = 1; i <= 6; i++) {
+    await pool.query(
+      `UPDATE users SET ref_code = NULL WHERE ref_code = $1 AND username <> $2`,
+      [`demo-ref-${i}`, `staging-demo-user-${i}`]);
     await pool.query(
       `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL`,
       [`demo-ref-${i}`, `staging-demo-user-${i}`]);
