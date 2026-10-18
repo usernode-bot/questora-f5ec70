@@ -42,6 +42,21 @@ async function ensureUser(claims) {
         db_id: mine.rows[0].id,
       };
     }
+    // A seeded row (no platform id) holds the name: this platform user is
+    // its owner, so attach the identity and keep the seeded data.
+    const seeded = await pool.query(
+      `UPDATE users SET usernode_id = $1, role = $2
+       WHERE username = $3 AND usernode_id IS NULL
+       RETURNING id, username, role`,
+      [String(claims.id), role, claims.username]);
+    if (seeded.rows.length) {
+      return {
+        ...claims,
+        username: seeded.rows[0].username,
+        role: seeded.rows[0].role,
+        db_id: seeded.rows[0].id,
+      };
+    }
     // First contact under this platform id: the JWT is authoritative, this
     // id owns the username NOW. A row holding it under a different
     // usernode_id is stale (the platform user renamed). Rename the stale

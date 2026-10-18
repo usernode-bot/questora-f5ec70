@@ -10,13 +10,15 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 }));
 
 async function upsertUser(username, display_name) {
-  const idr = username.replace(/\D/g, '');
+  // Seeded users are not platform identities. Leaving usernode_id empty keeps
+  // a demo id from colliding with the id the platform gives a real person who
+  // signs in; ensureUser adopts a row by username when that happens.
   const { rows } = await pool.query(
     `INSERT INTO users (usernode_id, username, display_name)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
+     VALUES (NULL, $1, $2)
+     ON CONFLICT (username) DO UPDATE SET display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    [username, display_name]
   );
   return rows[0].id;
 }
@@ -146,7 +148,8 @@ async function seed() {
   // Deterministic invite codes for the demo users (Phase 2 referral demo).
   for (let i = 1; i <= 6; i++) {
     await pool.query(
-      `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL`,
+      `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL
+         AND NOT EXISTS (SELECT 1 FROM users u WHERE u.ref_code = $1)`,
       [`demo-ref-${i}`, `staging-demo-user-${i}`]);
   }
   const projectIds = {};
