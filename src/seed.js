@@ -11,14 +11,32 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 
 async function upsertUser(username, display_name) {
   const idr = username.replace(/\D/g, '');
-  const { rows } = await pool.query(
-    `INSERT INTO users (usernode_id, username, display_name)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
-     RETURNING id`,
-    [900000 + Number(idr), username, display_name]
-  );
-  return rows[0].id;
+  // Resolve by username first: this seed's row must never land on a real
+  // signed-in identity. The launch signs the app in with its own usernode id
+  // (900001 locally), which collides with the synthetic id below, and the old
+  // usernode_id upsert renamed that visitor instead of creating this user.
+  const found = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
+  if (found.rows.length) {
+    await pool.query('UPDATE users SET display_name = $2 WHERE id = $1', [found.rows[0].id, display_name]);
+    return found.rows[0].id;
+  }
+  let usernodeId = 900000000 + Number(idr);
+  for (;;) {
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO users (usernode_id, username, display_name)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (username) DO UPDATE SET display_name = EXCLUDED.display_name
+         RETURNING id`,
+        [usernodeId, username, display_name]
+      );
+      return rows[0].id;
+    } catch (e) {
+      // usernode_id taken by someone else (a signed-in visitor): move aside.
+      if (e.code === '23505') { usernodeId += 1000000; continue; }
+      throw e;
+    }
+  }
 }
 
 async function upsertProject(ownerId, name, extra) {
