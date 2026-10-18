@@ -1034,3 +1034,71 @@ test('network presets: catalog shape, no keys, no guessed non-EVM fields', () =>
   assert.equal(presetToNetworkFields(eth).chain_namespace, 'eip155');
   assert.equal(getPreset('nope'), null);
 });
+
+// Starter templates: pure data + helpers, no DOM.
+const serverTaskTypes = new Set(['wallet_connect', 'social', 'url_proof', 'quiz', 'manual', 'on_chain']);
+
+test('quest templates use only real choices and server types', () => {
+  const { QUEST_TEMPLATES, TYPE_CHOICES } = questBuilder;
+  assert.equal(QUEST_TEMPLATES.length, 4);
+  assert.equal(new Set(QUEST_TEMPLATES.map((t) => t.key)).size, 4);
+  const choices = new Set(TYPE_CHOICES.map((c) => c.key));
+  for (const t of QUEST_TEMPLATES) {
+    assert.ok(t.name && t.summary && t.title && t.description, t.key + ' has name, summary, title and description');
+    for (const task of t.tasks) {
+      assert.ok(choices.has(task.choice), t.key + ': ' + task.choice + ' is a real builder choice');
+      const m = questBuilder.taskTypeToConfig(task.choice, task.fields);
+      assert.ok(serverTaskTypes.has(m.type), t.key + ': ' + task.choice + ' maps to a server type');
+    }
+  }
+});
+
+test('templateToDraft maps through taskTypeToConfig', () => {
+  for (const t of questBuilder.QUEST_TEMPLATES) {
+    const draft = questBuilder.templateToDraft(t.key);
+    assert.equal(draft.title, t.title);
+    assert.equal(draft.description, t.description);
+    assert.equal(draft.tasks.length, t.tasks.length);
+    draft.tasks.forEach((task, i) => {
+      const m = questBuilder.taskTypeToConfig(t.tasks[i].choice, t.tasks[i].fields);
+      assert.deepEqual({ type: task.type, config: task.config }, m);
+      assert.equal(task.title, t.tasks[i].title);
+      assert.equal(task.xp_reward, 10);
+      assert.equal(task.completion_mode, 'one_time');
+    });
+  }
+  assert.equal(questBuilder.templateToDraft('nope'), null);
+});
+
+test('templateToDraft returns fresh copies', () => {
+  const a = questBuilder.templateToDraft('community_follow');
+  a.tasks[0].config.url = 'https://mutated.example';
+  a.tasks[2].config.placeholder = 'mutated';
+  const b = questBuilder.templateToDraft('community_follow');
+  assert.equal(b.tasks[0].config.url, '');
+  assert.equal(b.tasks[2].config.placeholder, 'https://…');
+});
+
+test('taskNeedsSetup mirrors the server rules', () => {
+  assert.equal(questBuilder.taskNeedsSetup({ type: 'social', config: { url: '' } }), true);
+  assert.equal(questBuilder.taskNeedsSetup({ type: 'social', config: { url: 'https://x.example' } }), false);
+  assert.equal(questBuilder.taskNeedsSetup({ type: 'on_chain', config: { method: 'transaction', network_id: null } }), true);
+  assert.equal(questBuilder.taskNeedsSetup({ type: 'on_chain', config: { method: 'transaction', network_id: 3 } }), false);
+  assert.equal(questBuilder.taskNeedsSetup({ type: 'on_chain', config: { method: 'erc20_balance', network_id: 3 } }), true);
+  assert.equal(questBuilder.taskNeedsSetup({ type: 'on_chain', config: { method: 'erc20_balance', network_id: 3, token_id: 9 } }), false);
+  assert.equal(questBuilder.taskNeedsSetup({ type: 'wallet_connect', config: {} }), false);
+  assert.equal(questBuilder.taskNeedsSetup({ type: 'url_proof', config: {} }), false);
+  assert.equal(questBuilder.taskNeedsSetup({ type: 'manual', config: {} }), false);
+  assert.equal(questBuilder.taskNeedsSetup({}), false);
+});
+
+test('which template tasks need setup', () => {
+  const byKey = {};
+  for (const t of questBuilder.QUEST_TEMPLATES) {
+    byKey[t.key] = questBuilder.templateToDraft(t.key).tasks.map((task) => questBuilder.taskNeedsSetup(task));
+  }
+  assert.deepEqual(byKey.community_follow, [true, true, false]); // the two Visit Website tasks
+  assert.deepEqual(byKey.wallet_activity, [false, true]);        // the transaction
+  assert.deepEqual(byKey.hold_token, [false, true]);             // the token balance
+  assert.deepEqual(byKey.form_review, [false, false]);           // none
+});
