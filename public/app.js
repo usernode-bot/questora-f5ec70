@@ -497,6 +497,7 @@
   let lastMenuKey = null;
   async function router() {
     const path = window.location.pathname;
+    renderedPath = window.location.pathname + window.location.search;
     const params = new URLSearchParams(window.location.search);
     const ctx = beginNav();
     if (window.QV) window.QV.__ctx = ctx;
@@ -720,12 +721,36 @@
   renderAvatar();
   renderThemeButtons();
 
+  // A view with unsaved state registers a guard. nav() and popstate ask it
+  // first; a false answer cancels the navigation (the address bar is restored
+  // by the caller). Cleared when the view that set it goes away.
+  let navGuardFn = null;
+  function canLeave() {
+    if (!navGuardFn) return true;
+    try { return navGuardFn() !== false; } catch (e) { return true; }
+  }
+
+  // The path the current screen was rendered from; a refused popstate restores
+  // it so the address bar and the DOM stay in step.
+  let renderedPath = window.location.pathname + window.location.search;
+
   function nav(path) {
+    if (!canLeave()) return;
     window.history.pushState({}, '', path);
     router();
   }
 
-  window.addEventListener('popstate', () => { closeDrawer(); router(); });
+  window.addEventListener('popstate', () => {
+    // The browser already moved the address bar; a guard that refuses the
+    // change re-pushes the last rendered URL so the screen and the address bar
+    // stay in step.
+    if (!canLeave()) {
+      window.history.pushState({}, '', renderedPath);
+      return;
+    }
+    closeDrawer();
+    router();
+  });
   document.addEventListener('click', (e) => {
     const a = e.target.closest('a');
     if (!a) return;
@@ -739,7 +764,13 @@
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawerEl) { e.stopPropagation(); closeDrawer(); } }, true);
 
   // Views call this after a write to refresh the session-backed nav.
-  window.QuestoraNav = { go: nav, refresh: router, invalidateSession: () => session.invalidate(), themeChanged: renderThemeButtons };
+  // guard(fn) registers the one unsaved-changes gate and returns a handle to
+  // remove it; fn() answers whether leaving is allowed.
+  function registerGuard(fn) {
+    navGuardFn = fn;
+    return { restore: () => { if (navGuardFn === fn) navGuardFn = null; } };
+  }
+  window.QuestoraNav = { go: nav, refresh: router, invalidateSession: () => session.invalidate(), themeChanged: renderThemeButtons, guard: registerGuard };
 
   window.QV = window.QV || {};
   window.QV.Render = { skeleton, mount, errorCard };
