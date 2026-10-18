@@ -16,7 +16,10 @@ async function upsertUser(username, display_name) {
      VALUES ($1, $2, $3)
      ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    // Off the platform fixture range: the checks' own signed-in identity
+    // holds usernode_id 900001, which used to collide with user 1 and let
+    // the first authenticated request rename the seed row away.
+    [910000 + Number(idr), username, display_name]
   );
   return rows[0].id;
 }

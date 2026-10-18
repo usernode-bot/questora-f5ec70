@@ -198,3 +198,14 @@ test('quest lock evaluator: pure logic over completed sets', () => {
   // No prerequisites: never locked.
   assert.equal(conditions.evaluateLock(7, 'all', [], new Set()), false);
 });
+
+test('publish handler navigates through the shared router namespace', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const app = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const views = fs.readFileSync(path.join(__dirname, '..', 'public', 'views.js'), 'utf8');
+  assert.ok(app.includes('window.QV.router = router'), 'app.js must expose its private router on window.QV');
+  const bare = views.match(/(?<!window\.QV\.)\brouter\s*\(/g);
+  assert.equal(bare, null, 'views.js must not call router() except via window.QV.router(): found ' + bare);
+  assert.ok(views.includes('window.QV.router()'), 'publish handler must navigate via window.QV.router()');
+});

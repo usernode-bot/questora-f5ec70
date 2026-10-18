@@ -149,6 +149,10 @@
     router();
   }
 
+  // router is private to this IIFE; views.js navigates through the shared
+  // namespace (e.g. after a successful publish).
+  window.QV.router = router;
+
   window.addEventListener('popstate', router);
   document.addEventListener('click', (e) => {
     const a = e.target.closest('a');
