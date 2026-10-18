@@ -85,6 +85,11 @@
     }
   }
 
+  // Views run in their own IIFE and cannot see this one, so expose the router
+  // on the shared namespace — views.js loads before this file.
+  window.QV = window.QV || {};
+  window.QV.router = router;
+
   // /quests is a convenience list: reuse the discover data grouped flat.
   async function viewQuestsList() {
     const el = window.QUI.el;

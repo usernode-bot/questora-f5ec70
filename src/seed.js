@@ -16,7 +16,10 @@ async function upsertUser(username, display_name) {
      VALUES ($1, $2, $3)
      ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    // 910000+ keeps the demo users clear of the platform's local staging
+    // fixture ids (900001+): a sign-in there is authoritative and would
+    // otherwise rename a seeded user and take over its quests and XP.
+    [910000 + Number(idr), username, display_name]
   );
   return rows[0].id;
 }
