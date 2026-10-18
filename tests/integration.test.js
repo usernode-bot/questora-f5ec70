@@ -519,8 +519,9 @@ t('campaign transitions are enforced server-side with an admin bypass', async ()
     { algorithm: 'RS256', issuer: 'usernode', audience: 'usernode:app:999999' }
   );
   // staging-demo-user-1 owns the seeded Octra Builders project (the seed
-  // mints demo users at usernode_id 900000+i).
-  const owner = { 'x-usernode-token': tokenFor('staging-demo-user-1', 900001), 'content-type': 'application/json' };
+  // mints demo users at usernode_id 920000+i, clear of the capture viewer's
+  // 900001).
+  const owner = { 'x-usernode-token': tokenFor('staging-demo-user-1', 920001), 'content-type': 'application/json' };
   const plain = { 'x-usernode-token': tokenFor('staging-demo-plain-2', 777666333), 'content-type': 'application/json' };
   const proj = await (await fetch(base + '/api/v1/projects/staging-demo-octra-builders', { headers: owner })).json();
   assert.ok(proj.project, 'seeded project must be readable');

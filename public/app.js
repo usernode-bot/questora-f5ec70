@@ -160,6 +160,7 @@
   });
 
   pollNotifs();
+  window.QV.router = router;
   router();
   setInterval(pollNotifs, 30000);
 })();

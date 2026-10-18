@@ -11,12 +11,24 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 
 async function upsertUser(username, display_name) {
   const idr = username.replace(/\D/g, '');
+  // 920000+i, well clear of platform fixture ids: the capture viewer signs
+  // in at usernode_id 900001, and a seed row there gets renamed to
+  // staging-demo-viewer by the first sign-in (users-ensure upserts the
+  // username), which erased staging-demo-user-1 and broke every view that
+  // looks it up by name.
+  const usernodeId = 920000 + Number(idr);
+  // Idempotent across the old numbering: free the handle if an earlier seed
+  // row (or any other row) still holds this username elsewhere.
+  await pool.query(
+    `UPDATE users SET username = username || '-renumbered-' || id
+     WHERE username = $1 AND usernode_id <> $2`,
+    [username, usernodeId]);
   const { rows } = await pool.query(
     `INSERT INTO users (usernode_id, username, display_name)
      VALUES ($1, $2, $3)
      ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    [usernodeId, username, display_name]
   );
   return rows[0].id;
 }
@@ -145,6 +157,11 @@ async function seed() {
   for (const u of USERS) userIds[u.username] = await upsertUser(u.username, u.display_name);
   // Deterministic invite codes for the demo users (Phase 2 referral demo).
   for (let i = 1; i <= 6; i++) {
+    // Release the code if a row renumbered away from the seed (the old
+    // numbering's user, now renamed by a sign-in) still holds it.
+    await pool.query(
+      `UPDATE users SET ref_code = NULL WHERE ref_code = $1 AND username <> $2`,
+      [`demo-ref-${i}`, `staging-demo-user-${i}`]);
     await pool.query(
       `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL`,
       [`demo-ref-${i}`, `staging-demo-user-${i}`]);
