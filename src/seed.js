@@ -11,12 +11,26 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 
 async function upsertUser(username, display_name) {
   const idr = username.replace(/\D/g, '');
+  // 900001 is the platform's own signed-in fixture id on staging previews and
+  // proposal checks. Minting the demo users there overwrote that account's
+  // display name and left no staging-demo-user-1 row, so seed a range of our
+  // own instead.
+  //
+  // A staging database that booted an older seed still holds these users
+  // under the old ids, so look them up by username first rather than letting
+  // the insert collide on the username unique key.
+  const byName = await pool.query('SELECT id FROM users WHERE username = $1', [username]);
+  if (byName.rows.length) {
+    await pool.query('UPDATE users SET display_name = $2 WHERE id = $1',
+      [byName.rows[0].id, display_name]);
+    return byName.rows[0].id;
+  }
   const { rows } = await pool.query(
     `INSERT INTO users (usernode_id, username, display_name)
      VALUES ($1, $2, $3)
      ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    [990000 + Number(idr), username, display_name]
   );
   return rows[0].id;
 }
@@ -144,9 +158,13 @@ async function seed() {
   const userIds = {};
   for (const u of USERS) userIds[u.username] = await upsertUser(u.username, u.display_name);
   // Deterministic invite codes for the demo users (Phase 2 referral demo).
+  // A preview that booted an older seed may already hold a code on another
+  // row (the old seed minted user 1 at the platform's fixture id, and that
+  // account kept demo-ref-1 when it signed in), so only claim a free code.
   for (let i = 1; i <= 6; i++) {
     await pool.query(
-      `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL`,
+      `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL
+         AND NOT EXISTS (SELECT 1 FROM users u2 WHERE u2.ref_code = $1)`,
       [`demo-ref-${i}`, `staging-demo-user-${i}`]);
   }
   const projectIds = {};

@@ -84,6 +84,9 @@
       console.error(err);
     }
   }
+  // views.js lives in its own IIFE: expose the router so in-page handlers
+  // (e.g. the Create publish flow) can re-render after pushState.
+  window.QV.router = router;
 
   // /quests is a convenience list: reuse the discover data grouped flat.
   async function viewQuestsList() {
