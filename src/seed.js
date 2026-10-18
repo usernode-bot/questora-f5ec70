@@ -11,12 +11,23 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 
 async function upsertUser(username, display_name) {
   const idr = username.replace(/\D/g, '');
+  // Reuse a row seeded under the old id range (or any row with this name),
+  // so re-seeding an existing database stays idempotent.
+  const existing = await pool.query('SELECT id FROM users WHERE username = $1 LIMIT 1', [username]);
+  if (existing.rows.length) {
+    await pool.query('UPDATE users SET display_name = $2 WHERE id = $1', [existing.rows[0].id, display_name]);
+    return existing.rows[0].id;
+  }
   const { rows } = await pool.query(
     `INSERT INTO users (usernode_id, username, display_name)
      VALUES ($1, $2, $3)
-     ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
+     ON CONFLICT (usernode_id) DO UPDATE SET username = EXCLUDED.username,
+                                             display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    // Keep demo users off the 900000 block: the in-loop / staging sign-in
+    // fixture is usernode 900001, and users-ensure renames that row to the
+    // visitor's username, which used to erase staging-demo-user-1.
+    [910000 + Number(idr), username, display_name]
   );
   return rows[0].id;
 }

@@ -198,3 +198,14 @@ test('quest lock evaluator: pure logic over completed sets', () => {
   // No prerequisites: never locked.
   assert.equal(conditions.evaluateLock(7, 'all', [], new Set()), false);
 });
+
+test('views.js reaches the router through window.QV, never a bare call', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const read = (f) => fs.readFileSync(path.join(__dirname, '..', 'public', f), 'utf8');
+  const app = read('app.js');
+  const views = read('views.js');
+  assert.match(app, /window\.QV\.router\s*=\s*router/);
+  assert.match(views, /window\.QV\.router\(\)/);
+  assert.doesNotMatch(views, /(^|[^.\w])router\s*\(/m);
+});

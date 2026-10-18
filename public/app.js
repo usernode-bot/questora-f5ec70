@@ -84,6 +84,9 @@
       console.error(err);
     }
   }
+  // views.js is its own function; share the router so its handlers can
+  // navigate in-app after a publish instead of throwing ReferenceError.
+  window.QV.router = router;
 
   // /quests is a convenience list: reuse the discover data grouped flat.
   async function viewQuestsList() {
