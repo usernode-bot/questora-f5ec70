@@ -11,12 +11,18 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 
 async function upsertUser(username, display_name) {
   const idr = username.replace(/\D/g, '');
+  // 880000-base ids: the platform's own staging fixture/visitor accounts
+  // occupy ids around 900000 (the in-loop launch signs in as 900001), and
+  // ensureUser upserts by usernode_id — a visitor landing on a seeded id
+  // would take that demo row over and break every /u/<demo-user> page.
+  // Upsert by username so copies seeded with the old ids re-point cleanly.
   const { rows } = await pool.query(
     `INSERT INTO users (usernode_id, username, display_name)
      VALUES ($1, $2, $3)
-     ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
+     ON CONFLICT (username) DO UPDATE
+       SET usernode_id = EXCLUDED.usernode_id, display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    [880000 + Number(idr), username, display_name]
   );
   return rows[0].id;
 }
@@ -144,7 +150,12 @@ async function seed() {
   const userIds = {};
   for (const u of USERS) userIds[u.username] = await upsertUser(u.username, u.display_name);
   // Deterministic invite codes for the demo users (Phase 2 referral demo).
+  // Reclaim the code first: a copy seeded before the id fix may still hold
+  // it on a visitor row that took a demo user's place.
   for (let i = 1; i <= 6; i++) {
+    await pool.query(
+      `UPDATE users SET ref_code = NULL WHERE ref_code = $1 AND username <> $2`,
+      [`demo-ref-${i}`, `staging-demo-user-${i}`]);
     await pool.query(
       `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL`,
       [`demo-ref-${i}`, `staging-demo-user-${i}`]);

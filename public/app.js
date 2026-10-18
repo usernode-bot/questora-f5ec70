@@ -84,6 +84,9 @@
       console.error(err);
     }
   }
+  // views.js's publish handler navigates to the new campaign through this;
+  // the router is local to this IIFE, so share it on the QV namespace.
+  window.QV.router = router;
 
   // /quests is a convenience list: reuse the discover data grouped flat.
   async function viewQuestsList() {
