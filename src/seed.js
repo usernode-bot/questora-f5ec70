@@ -11,12 +11,16 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 
 async function upsertUser(username, display_name) {
   const idr = username.replace(/\D/g, '');
+  // Negative ids are reserved for demo rows. A positive range (the old
+  // 900000+i) can collide with a real Homeroom identity: the platform's
+  // local sign-in fixture is id 900001, so signing in renamed demo user 1
+  // and hid its seeded profile from /u/staging-demo-user-1.
   const { rows } = await pool.query(
     `INSERT INTO users (usernode_id, username, display_name)
      VALUES ($1, $2, $3)
      ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    [-900000 - Number(idr), username, display_name]
   );
   return rows[0].id;
 }

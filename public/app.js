@@ -84,6 +84,9 @@
       console.error(err);
     }
   }
+  // views.js runs before this file and can render a view (the Create form's
+  // publish handler) that needs to navigate; export the router for it.
+  window.QV.router = router;
 
   // /quests is a convenience list: reuse the discover data grouped flat.
   async function viewQuestsList() {
