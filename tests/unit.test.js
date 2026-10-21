@@ -1,5 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 
 // Pure logic tests: no database needed.
 const levels = require('../src/levels');
@@ -197,4 +199,18 @@ test('quest lock evaluator: pure logic over completed sets', () => {
   assert.equal(conditions.evaluateLock(7, 'any', reqs, new Set([12])), false);
   // No prerequisites: never locked.
   assert.equal(conditions.evaluateLock(7, 'all', [], new Set()), false);
+});
+
+test('publish flow reaches the app router through window.QV', () => {
+  const read = (f) => fs.readFileSync(path.join(__dirname, '..', 'public', f), 'utf8');
+  const appJs = read('app.js');
+  const viewsJs = read('views.js');
+  // app.js owns router; it must be published where views.js can reach it.
+  assert.ok(appJs.includes('window.QV.router = router;'), 'app.js exposes router on window.QV');
+  // views.js runs in its own scope where `router` is not defined: every call
+  // must go through window.QV.router(.
+  const calls = viewsJs.match(/(^|[^.\w])router\s*\(/gm) || [];
+  assert.deepEqual(calls, [], 'views.js has no bare router() call');
+  assert.ok(viewsJs.includes('window.history.pushState({}, \'\', \'/campaigns/\' + camp.campaign.slug);\n      window.QV.router();'),
+    'the publish handler navigates with window.QV.router()');
 });

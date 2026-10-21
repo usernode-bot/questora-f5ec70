@@ -11,12 +11,22 @@ const USERS = [1, 2, 3, 4, 5, 6].map(i => ({
 
 async function upsertUser(username, display_name) {
   const idr = username.replace(/\D/g, '');
+  // A copy seeded before the id change already holds this handle under the
+  // old id: keep that row rather than failing the unique username constraint.
+  const held = await pool.query('SELECT id FROM users WHERE lower(username) = lower($1)', [username]);
+  if (held.rows.length) {
+    await pool.query('UPDATE users SET display_name = $2 WHERE id = $1', [held.rows[0].id, display_name]);
+    return held.rows[0].id;
+  }
   const { rows } = await pool.query(
     `INSERT INTO users (usernode_id, username, display_name)
      VALUES ($1, $2, $3)
      ON CONFLICT (usernode_id) DO UPDATE SET display_name = EXCLUDED.display_name
      RETURNING id`,
-    [900000 + Number(idr), username, display_name]
+    // Kept well clear of the 9000xx ids Homeroom's demo viewer uses: sharing
+    // one, signing in as that viewer renamed this seed row and its profile
+    // and leaderboard entries disappeared.
+    [900000000 + Number(idr), username, display_name]
   );
   return rows[0].id;
 }
@@ -146,7 +156,10 @@ async function seed() {
   // Deterministic invite codes for the demo users (Phase 2 referral demo).
   for (let i = 1; i <= 6; i++) {
     await pool.query(
-      `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL`,
+      // A copy seeded before the id change may still give this code to an
+      // older row; leave that one alone rather than failing the insert.
+      `UPDATE users SET ref_code = $1 WHERE username = $2 AND ref_code IS NULL
+         AND NOT EXISTS (SELECT 1 FROM users u2 WHERE u2.ref_code = $1 AND u2.id <> users.id)`,
       [`demo-ref-${i}`, `staging-demo-user-${i}`]);
   }
   const projectIds = {};

@@ -85,6 +85,9 @@
     }
   }
 
+  // views.js needs the same in-app navigation for the publish flow.
+  window.QV.router = router;
+
   // /quests is a convenience list: reuse the discover data grouped flat.
   async function viewQuestsList() {
     const el = window.QUI.el;
